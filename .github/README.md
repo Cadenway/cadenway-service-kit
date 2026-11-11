@@ -2,11 +2,11 @@
 
 waypoint-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
 
-| Package | Provides |
-| --- | --- |
-| `@waypoint/nest-common` | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
-| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events |
-| `@waypoint/nest-testing` | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14) |
+| Package                    | Provides                                                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@waypoint/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
+| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
+| `@waypoint/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
 
 ## Getting started
 

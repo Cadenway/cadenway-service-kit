@@ -20,11 +20,11 @@ The structure and workflows below describe the bootstrap target. Check the check
 
 waypoint-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
 
-| Package | Provides |
-| --- | --- |
-| `@waypoint/nest-common` | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
-| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events |
-| `@waypoint/nest-testing` | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14) |
+| Package                    | Provides                                                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@waypoint/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
+| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
+| `@waypoint/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
 
 ## Language
 
@@ -59,20 +59,19 @@ repository and nothing is inherited.
 - The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
   in each repository through its own pull request.
 
-
 ## Commands and quality gates
 
 The scripts below are this repository's contract. While the repository is being bootstrapped,
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed | Minimum check |
-| --- | --- |
-| nest-common | `pnpm test -- packages/nest-common` |
-| nest-messaging | `pnpm test:integration -- packages/nest-messaging` |
-| nest-testing | `pnpm test -- packages/nest-testing` |
-| Any change to a package | a changeset |
-| Docs or agent instructions only | Scoped formatting and link review |
+| Changed                         | Minimum check                                      |
+| ------------------------------- | -------------------------------------------------- |
+| nest-common                     | `pnpm test -- packages/nest-common`                |
+| nest-messaging                  | `pnpm test:integration -- packages/nest-messaging` |
+| nest-testing                    | `pnpm test -- packages/nest-testing`               |
+| Any change to a package         | a changeset                                        |
+| Docs or agent instructions only | Scoped formatting and link review                  |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.

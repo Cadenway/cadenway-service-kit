@@ -39,8 +39,6 @@ pnpm build
 pnpm changeset status
 ```
 
-
-
 ## Tooling: this repository ships its own `.claude/`
 
 Open `waypoint-service-kit/` as the workspace root to activate it. The `wp-kit-*` agents, the `/wp-*`
