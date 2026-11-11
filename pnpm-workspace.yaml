@@ -1,0 +1,24 @@
+# pnpm settings for this repository. Registry and auth lines stay in .npmrc.
+
+packages:
+  - 'packages/*'
+
+# Versions shared by the packages and the root toolchain: a package refers to them with `catalog:`,
+# so the three packages always build and test against the same NestJS, TypeScript and Vitest.
+catalog:
+  '@nestjs/common': ^12.4.2
+  '@nestjs/core': ^12.4.2
+  '@nestjs/platform-express': ^12.4.2
+  '@nestjs/testing': ^12.4.2
+  # Declared by every package that pulls a typings package depending on `@types/node@*`: without a
+  # direct dependency, pnpm resolves that range to the latest major instead of the Node line in use.
+  '@types/node': ^24.19.2
+  '@vitest/coverage-v8': ^5.1.0
+  reflect-metadata: ^0.2.2
+  rxjs: ^7.8.2
+  typescript: ~6.0.3
+  vitest: ^5.1.0
+
+# Install scripts are reviewed one by one: pnpm refuses an install that would skip an unlisted one.
+# No dependency has one today, hence no `allowBuilds` list; when pnpm reports one, add it there with
+# `false` unless the script is really needed.

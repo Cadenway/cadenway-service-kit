@@ -1,0 +1,20 @@
+{
+  "name": "@waypoint/nest-messaging",
+  "version": "0.0.0",
+  "description": "Messaging plumbing for the Waypoint NestJS services and gateways. Package shell: no implementation yet.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

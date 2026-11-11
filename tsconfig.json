@@ -1,0 +1,17 @@
+{
+  // Whole-workspace project, read by editors, ESLint, Vitest and `tsc -b`. Through the references,
+  // `tsc -b` first builds each package (sources only, into its dist), then checks what is left
+  // here, the specs and the root configuration files, against those builds. This project emits
+  // nothing itself.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true
+  },
+  "include": ["packages/*/src", "*.config.ts"],
+  "references": [
+    { "path": "./packages/nest-common/tsconfig.build.json" },
+    { "path": "./packages/nest-messaging/tsconfig.build.json" },
+    { "path": "./packages/nest-testing/tsconfig.build.json" }
+  ]
+}
