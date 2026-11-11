@@ -1,9 +1,7 @@
 /**
- * Public entry point of `@waypoint/nest-common`.
- *
- * The package will hold the plumbing shared by the Waypoint NestJS services and gateways. Nothing
- * is implemented yet: the entry point exports nothing, so the package builds and packs as a shell.
+ * Public entry point of `@waypoint/nest-common`: the plumbing shared by the Waypoint NestJS
+ * services and gateways. Everything a consumer may import is listed here by name.
  *
  * @packageDocumentation
  */
-export {};
+export { HealthModule } from './health/health.module.js';
