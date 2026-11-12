@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # Lets the install read @waypoint/* packages from GitHub Packages. The kit depends on none
+      # Lets the install read @cadenway/* packages from GitHub Packages. The kit depends on none
       # yet; the access is ready for the first one.
       packages: read
     steps:
@@ -32,7 +32,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
           registry-url: https://npm.pkg.github.com
-          scope: '@waypoint'
+          scope: '@cadenway'
       - run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,7 +62,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
           registry-url: https://npm.pkg.github.com
-          scope: '@waypoint'
+          scope: '@cadenway'
       - run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

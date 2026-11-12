@@ -4,10 +4,10 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
-const natsMessage = 'NATS is reached only through @waypoint/nest-messaging.';
+const natsMessage = 'NATS is reached only through @cadenway/nest-messaging.';
 const siblingSources = {
-  regex: '\\.\\./waypoint-',
-  message: 'Never import sibling sources: use the published @waypoint/* packages.',
+  regex: '\\.\\./cadenway-',
+  message: 'Never import sibling sources: use the published @cadenway/* packages.',
 };
 
 export default defineConfig(

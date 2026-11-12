@@ -1,6 +1,6 @@
-# @waypoint/nest-testing
+# @cadenway/nest-testing
 
-Test helpers for the Waypoint NestJS services and gateways.
+Test helpers for the Cadenway NestJS services and gateways.
 
 **Status: package shell.** Nothing is implemented yet and the entry point exports nothing. The
 package will hold the disposable PostgreSQL and NATS instances for tests and the mockup-based

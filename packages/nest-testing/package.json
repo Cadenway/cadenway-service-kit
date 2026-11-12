@@ -1,7 +1,7 @@
 {
-  "name": "@waypoint/nest-testing",
+  "name": "@cadenway/nest-testing",
   "version": "0.0.0",
-  "description": "Test helpers for the Waypoint NestJS services and gateways. Package shell: no implementation yet.",
+  "description": "Test helpers for the Cadenway NestJS services and gateways. Package shell: no implementation yet.",
   "license": "UNLICENSED",
   "type": "module",
   "exports": {

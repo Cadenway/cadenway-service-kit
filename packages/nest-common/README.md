@@ -1,6 +1,6 @@
-# @waypoint/nest-common
+# @cadenway/nest-common
 
-Plumbing shared by the Waypoint NestJS services and gateways. It holds the health module today; the
+Plumbing shared by the Cadenway NestJS services and gateways. It holds the health module today; the
 rest of what the [repository instructions](../../AGENTS.md) list for this package is not
 implemented yet.
 
@@ -20,7 +20,7 @@ The Terminus body of a healthy application is `{ "status": "ok", "info": {}, "er
 
 ```ts
 import { Module } from '@nestjs/common';
-import { HealthModule } from '@waypoint/nest-common';
+import { HealthModule } from '@cadenway/nest-common';
 
 @Module({ imports: [HealthModule] })
 export class AppModule {}

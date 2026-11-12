@@ -1,5 +1,5 @@
 /**
- * Public entry point of `@waypoint/nest-common`: the plumbing shared by the Waypoint NestJS
+ * Public entry point of `@cadenway/nest-common`: the plumbing shared by the Cadenway NestJS
  * services and gateways. Everything a consumer may import is listed here by name.
  *
  * @packageDocumentation

@@ -1,7 +1,7 @@
 {
-  "name": "waypoint-service-kit",
+  "name": "cadenway-service-kit",
   "version": "0.0.0",
-  "description": "Waypoint service kit: the technical base shared by the NestJS services and gateways.",
+  "description": "Cadenway service kit: the technical base shared by the NestJS services and gateways.",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",

@@ -1,6 +1,6 @@
-# @waypoint/nest-messaging
+# @cadenway/nest-messaging
 
-Messaging plumbing for the Waypoint NestJS services and gateways.
+Messaging plumbing for the Cadenway NestJS services and gateways.
 
 **Status: package shell.** Nothing is implemented yet and the entry point exports nothing. The
 package will hold the NATS JetStream connection, the outbox publication, the subscriptions with

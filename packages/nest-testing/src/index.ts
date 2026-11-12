@@ -1,5 +1,5 @@
 /**
- * Public entry point of `@waypoint/nest-testing`.
+ * Public entry point of `@cadenway/nest-testing`.
  *
  * The package will hold the disposable PostgreSQL and NATS instances used by the tests of the
  * services, and the fixtures taken from the mockup (Atelier Nord, Sprint 14). Nothing is

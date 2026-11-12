@@ -1,7 +1,7 @@
 {
-  "name": "@waypoint/nest-messaging",
+  "name": "@cadenway/nest-messaging",
   "version": "0.0.0",
-  "description": "Messaging plumbing for the Waypoint NestJS services and gateways. Package shell: no implementation yet.",
+  "description": "Messaging plumbing for the Cadenway NestJS services and gateways. Package shell: no implementation yet.",
   "license": "UNLICENSED",
   "type": "module",
   "exports": {

@@ -1,7 +1,7 @@
 {
-  "name": "@waypoint/nest-common",
+  "name": "@cadenway/nest-common",
   "version": "0.0.0",
-  "description": "Plumbing shared by the Waypoint NestJS services and gateways: health routes.",
+  "description": "Plumbing shared by the Cadenway NestJS services and gateways: health routes.",
   "license": "UNLICENSED",
   "type": "module",
   "exports": {
