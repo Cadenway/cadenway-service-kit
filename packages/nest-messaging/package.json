@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "description": "Messaging plumbing for the Cadenway NestJS services and gateways. Package shell: no implementation yet.",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cadenway/cadenway-service-kit.git",
+    "directory": "packages/nest-messaging"
+  },
   "type": "module",
   "exports": {
     ".": {
