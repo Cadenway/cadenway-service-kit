@@ -1,6 +1,6 @@
-# waypoint-service-kit documentation
+# cadenway-service-kit documentation
 
-Planned role: waypoint-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
+Planned role: cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
 
 ## Current status
 

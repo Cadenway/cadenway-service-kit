@@ -10,13 +10,13 @@ The following architecture is the target recorded in [AGENTS.md](../AGENTS.md). 
 
 ## Purpose and target structure
 
-waypoint-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
+cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
 
 | Package                    | Provides                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@waypoint/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
-| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
-| `@waypoint/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
+| `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
+| `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
+| `@cadenway/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
 
 ## Architectural ownership
 
@@ -30,4 +30,4 @@ waypoint-service-kit is the technical base shared by the NestJS services and gat
 
 ## Cross-repository changes
 
-Each checkout owns its implementation and release. Use published `@waypoint/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.
+Each checkout owns its implementation and release. Use published `@cadenway/*` packages instead of sibling source imports or local dependency links. For contract changes, make the contract and generated package available first, then update the producing service, gateways and listeners, and finally the webapp. Each step should remain deployable independently.

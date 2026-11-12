@@ -6,11 +6,11 @@
 
 ## Package boundaries
 
-`@waypoint/nest-common`, `@waypoint/nest-messaging`, and `@waypoint/nest-testing` provide shared backend plumbing. Services consume published releases; the kit does not own business rules. Package APIs and delivery behavior below are planned until implementation exists.
+`@cadenway/nest-common`, `@cadenway/nest-messaging`, and `@cadenway/nest-testing` provide shared backend plumbing. Services consume published releases; the kit does not own business rules. Package APIs and delivery behavior below are planned until implementation exists.
 
 ## Kit API Stability
 
-Source: `wp-kit-api-stability` ([Claude](../.claude/skills/wp-kit-api-stability/SKILL.md), [Codex](../.codex/skills/wp-kit-api-stability/SKILL.md)).
+Source: `cw-kit-api-stability` ([Claude](../.claude/skills/cw-kit-api-stability/SKILL.md), [Codex](../.codex/skills/cw-kit-api-stability/SKILL.md)).
 
 - New behavior: behind an option, default unchanged.
 - Rename or removal: deprecate in a minor (JSDoc `@deprecated`, a start-up warning), remove in the next
@@ -18,7 +18,7 @@ Source: `wp-kit-api-stability` ([Claude](../.claude/skills/wp-kit-api-stability/
 
 ## Outbox Design
 
-Source: `wp-outbox-design` ([Claude](../.claude/skills/wp-outbox-design/SKILL.md), [Codex](../.codex/skills/wp-outbox-design/SKILL.md)).
+Source: `cw-outbox-design` ([Claude](../.claude/skills/cw-outbox-design/SKILL.md), [Codex](../.codex/skills/cw-outbox-design/SKILL.md)).
 
 ```text
 use case transaction ──► outbox row (pending)

@@ -1,4 +1,4 @@
-# waypoint-service-kit: agent instructions
+# cadenway-service-kit: agent instructions
 
 These instructions are mandatory for every AI assistant working in this repository, whatever the
 vendor. [CLAUDE.md](CLAUDE.md) imports them for Claude Code. Explicit user instructions take
@@ -10,7 +10,7 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 ## First read
 
 - The package you change and its `README.md`.
-- The installed `@waypoint/contracts` when touching messaging.
+- The installed `@cadenway/contracts` when touching messaging.
 - `package.json` for versions and scripts once the repository is bootstrapped. Do not restate
   versions elsewhere: a copy goes stale.
 
@@ -18,13 +18,13 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 
 The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
 
-waypoint-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
+cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
 
-| Package | Provides |
-| --- | --- |
-| `@waypoint/nest-common` | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
-| `@waypoint/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events |
-| `@waypoint/nest-testing` | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14) |
+| Package                    | Provides                                                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
+| `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
+| `@cadenway/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
 
 ## Language
 
@@ -47,7 +47,7 @@ waypoint-service-kit is the technical base shared by the NestJS services and gat
 
 ## GitHub files (`.github/`)
 
-This repository carries everything GitHub reads from it; Waypoint has no organization `.github`
+This repository carries everything GitHub reads from it; Cadenway has no organization `.github`
 repository and nothing is inherited.
 
 - [`.github/README.md`](.github/README.md) is the repository home page; `CONTRIBUTING.md`,
@@ -59,20 +59,19 @@ repository and nothing is inherited.
 - The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
   in each repository through its own pull request.
 
-
 ## Commands and quality gates
 
 The scripts below are this repository's contract. While the repository is being bootstrapped,
 create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
 narrowest check that covers the change first, then widen:
 
-| Changed | Minimum check |
-| --- | --- |
-| nest-common | `pnpm test -- packages/nest-common` |
-| nest-messaging | `pnpm test:integration -- packages/nest-messaging` |
-| nest-testing | `pnpm test -- packages/nest-testing` |
-| Any change to a package | a changeset |
-| Docs or agent instructions only | Scoped formatting and link review |
+| Changed                         | Minimum check                                   |
+| ------------------------------- | ----------------------------------------------- |
+| nest-common                     | `pnpm test packages/nest-common`                |
+| nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
+| nest-testing                    | `pnpm test packages/nest-testing`               |
+| Any change to a package         | a changeset                                     |
+| Docs or agent instructions only | Scoped formatting and link review               |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
@@ -81,7 +80,7 @@ run.
 
 - Trunk-based: work branches come from `main`, named `<type>/<lowercase-kebab-description>` with a
   type among `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `revert`; put the Waypoint task id first when there is one (`feat/way-482-sso-screen`). Never an
+  `revert`; put the Cadenway task id first when there is one (`feat/cad-482-sso-screen`). Never an
   agent name as a prefix. Validate with `git check-ref-format --branch <name>`.
 - Commits and PR titles follow Conventional Commits: `type(scope): subject`, English, imperative,
   lowercase subject, no trailing period, at most 100 characters; `!` only for a breaking change.
@@ -94,11 +93,11 @@ run.
 - Never run a registry publish (`npm publish`, `pnpm publish`): the release workflow publishes.
 - Never force-push, and never amend or rebase commits that are already pushed.
 - Never bypass the Git hooks (`--no-verify`, `core.hooksPath` overrides, `ALLOW_MAIN_PUSH=1`,
-  `WP_SKIP_PUSH_CHECKS=1`).
+  `CW_SKIP_PUSH_CHECKS=1`).
 - Never write a token, password or private key anywhere; `.npmrc` keeps `${NODE_AUTH_TOKEN}`. Do
   not read or write secret environment files; new variables are documented in `.env.example`.
 - Never edit generated trees (`dist/`, `node_modules/`, `coverage/`) or lockfiles by hand.
-- Never modify a sibling checkout (`../waypoint-*`) from a task in this repository.
+- Never modify a sibling checkout (`../cadenway-*`) from a task in this repository.
 - Never change the outbox table schema without a migration path documented for every service.
 
 The agent hooks enforce most of these mechanically; a refused command is a signal to stop and ask,
@@ -107,11 +106,11 @@ not to find another way around it.
 ## Agent tooling
 
 - **Claude Code**: [CLAUDE.md](CLAUDE.md) and [.claude/README.md](.claude/README.md): the
-  `wp-kit-*` agents, the `/wp-*` commands (`/wp-quality` runs the whole local gate),
+  `cw-kit-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
   path-scoped rules and hooks.
-- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$wp-*` skills, rules and hooks.
-- **Builders** (assigned writes): `wp-kit-common-builder`, `wp-kit-messaging-builder`, `wp-kit-testing-builder`, `wp-kit-test-writer`, `wp-kit-release-manager`, `wp-kit-github-maintainer`.
-- **Reviewers** (read-only): `wp-kit-api-stability-reviewer`, `wp-kit-security-reviewer`, `wp-kit-observability-reviewer`, `wp-kit-reliability-reviewer`.
+- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
+- **Builders** (assigned writes): `cw-kit-common-builder`, `cw-kit-messaging-builder`, `cw-kit-testing-builder`, `cw-kit-test-writer`, `cw-kit-release-manager`, `cw-kit-github-maintainer`.
+- **Reviewers** (read-only): `cw-kit-api-stability-reviewer`, `cw-kit-security-reviewer`, `cw-kit-observability-reviewer`, `cw-kit-reliability-reviewer`.
 - Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
   checks, assign disjoint files to parallel agents and integrate their results yourself.
 

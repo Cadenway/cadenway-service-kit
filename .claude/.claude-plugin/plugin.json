@@ -1,7 +1,7 @@
 {
-  "name": "waypoint-service-kit",
+  "name": "cadenway-service-kit",
   "version": "0.1.0",
-  "description": "waypoint-service-kit tooling: 10 wp-kit-* agents (common, messaging, testing and release builders plus read-only API-stability, security, observability and reliability reviewers for the shared NestJS packages, plus a .github maintainer), 11 /wp-* commands, 7 path-scoped rules, 12 skills, and the guard, git-guard and format hooks. The plugin root is this .claude/ folder; the hooks only act inside a waypoint-service-kit checkout.",
+  "description": "cadenway-service-kit tooling: 10 cw-kit-* agents (common, messaging, testing and release builders plus read-only API-stability, security, observability and reliability reviewers for the shared NestJS packages, plus a .github maintainer), 11 /cw-* commands, 7 path-scoped rules, 12 skills, and the guard, git-guard and format hooks. The plugin root is this .claude/ folder; the hooks only act inside a cadenway-service-kit checkout.",
   "author": {
     "name": "Valentin FORTIN"
   }

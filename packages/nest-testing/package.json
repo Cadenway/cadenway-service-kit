@@ -1,0 +1,20 @@
+{
+  "name": "@cadenway/nest-testing",
+  "version": "0.0.0",
+  "description": "Test helpers for the Cadenway NestJS services and gateways. Package shell: no implementation yet.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

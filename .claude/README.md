@@ -1,6 +1,6 @@
-# waypoint-service-kit: Claude Code tooling
+# cadenway-service-kit: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of waypoint-service-kit: **10 agents**,
+This `.claude/` folder ships the Claude Code tooling of cadenway-service-kit: **10 agents**,
 11 slash commands, 7 rules, 12 skills, 3 hooks, the project
 settings.
 
@@ -27,11 +27,11 @@ Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CL
 Start from this checkout and attach the peers you need, for example:
 
 ```powershell
-claude --add-dir ../waypoint-api-contracts ../waypoint-task-service ../waypoint-api-gateway
+claude --add-dir ../cadenway-api-contracts ../cadenway-task-service ../cadenway-api-gateway
 ```
 
-Their `.claude/agents/` are discovered too, so their `wp-*` roles become available. Peer checkouts
-are **read-only** from a waypoint-service-kit session (the guard refuses edits there): change them in their
+Their `.claude/agents/` are discovered too, so their `cw-*` roles become available. Peer checkouts
+are **read-only** from a cadenway-service-kit session (the guard refuses edits there): change them in their
 own session and pull request.
 
 ## Agents
@@ -42,32 +42,32 @@ check that writes files. No agent delegates further.
 
 | Agent | Responsibility | Model | Effort | Mode |
 | --- | --- | --- | --- | --- |
-| `wp-kit-common-builder` | Configuration, guards, logs, traces, health, errors. | opus | high | Assigned writes |
-| `wp-kit-messaging-builder` | NATS, outbox, retries, deduplication. | opus | xhigh | Assigned writes |
-| `wp-kit-testing-builder` | Test helpers and fixtures. | sonnet | high | Assigned writes |
-| `wp-kit-test-writer` | Tests of the kit itself. | sonnet | high | Assigned writes |
-| `wp-kit-release-manager` | Changesets and deprecations. | sonnet | medium | Assigned writes |
-| `wp-kit-api-stability-reviewer` | Public API and defaults. | opus | high | Read-only |
-| `wp-kit-security-reviewer` | Guards, context, logging of secrets. | opus | xhigh | Read-only |
-| `wp-kit-observability-reviewer` | Logs, traces, health. | sonnet | high | Read-only |
-| `wp-kit-reliability-reviewer` | Delivery guarantees. | opus | xhigh | Read-only |
-| `wp-kit-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
+| `cw-kit-common-builder` | Configuration, guards, logs, traces, health, errors. | opus | high | Assigned writes |
+| `cw-kit-messaging-builder` | NATS, outbox, retries, deduplication. | opus | xhigh | Assigned writes |
+| `cw-kit-testing-builder` | Test helpers and fixtures. | sonnet | high | Assigned writes |
+| `cw-kit-test-writer` | Tests of the kit itself. | sonnet | high | Assigned writes |
+| `cw-kit-release-manager` | Changesets and deprecations. | sonnet | medium | Assigned writes |
+| `cw-kit-api-stability-reviewer` | Public API and defaults. | opus | high | Read-only |
+| `cw-kit-security-reviewer` | Guards, context, logging of secrets. | opus | xhigh | Read-only |
+| `cw-kit-observability-reviewer` | Logs, traces, health. | sonnet | high | Read-only |
+| `cw-kit-reliability-reviewer` | Delivery guarantees. | opus | xhigh | Read-only |
+| `cw-kit-github-maintainer` | Workflows, templates and community files in .github/. | sonnet | medium | Assigned writes |
 
 ## Commands
 
 | Command | What it does | Runs |
 | --- | --- | --- |
-| `/wp-common` | Change @waypoint/nest-common. | `wp-kit-common-builder` |
-| `/wp-messaging` | Change @waypoint/nest-messaging. | `wp-kit-messaging-builder` |
-| `/wp-testing` | Change @waypoint/nest-testing. | `wp-kit-testing-builder` |
-| `/wp-test` | Write tests for the kit. | `wp-kit-test-writer` |
-| `/wp-release` | Prepare changesets and deprecations. | `wp-kit-release-manager` |
-| `/wp-api-review` | Check public API stability. | `wp-kit-api-stability-reviewer` |
-| `/wp-security-review` | Audit guards and logging. | `wp-kit-security-reviewer` |
-| `/wp-observability-review` | Review logs and traces. | `wp-kit-observability-reviewer` |
-| `/wp-reliability-review` | Review delivery guarantees. | `wp-kit-reliability-reviewer` |
-| `/wp-github` | Change workflows, templates or community files in .github/. | `wp-kit-github-maintainer` |
-| `/wp-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
+| `/cw-common` | Change @cadenway/nest-common. | `cw-kit-common-builder` |
+| `/cw-messaging` | Change @cadenway/nest-messaging. | `cw-kit-messaging-builder` |
+| `/cw-testing` | Change @cadenway/nest-testing. | `cw-kit-testing-builder` |
+| `/cw-test` | Write tests for the kit. | `cw-kit-test-writer` |
+| `/cw-release` | Prepare changesets and deprecations. | `cw-kit-release-manager` |
+| `/cw-api-review` | Check public API stability. | `cw-kit-api-stability-reviewer` |
+| `/cw-security-review` | Audit guards and logging. | `cw-kit-security-reviewer` |
+| `/cw-observability-review` | Review logs and traces. | `cw-kit-observability-reviewer` |
+| `/cw-reliability-review` | Review delivery guarantees. | `cw-kit-reliability-reviewer` |
+| `/cw-github` | Change workflows, templates or community files in .github/. | `cw-kit-github-maintainer` |
+| `/cw-quality` | Run the local quality gate, stopping at the first failure. | runs the commands itself |
 
 ## Rules
 
@@ -87,9 +87,9 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 
 | Skill | Use |
 | --- | --- |
-| `wp-context` | What Waypoint is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
-| `wp-outbox-design` | How the outbox, the relay, deduplication, retries and dead letters of @waypoint/nest-messaging work together. |
-| `wp-kit-api-stability` | Rules for changing a package every service depends on: options with safe defaults, deprecation before removal, migration notes. |
+| `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
+| `cw-outbox-design` | How the outbox, the relay, deduplication, retries and dead letters of @cadenway/nest-messaging work together. |
+| `cw-kit-api-stability` | Rules for changing a package every service depends on: options with safe defaults, deprecation before removal, migration notes. |
 
 ## Hooks
 
