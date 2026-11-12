@@ -10,14 +10,14 @@
     "node": "^24.15.0"
   },
   "scripts": {
-    "prepare": "node scripts/install-git-hooks.mjs",
+    "prepare": "git config core.hooksPath .githooks",
     "build": "tsc -b",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "tsc -b",
-    "test": "node scripts/vitest.mjs --project unit",
-    "test:integration": "node scripts/vitest.mjs --project integration --passWithNoTests",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
     "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
