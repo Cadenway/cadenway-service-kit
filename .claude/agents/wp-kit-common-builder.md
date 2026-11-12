@@ -55,7 +55,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 
 ## Checks
 
-- `pnpm test -- packages/nest-common`
+- `pnpm test packages/nest-common`
 - `pnpm build`
 
 ## Report
