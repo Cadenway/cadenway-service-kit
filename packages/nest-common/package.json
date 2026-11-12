@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "description": "Plumbing shared by the Cadenway NestJS services and gateways: health routes.",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cadenway/cadenway-service-kit.git",
+    "directory": "packages/nest-common"
+  },
   "type": "module",
   "exports": {
     ".": {
