@@ -1,6 +1,6 @@
 {
   "name": "@cadenway/nest-jobs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Durable background jobs for the Cadenway NestJS services. Package shell: no implementation yet.",
   "license": "UNLICENSED",
   "repository": {
