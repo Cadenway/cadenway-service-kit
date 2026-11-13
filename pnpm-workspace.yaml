@@ -10,15 +10,39 @@ catalog:
   '@nestjs/core': ^12.4.2
   '@nestjs/platform-express': ^12.4.2
   '@nestjs/testing': ^12.4.2
+  # One copy per application: the packages declare it as a peer, the application installs it.
+  '@opentelemetry/api': ^1.10.0
   # Declared by every package that pulls a typings package depending on `@types/node@*`: without a
   # direct dependency, pnpm resolves that range to the latest major instead of the Node line in use.
   '@types/node': ^24.19.2
   '@vitest/coverage-v8': ^5.1.0
+  # Same ranges as the services, which own the database driver and the ORM.
+  drizzle-orm: ^0.45.4
+  pg: ^8.23.1
   reflect-metadata: ^0.2.2
   rxjs: ^7.8.2
+  supertest: ^7.3.2
   typescript: ~6.0.3
   vitest: ^5.1.0
+  # Same major as `@cadenway/contracts`, so an application holds a single copy.
+  zod: ^4.6.0
+
+# A version must be two days old before pnpm resolves it, the delay Renovate already applies. The
+# value is in minutes. Cadenway packages are exempt: they are taken as soon as they are published.
+minimumReleaseAge: 2880
+minimumReleaseAgeExclude:
+  - '@cadenway/*'
+
+# A version that loses the provenance or the trusted publisher of an earlier one is refused.
+trustPolicy: no-downgrade
 
 # Install scripts are reviewed one by one: pnpm refuses an install that would skip an unlisted one.
-# No dependency has one today, hence no `allowBuilds` list; when pnpm reports one, add it there with
-# `false` unless the script is really needed.
+# When pnpm reports a new one, add it here with `false` unless the script is really needed.
+allowBuilds:
+  # Optional native accelerators of `ssh2`, pulled by `testcontainers`. The JavaScript fallback is
+  # enough to reach the Docker socket.
+  cpu-features: false
+  # Pulled by the gRPC exporters of `@opentelemetry/sdk-node`. Its script only prints a warning when
+  # several copies are installed.
+  protobufjs: false
+  ssh2: false
