@@ -1,12 +1,13 @@
 # cadenway-service-kit
 
-cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
+cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes four packages; the front end never depends on it.
 
 | Package                    | Provides                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
 | `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
-| `@cadenway/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
+| `@cadenway/nest-jobs`      | Durable background jobs kept in the service's own PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, dead letters, cron schedules                             |
+| `@cadenway/nest-testing`   | Disposable PostgreSQL, NATS and Redis for tests, fakes of third-party HTTP services, mockup-based fixtures (Atelier Nord, Sprint 14)                                                              |
 
 ## Getting started
 

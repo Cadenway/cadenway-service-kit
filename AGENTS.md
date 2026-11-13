@@ -18,13 +18,14 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 
 The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
 
-cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes three packages; the front end never depends on it.
+cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes four packages; the front end never depends on it.
 
 | Package                    | Provides                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
 | `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
-| `@cadenway/nest-testing`   | Disposable PostgreSQL and NATS for tests, mockup-based fixtures (Atelier Nord, Sprint 14)                                                                                                         |
+| `@cadenway/nest-jobs`      | Durable background jobs kept in the service's own PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, dead letters, cron schedules                             |
+| `@cadenway/nest-testing`   | Disposable PostgreSQL, NATS and Redis for tests, fakes of third-party HTTP services, mockup-based fixtures (Atelier Nord, Sprint 14)                                                              |
 
 ## Language
 
@@ -37,7 +38,7 @@ cadenway-service-kit is the technical base shared by the NestJS services and gat
 
 ## Architectural ownership
 
-- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-testing/`: one Nest module or helper set each.
+- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`, `packages/nest-testing/`: one Nest module or helper set each.
 
 ## Boundaries (hard rules)
 
@@ -69,6 +70,7 @@ narrowest check that covers the change first, then widen:
 | ------------------------------- | ----------------------------------------------- |
 | nest-common                     | `pnpm test packages/nest-common`                |
 | nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
+| nest-jobs                       | `pnpm test:integration packages/nest-jobs`      |
 | nest-testing                    | `pnpm test packages/nest-testing`               |
 | Any change to a package         | a changeset                                     |
 | Docs or agent instructions only | Scoped formatting and link review               |

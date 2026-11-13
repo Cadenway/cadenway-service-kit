@@ -11,8 +11,8 @@
 
 ## TL;DR for every task
 
-1. The three planned packages for services and gateways are `@cadenway/nest-common`, `@cadenway/nest-messaging`, `@cadenway/nest-testing`.
-2. Plumbing only: configuration, auth guards, organization context, logs, traces, health, errors, pagination, NATS, outbox, test helpers. Never a business rule.
+1. The four planned packages for services and gateways are `@cadenway/nest-common`, `@cadenway/nest-messaging`, `@cadenway/nest-jobs`, `@cadenway/nest-testing`.
+2. Plumbing only: configuration, auth guards, organization context, logs, traces, health, errors, pagination, NATS, outbox, background jobs, test helpers. Never a business rule.
 3. `nest-messaging` is typed by `@cadenway/contracts`: it publishes and consumes exactly the shapes defined there.
 4. Services and gateways will receive package updates through Renovate. Keep the public API stable and deprecate before removing.
 5. Package changes require a changeset. The release workflow publishes from CI.

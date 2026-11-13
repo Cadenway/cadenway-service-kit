@@ -3,7 +3,26 @@
   "extends": ["config:recommended", ":semanticCommits", "helpers:pinGitHubActionDigests"],
   "labels": ["dependencies"],
   "minimumReleaseAge": "2 days",
+  "vulnerabilityAlerts": {
+    "description": "A security fix is proposed at once, without the two-day delay.",
+    "minimumReleaseAge": null
+  },
   "packageRules": [
+    {
+      "description": "The NATS packages pin each other to an exact version: they move together.",
+      "matchPackageNames": ["@nats-io/**"],
+      "groupName": "nats client"
+    },
+    {
+      "description": "The OpenTelemetry packages share peer ranges across their release lines.",
+      "matchPackageNames": ["@opentelemetry/**"],
+      "groupName": "opentelemetry"
+    },
+    {
+      "description": "The Testcontainers modules depend on the same version of the core package.",
+      "matchPackageNames": ["testcontainers", "@testcontainers/**"],
+      "groupName": "testcontainers"
+    },
     {
       "description": "Patch, pin and digest updates merge on their own once CI is green.",
       "matchUpdateTypes": ["patch", "pin", "digest"],

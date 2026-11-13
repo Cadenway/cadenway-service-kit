@@ -46,6 +46,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 | Skill | Load it when |
 | --- | --- |
 | `cw-kit-api-stability` | always |
+| `cw-logging-and-tracing` | when the change touches logs, traces or metrics |
 
 ## Procedure
 

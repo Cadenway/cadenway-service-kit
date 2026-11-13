@@ -9,6 +9,16 @@ const siblingSources = {
   regex: '\\.\\./cadenway-',
   message: 'Never import sibling sources: use the published @cadenway/* packages.',
 };
+// Packages set aside when the dependencies were chosen: each has a retained replacement.
+const rejectedPackages = [
+  { name: 'axios', message: 'Use the native fetch of Node.' },
+  { name: '@nestjs/schedule', message: 'An in-process timer is not durable: use nest-jobs.' },
+  { name: 'bullmq', message: 'Jobs live in PostgreSQL through nest-jobs, not in Redis.' },
+  { name: 'prom-client', message: 'Metrics go through the OpenTelemetry SDK.' },
+  { name: 'date-fns', message: 'Use Temporal: it tells a plain date from an instant.' },
+  { name: 'moment', message: 'Use Temporal: it tells a plain date from an instant.' },
+  { name: 'lodash', message: 'Use the language and the standard library.' },
+];
 
 export default defineConfig(
   globalIgnores(['**/dist/', 'coverage/', 'docs/', '.claude/', '.codex/']),
@@ -41,17 +51,17 @@ export default defineConfig(
       'no-restricted-imports': [
         'error',
         {
-          paths: [{ name: 'nats', message: natsMessage }],
+          paths: [{ name: 'nats', message: natsMessage }, ...rejectedPackages],
           patterns: [{ group: ['@nats-io/*'], message: natsMessage }, siblingSources],
         },
       ],
     },
   },
   {
-    // The one package that owns the NATS client: only the sibling-source ban applies to it.
+    // The one package that owns the NATS client: the NATS ban alone is lifted for it.
     files: ['packages/nest-messaging/src/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [siblingSources] }],
+      'no-restricted-imports': ['error', { paths: rejectedPackages, patterns: [siblingSources] }],
     },
   },
   {

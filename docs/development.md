@@ -36,6 +36,7 @@ narrowest check that covers the change first, then widen:
 | ------------------------------- | ----------------------------------------------- |
 | nest-common                     | `pnpm test packages/nest-common`                |
 | nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
+| nest-jobs                       | `pnpm test:integration packages/nest-jobs`      |
 | nest-testing                    | `pnpm test packages/nest-testing`               |
 | Any change to a package         | a changeset                                     |
 | Docs or agent instructions only | Scoped formatting and link review               |

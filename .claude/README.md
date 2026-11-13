@@ -1,7 +1,7 @@
 # cadenway-service-kit: Claude Code tooling
 
 This `.claude/` folder ships the Claude Code tooling of cadenway-service-kit: **10 agents**,
-11 slash commands, 7 rules, 12 skills, 3 hooks, the project
+11 slash commands, 7 rules, 14 skills, 3 hooks, the project
 settings.
 
 Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CLAUDE.md](../CLAUDE.md)
@@ -90,6 +90,8 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 | `cw-context` | What Cadenway is, where the mockup, the integration guide and the repository map live, the product vocabulary (spaces, lists, sprints, tasks, statuses, milestones) and the multi-repository ownership rules. |
 | `cw-outbox-design` | How the outbox, the relay, deduplication, retries and dead letters of @cadenway/nest-messaging work together. |
 | `cw-kit-api-stability` | Rules for changing a package every service depends on: options with safe defaults, deprecation before removal, migration notes. |
+| `cw-logging-and-tracing` | The log fields, redaction, trace propagation, metrics and OpenTelemetry start-up shared by every Cadenway backend. |
+| `cw-jobs` | How a Cadenway service runs durable background jobs with @cadenway/nest-jobs: a job enqueued in the use case transaction, occurrence keys, retries, dead letters, schedules. |
 
 ## Hooks
 

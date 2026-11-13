@@ -32,6 +32,7 @@ Load them with the `Skill` tool when their subject comes up (if the tool is unav
 | Skill | Load it when |
 | --- | --- |
 | `cw-outbox-design` | always |
+| `cw-jobs` | when the change touches `packages/nest-jobs/` |
 
 ## What to check
 

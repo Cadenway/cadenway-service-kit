@@ -1,0 +1,39 @@
+{
+  "name": "@cadenway/nest-jobs",
+  "version": "0.0.0",
+  "description": "Durable background jobs for the Cadenway NestJS services. Package shell: no implementation yet.",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cadenway/cadenway-service-kit.git",
+    "directory": "packages/nest-jobs"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "dependencies": {
+    "pg-boss": "^12.38.2"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "@types/node": "catalog:",
+    "pg": "catalog:"
+  }
+}
