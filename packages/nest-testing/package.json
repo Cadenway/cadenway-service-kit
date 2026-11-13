@@ -1,6 +1,6 @@
 {
   "name": "@cadenway/nest-testing",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Test helpers for the Cadenway NestJS services and gateways. Package shell: no implementation yet.",
   "license": "UNLICENSED",
   "repository": {

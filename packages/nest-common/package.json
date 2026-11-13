@@ -1,6 +1,6 @@
 {
   "name": "@cadenway/nest-common",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Plumbing shared by the Cadenway NestJS services and gateways: health routes.",
   "license": "UNLICENSED",
   "repository": {
