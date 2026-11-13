@@ -54,6 +54,70 @@ entities on `rebuild.<consumer>.<entity>`.
 `/outbox` entry point; the realtime gateway, which has no database, consumes events through the main
 entry point only.
 
+## Logging And Tracing
+
+Source: `cw-logging-and-tracing` ([Claude](../.claude/skills/cw-logging-and-tracing/SKILL.md), [Codex](../.codex/skills/cw-logging-and-tracing/SKILL.md)).
+
+All of it comes from `@cadenway/nest-common`. An application never configures pino or the
+OpenTelemetry SDK itself.
+
+### Logs
+
+| Concern      | Rule                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Format       | One JSON line per event, through `nestjs-pino`                                                                                       |
+| Fields       | `service`, `version`, `traceId`, `spanId`, `organizationId`, `userId`, `route`, `status`, `durationMs`, the request id               |
+| Redaction    | Tokens, passwords, cookies, the `authorization` header and e-mail addresses are masked by default; no e-mail address or IP at `info` |
+| Never logged | Request bodies, SQL values, query strings                                                                                            |
+| Level        | `LOG_LEVEL`; `pino-pretty` is a development transport, never a production one                                                        |
+
+### Traces
+
+| Concern          | Rule                                                                                                                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Propagation      | `traceparent` (W3C) in HTTP headers and in NATS message headers                                                                                                                              |
+| Start-up         | `node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import ./telemetry.js`: the only documented way to instrument an ESM application, and NestJS 12 imports Express as ESM |
+| Instrumentations | HTTP, Express, pg, ioredis and undici, listed one by one                                                                                                                                     |
+| Route name       | An interceptor names the span and sets `http.route`: no OpenTelemetry instrumentation supports NestJS 12                                                                                     |
+| Export           | OTLP over HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`; nothing leaves the process when the variable is unset                                                                                       |
+
+### Metrics
+
+| Scope      | Measured                                               |
+| ---------- | ------------------------------------------------------ |
+| Each route | Rate, errors, duration                                 |
+| Messaging  | Outbox lag, consumer lag; an alert fires past 24 hours |
+| Runtime    | PostgreSQL pool use, event-loop delay                  |
+
+### Not installed, on purpose
+
+- `@opentelemetry/instrumentation-nestjs-core`: its supported range stops before NestJS 12.
+- `@opentelemetry/instrumentation-router`: it duplicates the spans of Express 5.
+
+## Background Jobs
+
+Source: `cw-jobs` ([Claude](../.claude/skills/cw-jobs/SKILL.md), [Codex](../.codex/skills/cw-jobs/SKILL.md)).
+
+Jobs live in the service's own PostgreSQL database, through `@cadenway/nest-jobs` (`pg-boss`). There
+is no in-process timer: work held in memory is lost on a restart, and every replica would run it.
+
+| Concern         | Rule                                                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Enqueue         | In the transaction of the use case: the job exists if and only if the data does                                   |
+| Source of truth | The business table (`due_at`, `sent_at`), not the queue: a schedule claims due rows with `FOR UPDATE SKIP LOCKED` |
+| Occurrence key  | A unique key per occurrence, such as `(reminder_id, occurrence)`, makes a second run a no-op                      |
+| Sends           | One job per e-mail or webhook delivery; the idempotency key is the delivery id                                    |
+| Retries         | Bounded, with exponential backoff; then the dead-letter queue and an error log                                    |
+| Schedules       | Cron with an explicit time zone, never the server's local time                                                    |
+| Guarantee       | At least once. Every handler is idempotent: "never twice" cannot be promised over SMTP or HTTP                    |
+| Connections     | A pool of two, apart from the application pool                                                                    |
+
+### What runs as a job
+
+- Reminders, daily digests and due-date alerts.
+- Purges: the trash, the audit log, expired sessions, codes and links.
+- Outgoing webhook deliveries and their retries.
+
 ## References
 
 [Interactive mockup](https://claude.ai/artifact/KYRM7AnsYLiBLBLKy8i4HE), [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et), and [repositories and packages](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N). Use [AGENTS.md](../AGENTS.md) as the local source for ownership and hard limits.
