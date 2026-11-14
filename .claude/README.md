@@ -72,6 +72,7 @@ check that writes files. No agent delegates further.
 | File | Subject | Loads for |
 | --- | --- | --- |
 | `packages.md` | Packages | `packages/**` |
+| `common.md` | Common plumbing | `packages/nest-common/**` |
 | `messaging.md` | Messaging | `packages/nest-messaging/**` |
 | `testing.md` | Tests | `packages/**/*.spec.ts` |
 | `language.md` | Language | always |

@@ -26,6 +26,7 @@ failure ──► retry with backoff (max n) ──► dead-letter stream + erro
 | Headers | `traceparent` (W3C), organization id, event name |
 | Payload | JSON, validated with the zod schema of `@cadenway/contracts` on publish and on receipt |
 | Publisher | One NATS user per service, allowed to publish its own subjects only |
+| Transactions | The relay and the handler of an event without an organization use the system transaction runner of `@cadenway/nest-common/database`; the handler of an event that carries an organization uses the tenant runner, with the organization of the validated envelope |
 
 ## Rebuild
 

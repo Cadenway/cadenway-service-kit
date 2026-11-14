@@ -27,3 +27,6 @@ paths:
 - `drizzle-orm` and `pg` are optional peers: the outbox sits behind the `/outbox` entry point, so a
   gateway without a database can still consume events.
 - Each service connects with its own NATS user, allowed to publish its own subjects only.
+- The outbox relay and the handler of an event without an organization run in the system
+  transaction runner of `@cadenway/nest-common/database`. The handler of an event that carries an
+  organization runs in the tenant runner, with the organization of the validated envelope.

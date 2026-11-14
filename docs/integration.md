@@ -16,6 +16,42 @@ Source: `cw-kit-api-stability` ([Claude](../.claude/skills/cw-kit-api-stability/
 - Rename or removal: deprecate in a minor (JSDoc `@deprecated`, a start-up warning), remove in the next
   major with a migration note per affected service.
 
+## Internal Token, Organization Context And Transactions
+
+Source: rule `common.md` ([Claude](../.claude/rules/common.md), [Codex](../.codex/rules/common.md)).
+
+### Internal token
+
+| Concern      | Rule                                                                                                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format       | A JWT signed with `alg: Ed25519`, valid 60 seconds, with `aud` set to the called service and a `kid` header                                                                      |
+| Issuers      | The API gateway, the realtime gateway, automation-service and integration-service. A service calls another one to act, never to read                                             |
+| Keys         | Signing keys, trusted issuers and their verification keys come from configuration. A verification key is accepted only for the issuer it is configured under                     |
+| Subject      | A user, an automation, a Git integration, the system, or anonymous                                                                                                               |
+| Routes       | The default requires an organization and refuses an anonymous subject. A route with no user or organization (sign-up, sign-in, introspection, intake form, webhooks) declares it |
+| Organization | Taken from the verified token only, carried in an `AsyncLocalStorage`; never from a path, a query string or a body                                                               |
+
+### Transaction runners
+
+`drizzle-orm` and `pg` are optional peers behind the `/database` entry point of `@cadenway/nest-common`.
+
+| Runner | Used by                                                                                  | Issues                                                              |
+| ------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Tenant | A use case acting for one organization                                                   | `SET LOCAL app.organization_id`, read from the organization context |
+| System | Work that crosses organizations: outbox relay, schedules, events without an organization | `SET LOCAL app.system_access`                                       |
+
+Two PostgreSQL roles per service: `<svc>_migrator` runs the migrations, `<svc>_app` runs the service and is subject to the row-level security policies. Nothing else opens a transaction or sets these parameters.
+
+### Idempotency-Key
+
+| Concern    | Rule                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------- |
+| Owner      | An interceptor of `@cadenway/nest-common`; the gateway relays the header and stores nothing       |
+| Storage    | A table in the service's own database, written inside the use case transaction                    |
+| Conflicts  | The same key with another body answers 422; a request still running answers 409                   |
+| Replay     | The stored response is replayed for 24 hours                                                      |
+| Migrations | The table reaches a service through its own Drizzle migrations; a change ships a note per service |
+
 ## Outbox Design
 
 Source: `cw-outbox-design` ([Claude](../.claude/skills/cw-outbox-design/SKILL.md), [Codex](../.codex/skills/cw-outbox-design/SKILL.md)).
