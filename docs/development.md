@@ -45,6 +45,7 @@ Run `/cw-quality` in Claude Code or `$cw-quality` in Codex without arguments for
 
 ```bash
 pnpm format:check
+pnpm test:lint
 pnpm lint
 pnpm typecheck
 pnpm test

@@ -2,6 +2,9 @@ import { Controller, Get } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, type HealthCheckResult } from '@nestjs/terminus';
 
 /**
+ * Class HealthController
+ *
+ * @description
  * Serves the liveness and readiness routes probed by the container healthcheck.
  *
  * Internal to the package: applications import `HealthModule` and never this class, so its
@@ -9,30 +12,53 @@ import { HealthCheck, HealthCheckService, type HealthCheckResult } from '@nestjs
  */
 @Controller('health')
 export class HealthController {
-  constructor(private readonly health: HealthCheckService) {}
-
+  // #region Constructor
   /**
+   * Constructor
+   *
+   * @description
+   * Receives the Terminus service used to execute health checks.
+   *
+   * @param {HealthCheckService} health - Terminus health check service.
+   * @constructor
+   */
+  public constructor(private readonly health: HealthCheckService) {}
+  // #endregion
+
+  // #region Methods
+  /**
+   * Method live
+   *
+   * @description
    * Tells the orchestrator that the process is running.
    *
    * Runs no indicator on purpose: an unreachable dependency must not get a healthy process
    * restarted. Answers 200 with the Terminus body, whose `status` is `ok`.
+   *
+   * @returns {Promise<HealthCheckResult>} The liveness result.
    */
   @Get('live')
   @HealthCheck()
-  live(): Promise<HealthCheckResult> {
+  public live(): Promise<HealthCheckResult> {
     return this.health.check([]);
   }
 
   /**
+   * Method ready
+   *
+   * @description
    * Tells the orchestrator that the application accepts requests.
    *
    * Runs no dependency indicator yet, so it answers 200 with the Terminus body as soon as the
    * application listens. It goes through Terminus already so that the body keeps the same shape
    * when indicators are added.
+   *
+   * @returns {Promise<HealthCheckResult>} The readiness result.
    */
   @Get('ready')
   @HealthCheck()
-  ready(): Promise<HealthCheckResult> {
+  public ready(): Promise<HealthCheckResult> {
     return this.health.check([]);
   }
+  // #endregion
 }

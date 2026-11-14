@@ -31,6 +31,7 @@ checks during bootstrap.
 
 ```bash
 pnpm format:check
+pnpm test:lint
 pnpm lint
 pnpm typecheck
 pnpm test
@@ -39,6 +40,8 @@ pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
 ```
+
+Run the [architecture check](docs/development.md#architecture-check) once the released verifier is installed.
 
 ## Tooling: this repository ships its own `.claude/`
 

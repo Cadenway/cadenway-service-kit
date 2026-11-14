@@ -4,7 +4,7 @@
 
 ## Status
 
-The checkout contains three runtime packages. Their package manifests document the implemented exports.
+The checkout contains three runtime packages and a shared health module. Their package manifests document the implemented exports.
 
 ## Purpose and target structure
 

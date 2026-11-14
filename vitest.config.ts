@@ -5,7 +5,10 @@ export default defineConfig({
     projects: [
       {
         extends: true,
-        test: { name: 'unit', include: ['packages/*/src/**/*.spec.ts'] },
+        test: {
+          name: 'unit',
+          include: ['packages/*/src/**/*.spec.ts'],
+        },
       },
       {
         extends: true,

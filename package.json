@@ -15,12 +15,13 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "test:lint": "node --test rules/documentation.test.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run --project unit",
     "test:architecture": "node --test tests/architecture/project.test.mjs",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
-    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build",
+    "quality": "pnpm format:check && pnpm test:lint && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
@@ -33,6 +34,7 @@
     "@vitest/coverage-v8": "catalog:",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsdoc": "^65.4.5",
     "globals": "^17.14.0",
     "prettier": "^3.9.10",
     "typescript": "catalog:",
