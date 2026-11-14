@@ -6,7 +6,7 @@
 
 ## Package boundaries
 
-`@cadenway/nest-common`, `@cadenway/nest-messaging`, `@cadenway/nest-jobs`, and `@cadenway/nest-testing` provide shared backend plumbing. Services consume published releases; the kit does not own business rules. Package APIs and delivery behavior below are planned until implementation exists.
+`@cadenway/nest-common`, `@cadenway/nest-messaging`, and `@cadenway/nest-jobs` provide shared backend runtime plumbing. Services consume published releases and own their business rules. Test infrastructure and architecture verification belong to [`@cadenway/nest-testing`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) in cadenway-tooling. Package APIs and delivery behavior below are planned until implementation exists.
 
 ## Kit API Stability
 

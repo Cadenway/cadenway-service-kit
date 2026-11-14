@@ -2,11 +2,7 @@
 
 [Documentation index](README.md) · [Repository overview](../.github/README.md) · [Repository instructions](../AGENTS.md)
 
-## Bootstrap status
-
-At the time this documentation was written, this checkout has no `package.json`, application source tree, or GitHub workflow files. The target architecture, scripts, and workflows in this guide must be created and verified during bootstrap.
-
-The commands below are the documented **target workflow**, copied from the repository overview and instructions. They are not proof that scripts, infrastructure, CI, or dependencies currently exist. Inspect the repository's actual manifests and files before running them, and report unavailable checks rather than inventing replacements. Run Git, pnpm, build, and test commands with this repository as the working directory, never from the parent workspace.
+Run Git, pnpm, build, and test commands with this repository as the working directory.
 
 ## Before making a change
 
@@ -15,7 +11,7 @@ The commands below are the documented **target workflow**, copied from the repos
 - `package.json` for versions and scripts once the repository is bootstrapped. Do not restate
   versions elsewhere: a copy goes stale.
 
-## Planned setup
+## Setup
 
 Requirements: Node.js LTS and pnpm (versions in `package.json`), Docker for the integration tests.
 
@@ -37,17 +33,15 @@ narrowest check that covers the change first, then widen:
 | nest-common                     | `pnpm test packages/nest-common`                |
 | nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
 | nest-jobs                       | `pnpm test:integration packages/nest-jobs`      |
-| nest-testing                    | `pnpm test packages/nest-testing`               |
 | Any change to a package         | a changeset                                     |
 | Docs or agent instructions only | Scoped formatting and link review               |
 
 Report the commands you actually ran and their results; a check you did not run is reported as not
 run.
 
-## Planned full check list
+## Full check list
 
-The following commands match the planned local gate. Run `/cw-quality` in Claude Code or
-`$cw-quality` in Codex without arguments. Verify CI coverage once workflows exist.
+Run `/cw-quality` in Claude Code or `$cw-quality` in Codex without arguments for the local gate.
 
 ```bash
 pnpm format:check
@@ -58,6 +52,10 @@ pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
 ```
+
+## Architecture check
+
+The kit runs the `kit` profile of [`@cadenway/nest-testing/architecture`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing). The local runner is ready for the first release exposing that subpath from cadenway-tooling. Add the published version with `pnpm add -Dw @cadenway/nest-testing@<released-version>`, commit the lockfile, and run `pnpm test:architecture`. Add that command to the `quality` script and the CI quality job after `pnpm test` in the same change.
 
 ## Collaboration and release
 

@@ -11,8 +11,8 @@
 
 ## TL;DR for every task
 
-1. The four planned packages for services and gateways are `@cadenway/nest-common`, `@cadenway/nest-messaging`, `@cadenway/nest-jobs`, `@cadenway/nest-testing`.
-2. Plumbing only: configuration, auth guards, organization context, logs, traces, health, errors, pagination, NATS, outbox, background jobs, test helpers. Never a business rule.
+1. This kit owns `@cadenway/nest-common`, `@cadenway/nest-messaging`, and `@cadenway/nest-jobs`. The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) is maintained in cadenway-tooling.
+2. The runtime packages cover configuration, auth guards, organization context, logs, traces, health, errors, pagination, NATS, outbox and background jobs. Business rules belong to the services.
 3. `nest-messaging` is typed by `@cadenway/contracts`: it publishes and consumes exactly the shapes defined there.
 4. Services and gateways will receive package updates through Renovate. Keep the public API stable and deprecate before removing.
 5. Package changes require a changeset. The release workflow publishes from CI.
@@ -38,6 +38,8 @@ pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
 ```
+
+Run the [architecture check](docs/development.md#architecture-check) once the released verifier is installed.
 
 ## Tooling: this repository ships its own `.claude/`
 

@@ -4,24 +4,22 @@
 
 ## Status
 
-At the time this documentation was written, this checkout has no `package.json`, application source tree, or GitHub workflow files. The target architecture, scripts, and workflows in this guide must be created and verified during bootstrap.
-
-The following architecture is the target recorded in [AGENTS.md](../AGENTS.md). Paths and integrations are design boundaries, not evidence that files or services already exist.
+The checkout contains three runtime packages. Their package manifests document the implemented exports.
 
 ## Purpose and target structure
 
-cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes four packages; the front end never depends on it.
+cadenway-service-kit publishes the three runtime packages shared by NestJS services and gateways.
 
 | Package                    | Provides                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
 | `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
 | `@cadenway/nest-jobs`      | Durable background jobs kept in the service's own PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, dead letters, cron schedules                             |
-| `@cadenway/nest-testing`   | Disposable PostgreSQL, NATS and Redis for tests, fakes of third-party HTTP services, mockup-based fixtures (Atelier Nord, Sprint 14)                                                              |
 
 ## Architectural ownership
 
-- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`, `packages/nest-testing/`: one Nest module or helper set each.
+- [Hexagonal architecture for NestJS services](hexagonal-architecture.md) defines the service and gateway profiles and module template. The architecture verifier is provided by [`@cadenway/nest-testing/architecture`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) from cadenway-tooling.
+- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`: one runtime module or helper set each.
 
 ## Boundaries
 
