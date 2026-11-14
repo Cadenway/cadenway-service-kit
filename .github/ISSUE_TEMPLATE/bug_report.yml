@@ -49,7 +49,7 @@ body:
       options:
         - '@cadenway/nest-common'
         - '@cadenway/nest-messaging'
-        - '@cadenway/nest-testing'
+        - '@cadenway/nest-jobs'
     validations:
       required: true
 

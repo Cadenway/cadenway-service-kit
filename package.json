@@ -1,7 +1,7 @@
 {
   "name": "cadenway-service-kit",
   "version": "0.0.0",
-  "description": "Cadenway service kit: the technical base shared by the NestJS services and gateways.",
+  "description": "Shared runtime packages for Cadenway NestJS services and gateways.",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "test": "vitest run --project unit",
+    "test:architecture": "node --test tests/architecture/project.test.mjs",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
     "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
