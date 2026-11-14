@@ -3,7 +3,8 @@
 Plumbing shared by the Cadenway NestJS services and gateways. Implemented today: typed
 configuration, structured logs, OpenTelemetry start-up, the HTTP formats (errors, validation,
 pagination, entity tags, body limit), the internal token with the organization context, the
-transaction runners with `Idempotency-Key`, the internal HTTP client, and the health routes. The rest of what the
+transaction runners with `Idempotency-Key`, the internal HTTP client, the health routes with
+dependency indicators, and one bootstrap helper that applies all of it. The rest of what the
 [repository instructions](../../AGENTS.md) list for this package is not implemented yet.
 
 `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api`, `reflect-metadata`, `rxjs` and `zod` are
@@ -16,6 +17,68 @@ only by the `/database` entry point.
 | `@cadenway/nest-common/database`  | PostgreSQL pool, tenant and system transaction runners, `Idempotency-Key` |
 | `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                        |
 | `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node             |
+
+## Bootstrap
+
+`createApplication` creates the NestJS application with every shared format applied, so the
+`main.ts` of a service stays a few lines:
+
+```ts
+import { createApplication, loadConfig } from '@cadenway/nest-common';
+
+import { AppModule } from './app.module.js';
+import { appConfigSchema } from './config/app-config.js';
+
+const config = loadConfig(appConfigSchema);
+const app = await createApplication(AppModule, {
+  service: 'task-service',
+  config,
+  internalToken: {
+    verifier: {
+      audience: config.INTERNAL_TOKEN_AUDIENCE,
+      trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+    },
+  },
+});
+await app.listen(config.PORT);
+```
+
+| Installed                                                    | From                                                         |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| Structured logs, NestJS logger routed to them                | [Logs](#logs)                                                |
+| `ProblemFilter` for every error                              | [Errors](#errors)                                            |
+| `ZodValidationPipe` for `zodDto` parameters                  | [Validation](#validation)                                    |
+| `RouteNameInterceptor`                                       | [Telemetry](#telemetry)                                      |
+| `EtagInterceptor`                                            | [Entity tags](#entity-tags)                                  |
+| Internal token guard and organization context                | [Internal token](#internal-token), only with `internalToken` |
+| JSON body limit of 1 MB                                      | [Body limit](#body-limit)                                    |
+| Request deadline of 10 seconds                               | [Request deadline](#request-deadline)                        |
+| Shutdown hooks, telemetry flushed when the application stops | `shutdownTelemetry`                                          |
+
+It does not listen, and it imports neither `HealthModule` nor `DatabaseModule`: the module of the
+application declares what it depends on.
+
+| Option                    | Default                          | Effect                                                                                       |
+| ------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------- |
+| `service`                 | Required                         | Name in the logs                                                                             |
+| `version`                 | `readPackageVersion()`           | Version in the logs, read from `package.json` in the working directory, `0.0.0` when missing |
+| `config`                  | `info`, JSON lines, `production` | `LOG_LEVEL`, `LOG_PRETTY` and `NODE_ENV` of the validated configuration                      |
+| `internalToken`           | None                             | Verifier and signer options. Without it no route requires a token                            |
+| `requestBudgetMs`         | 10 000                           | Time a request may take, bounding its calls to other services                                |
+| `jsonBodyLimitBytes`      | 1 048 576                        | Largest JSON body                                                                            |
+| `acceptIncomingRequestId` | `true`                           | Keeps a well-formed incoming `X-Request-Id`                                                  |
+| `logDestination`          | stdout                           | Stream that receives the lines, for tests                                                    |
+
+A service sets `internalToken.verifier`; a public gateway, which authenticates sessions, sets
+`internalToken.signer` only.
+
+The telemetry of the same service is one more file, preloaded before `main.js`:
+
+```ts
+import { readPackageVersion, startTelemetry } from '@cadenway/nest-common/telemetry';
+
+startTelemetry({ service: 'task-service', version: readPackageVersion() });
+```
 
 ## Configuration
 
@@ -575,25 +638,63 @@ service.
 
 ## Health module
 
-`HealthModule` adds two routes, built on `@nestjs/terminus`:
+`HealthModule` adds two routes, built on `@nestjs/terminus`. They are exempt from the internal
+token.
 
-| Route               | Purpose                                             | Answer                    |
-| ------------------- | --------------------------------------------------- | ------------------------- |
-| `GET /health/live`  | The process is running. Checks nothing, on purpose. | 200 and the Terminus body |
-| `GET /health/ready` | The application accepts requests.                   | 200 and the Terminus body |
+| Route               | Purpose                                             | Answer                                |
+| ------------------- | --------------------------------------------------- | ------------------------------------- |
+| `GET /health/live`  | The process is running. Checks nothing, on purpose. | 200 and the Terminus body             |
+| `GET /health/ready` | The application accepts requests.                   | 200, or 503 when a dependency is down |
 
-The Terminus body of a healthy application is `{ "status": "ok", "info": {}, "error": {}, "details": {} }`.
+Imported as the bare class, the module takes no option and readiness answers 200 as soon as the
+application listens: `{ "status": "ok", "info": {}, "error": {}, "details": {} }`.
 
 ```ts
-import { Module } from '@nestjs/common';
-import { HealthModule } from '@cadenway/nest-common';
-
 @Module({ imports: [HealthModule] })
 export class AppModule {}
 ```
 
-### Options
+`HealthModule.forRoot({ indicators })` makes readiness check the dependencies of the application.
+`forRootAsync` builds the indicators from injected providers, which must be visible globally, as
+those of `DatabaseModule` are:
 
-None. Readiness runs no dependency indicator yet: it answers 200 as soon as the application
-listens. Indicators are meant to arrive behind an option whose default keeps this behavior, so the
-import above stays valid.
+```ts
+HealthModule.forRootAsync({
+  inject: [DATABASE_POOL],
+  useFactory: (pool: Pool) => ({ indicators: [postgresIndicator(pool)] }),
+});
+```
+
+| Indicator                          | Checks                                                                |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `postgresIndicator(pool, name?)`   | `select 1` through the `pg` pool; key `postgres`                      |
+| `redisIndicator(client, name?)`    | `PING` on an `ioredis` client; key `redis`                            |
+| `natsIndicator(connection, name?)` | The connection is open and `flush()` makes the round trip; key `nats` |
+| `{ name, check() }`                | Any other dependency: `check` resolves when it answers                |
+
+The indicators take structural types, so this package depends on no driver. The NATS connection
+is handed over by `@cadenway/nest-messaging`, which owns it.
+
+| Option       | Default | Effect                                                       |
+| ------------ | ------- | ------------------------------------------------------------ |
+| `indicators` | `[]`    | Dependencies readiness checks                                |
+| `timeoutMs`  | 1000    | Time one check may take before the dependency counts as down |
+
+When a dependency is down, readiness answers 503 with the Terminus body, not a problem, because
+orchestrators and dashboards read it:
+
+```json
+{
+  "status": "error",
+  "info": { "postgres": { "status": "up" } },
+  "error": { "redis": { "status": "down", "message": "unreachable" } },
+  "details": {
+    "postgres": { "status": "up" },
+    "redis": { "status": "down", "message": "unreachable" }
+  }
+}
+```
+
+`message` is `unreachable` or `timeout`: the body names dependencies and their state, never an
+address or an error text. Liveness never runs an indicator: a dependency that is down must not get
+a healthy process restarted.

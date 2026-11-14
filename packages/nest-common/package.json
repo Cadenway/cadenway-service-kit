@@ -85,6 +85,7 @@
     "@types/supertest": "^7.2.1",
     "drizzle-kit": "^0.31.11",
     "drizzle-orm": "catalog:",
+    "ioredis": "^6.0.0",
     "pg": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
