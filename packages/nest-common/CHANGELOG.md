@@ -1,5 +1,11 @@
 # @cadenway/nest-common
 
+## 0.1.2
+
+### Patch Changes
+
+- 851bd50: Document the health module and its liveness and readiness contracts.
+
 ## 0.1.1
 
 ### Patch Changes
