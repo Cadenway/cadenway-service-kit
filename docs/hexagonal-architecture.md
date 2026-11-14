@@ -70,7 +70,7 @@ Gateway handlers and technical capabilities follow the same direction at their r
 
 ## Consumer rollout
 
-The architecture suite in each service and gateway imports `@cadenway/nest-testing/architecture`. Once a version exposing that entry is available through the normal Changesets release, update the development dependency with pnpm in each checkout and commit the resulting lockfile. Run `pnpm install --frozen-lockfile` and `pnpm test:architecture`. Add the command after `test:lint` in `pnpm quality` and in the CI quality job in the same change as the dependency update. Each checkout can adopt the release independently.
+The architecture suite in each service and gateway imports `@cadenway/nest-testing/architecture`. Once a version exposing that entry is available through the normal Changesets release, update the development dependency with pnpm in each checkout and commit the resulting lockfile. Run `pnpm install --frozen-lockfile` and `pnpm test:architecture`. Add that command to `pnpm quality` and to the CI quality job in the same change as the dependency update. Each checkout can adopt the release independently.
 
 ## MODULE.md template
 

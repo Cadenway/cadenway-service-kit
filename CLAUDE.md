@@ -35,6 +35,7 @@ pnpm test:lint
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:architecture
 pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
