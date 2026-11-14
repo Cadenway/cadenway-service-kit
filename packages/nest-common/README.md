@@ -2,18 +2,20 @@
 
 Plumbing shared by the Cadenway NestJS services and gateways. Implemented today: typed
 configuration, structured logs, OpenTelemetry start-up, the HTTP formats (errors, validation,
-pagination, entity tags, body limit), the internal token with the organization context, and the
-health routes. The rest of what the
+pagination, entity tags, body limit), the internal token with the organization context, the
+transaction runners with `Idempotency-Key`, and the health routes. The rest of what the
 [repository instructions](../../AGENTS.md) list for this package is not implemented yet.
 
 `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api`, `reflect-metadata`, `rxjs` and `zod` are
-peer dependencies: the application provides them.
+peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers, needed
+only by the `/database` entry point.
 
-| Entry point                       | Holds                                                                    |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `@cadenway/nest-common`           | Configuration, logs, HTTP formats, route-name interceptor, health module |
-| `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                       |
-| `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node            |
+| Entry point                       | Holds                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| `@cadenway/nest-common`           | Configuration, logs, HTTP formats, route-name interceptor, health module  |
+| `@cadenway/nest-common/database`  | PostgreSQL pool, tenant and system transaction runners, `Idempotency-Key` |
+| `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                        |
+| `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node             |
 
 ## Configuration
 
@@ -382,6 +384,127 @@ a query string or a body. The interceptor carries them in an `AsyncLocalStorage`
 `runWithOrganizationContext` is for trusted entry points other than HTTP: the handler of an event
 whose envelope was validated against its contract, or of a job the service itself enqueued. An
 application never calls it for an HTTP request, and never builds a context from request data.
+
+## Database
+
+Everything below comes from `@cadenway/nest-common/database`. A gateway without a database never
+imports it, and needs neither `drizzle-orm` nor `pg`.
+
+```ts
+DatabaseModule.forRoot({
+  connectionString: config.DATABASE_URL,
+  schema,
+  applicationName: 'task-service',
+  idempotency: true,
+});
+```
+
+| Option                | Default  | Effect                                                                            |
+| --------------------- | -------- | --------------------------------------------------------------------------------- |
+| `connectionString`    | Required | Connection string of the application role (`databaseConfigShape`: `DATABASE_URL`) |
+| `schema`              | None     | Drizzle schema of the service, for its relational queries                         |
+| `poolSize`            | 5        | Maximum number of connections                                                     |
+| `connectionTimeoutMs` | 5000     | How long a transaction waits for a free connection                                |
+| `applicationName`     | Unset    | Name shown in `pg_stat_activity`                                                  |
+| `idempotency`         | `false`  | Registers the `Idempotency-Key` interceptor                                       |
+
+The module is global. It provides `TenantTransactionRunner`, `SystemTransactionRunner` and the
+pool (`DATABASE_POOL`), and closes the pool when the application shuts down.
+
+### Transaction runners
+
+Nothing else opens a transaction. A unit of work is one call to `run`:
+
+```ts
+await this.tenant.run(async (tx) => {
+  const tasks = new DrizzleTaskRepository(tx.db);
+  // tx.client.query(text, values) runs raw SQL on the same connection.
+});
+```
+
+| Runner                    | For                                                                                                            | Sets, for the transaction only                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `TenantTransactionRunner` | A use case acting for one organization                                                                         | `app.organization_id` = the organization of the context |
+| `SystemTransactionRunner` | Work that crosses organizations or has none: outbox relay, schedules, events or routes without an organization | `app.system_access` = `on`                              |
+
+- The tenant runner takes the organization from the organization context, never from an argument.
+  It throws when there is none or when its id is not a UUID.
+- The work commits when it resolves and rolls back when it rejects. A connection whose rollback
+  fails is discarded.
+- A `run` called inside a transaction of the same kind (and, for a tenant, the same organization)
+  joins it. Starting a system transaction inside a tenant one, or the reverse, throws: a use case
+  never changes its own access.
+- `run(work, { isolationLevel, readOnly })`: `read committed` and read-write by default.
+- The system runner removes the filter: every query of a system transaction names the rows it
+  means. Never use it to serve the request of a user.
+
+### Row-level security
+
+Two PostgreSQL roles per service: `<svc>_migrator` owns the tables and runs the migrations;
+`<svc>_app` runs the service, holds no DDL right and is subject to the policies. Every table with
+an `organization_id uuid` column declares the policy of the kit:
+
+```ts
+pgTable('tasks', {/* columns */}, () => [organizationPolicy()]);
+```
+
+Its predicate, also exported as `organizationIsolation`:
+
+```sql
+organization_id = nullif(current_setting('app.organization_id', true), '')::uuid
+or current_setting('app.system_access', true) = 'on'
+```
+
+With neither parameter set, as on a connection used outside the runners, no row matches. Drizzle
+enables row-level security on a table that declares a policy; **forcing it is one more statement
+in the migration** (`ALTER TABLE "tasks" FORCE ROW LEVEL SECURITY;`), which drizzle-kit does not
+generate. Row-level security is the second barrier: a query still filters on `organization_id`.
+
+### Idempotency-Key
+
+With `idempotency: true`, a route marked with `@Idempotent()` honours the `Idempotency-Key`
+header. The key and the response are stored in the service's own database, in the same transaction
+as the use case: the stored response exists if and only if the effect was committed.
+
+| Situation                                         | Answer                                                                                           |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| First request with a key                          | The handler runs; its response is stored                                                         |
+| Same key, same request, within 24 hours           | The stored response, with `Idempotent-Replayed: true`; the handler does not run                  |
+| Same key, another method, path or body            | 422 `idempotency.key-reused`                                                                     |
+| Same key while the first request is still running | 409 `idempotency.in-progress`                                                                    |
+| Handler fails                                     | Its error; nothing is stored and a retry runs again                                              |
+| No header                                         | The handler runs normally; 400 `idempotency.key-required` with `@Idempotent({ required: true })` |
+| Malformed key                                     | 400 `idempotency.key-invalid` (1 to 255 printable ASCII characters)                              |
+
+What a marked route must respect:
+
+- The interceptor opens the transaction and runs the handler inside it; the `run` of the use case
+  joins it. The handler must therefore not call another service before the use case.
+- The replayed status is the one NestJS applies from `@HttpCode()` or its default (201 for `POST`),
+  not a manual `response.status()`. The `Location` header is stored and replayed; `ETag` is derived
+  again from the replayed body.
+- A key belongs to the organization of the verified token. Requests without an organization share
+  one namespace and are served in a system transaction: their keys must be unguessable, as a UUID
+  is.
+- Expired keys are overwritten when used again, never deleted by the interceptor. Schedule
+  `purgeExpiredIdempotencyKeys(tx)` in a system transaction.
+
+### Getting the kit tables into the migrations of a service
+
+`drizzle.config.ts` of a service reads `src/modules/*/infrastructure/persistence/*.schema.ts`. A
+table of the kit enters the migrations of the service by being re-exported from one such file:
+
+```ts
+// src/modules/<module>/infrastructure/persistence/kit.schema.ts
+export { idempotencyKeys } from '@cadenway/nest-common/database';
+```
+
+`pnpm migration:generate` then writes the table, its unique constraint, its index, `ENABLE ROW
+LEVEL SECURITY` and its policy into the service's own migration history (checked with drizzle-kit
+against a packed install). Add `ALTER TABLE "idempotency_keys" FORCE ROW LEVEL SECURITY;` to that
+migration. When a later version of the kit changes a table, upgrading the package and generating
+again produces the migration of the change; the changeset of that version says so for every
+service.
 
 ## Health module
 

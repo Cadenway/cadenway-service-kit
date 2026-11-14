@@ -1,0 +1,491 @@
+import { createHash } from 'node:crypto';
+
+import {
+  Injectable,
+  SetMetadata,
+  type CallHandler,
+  type CustomDecorator,
+  type ExecutionContext,
+  type NestInterceptor,
+} from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants.js';
+import { Reflector } from '@nestjs/core';
+import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { from, lastValueFrom, type Observable } from 'rxjs';
+
+import { principalOf } from '../auth/internal-token.guard.js';
+import type { InternalPrincipal } from '../auth/internal-token.js';
+import {
+  getOrganizationContext,
+  runWithOrganizationContext,
+} from '../auth/organization-context.js';
+import { ProblemException } from '../problem/problem.js';
+import idempotencyKeys from './idempotency.schema.js';
+import {
+  SystemTransactionRunner,
+  TenantTransactionRunner,
+  type DatabaseSchema,
+  type TransactionScope,
+} from './transaction-runner.js';
+
+/**
+ * Constant IDEMPOTENCY_KEY_HEADER
+ *
+ * @description
+ * Request header carrying the idempotency key (IETF draft `idempotency-key-header`).
+ *
+ * @type {string}
+ */
+export const IDEMPOTENCY_KEY_HEADER: string = 'Idempotency-Key';
+
+/**
+ * Constant IDEMPOTENT_REPLAYED_HEADER
+ *
+ * @description
+ * Response header set to `true` when the response is a replay of a stored one.
+ *
+ * @type {string}
+ */
+export const IDEMPOTENT_REPLAYED_HEADER: string = 'Idempotent-Replayed';
+
+/**
+ * Constant IDEMPOTENCY_RETENTION_HOURS
+ *
+ * @description
+ * How long a stored response is replayed, in hours.
+ *
+ * @type {number}
+ */
+export const IDEMPOTENCY_RETENTION_HOURS: number = 24;
+
+/**
+ * Interface IdempotentOptions
+ *
+ * @description
+ * Options of `@Idempotent()`.
+ */
+export interface IdempotentOptions {
+  // #region Properties
+  /**
+   * Property required
+   *
+   * @description
+   * Refuses a request without the header. Defaults to `false`: without a key the route runs as
+   * if it were not marked.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly required?: boolean;
+  // #endregion
+}
+
+/**
+ * Interface IdempotentRequest
+ *
+ * @description
+ * Part of the Express request the interceptor reads.
+ */
+interface IdempotentRequest {
+  // #region Properties
+  /**
+   * Property method
+   *
+   * @description
+   * HTTP method.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly method: string;
+
+  /**
+   * Property originalUrl
+   *
+   * @description
+   * Path and query string as received.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly originalUrl: string;
+
+  /**
+   * Property headers
+   *
+   * @description
+   * Request headers, lower-cased by Node.
+   *
+   * @type {Readonly<Record<string, string | string[] | undefined>>}
+   * @readonly
+   */
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+
+  /**
+   * Property body
+   *
+   * @description
+   * Parsed request body.
+   *
+   * @type {unknown}
+   * @readonly
+   */
+  readonly body?: unknown;
+  // #endregion
+}
+
+/**
+ * Interface IdempotentResponse
+ *
+ * @description
+ * Part of the Express response the interceptor uses.
+ */
+interface IdempotentResponse {
+  // #region Methods
+  /**
+   * Method getHeader
+   *
+   * @description
+   * Reads a response header set so far.
+   *
+   * @param {string} name - Header name.
+   * @returns {unknown} Its value, or `undefined`.
+   */
+  getHeader(name: string): unknown;
+
+  /**
+   * Method setHeader
+   *
+   * @description
+   * Sets a response header.
+   *
+   * @param {string} name - Header name.
+   * @param {string} value - Header value.
+   * @returns {unknown} Ignored.
+   */
+  setHeader(name: string, value: string): unknown;
+  // #endregion
+}
+
+/**
+ * Constant IDEMPOTENT_KEY
+ *
+ * @description
+ * Metadata key of `@Idempotent()`.
+ *
+ * @type {string}
+ */
+const IDEMPOTENT_KEY: string = 'cadenway:idempotent';
+
+/**
+ * Constant KEY_PATTERN
+ *
+ * @description
+ * Shape of an accepted key: 1 to 255 printable ASCII characters.
+ *
+ * @type {RegExp}
+ */
+const KEY_PATTERN: RegExp = /^[\x21-\x7e]{1,255}$/u;
+
+/**
+ * Constant REPLAYED_HEADERS
+ *
+ * @description
+ * Response headers stored with the body and set again on a replay. `ETag` is not among them:
+ * it is derived from the replayed body.
+ *
+ * @type {readonly string[]}
+ */
+const REPLAYED_HEADERS: readonly string[] = ['location'];
+
+/**
+ * Function Idempotent
+ *
+ * @description
+ * Marks a route whose effect must happen once per `Idempotency-Key`: a creation, a send, a
+ * payment. The handler then runs inside the transaction that stores the key, see
+ * `IdempotencyInterceptor`.
+ *
+ * @param {IdempotentOptions} options - Whether the header is mandatory.
+ * @returns {CustomDecorator} The method decorator.
+ */
+export function Idempotent(options: IdempotentOptions = {}): CustomDecorator {
+  return SetMetadata(IDEMPOTENT_KEY, options);
+}
+
+/**
+ * Function requestFingerprint
+ *
+ * @description
+ * Computes what identifies a request besides its key: the method, the path with its query
+ * string, and the parsed body.
+ *
+ * @param {IdempotentRequest} request - Incoming request.
+ * @returns {string} A SHA-256 digest, in base64url.
+ */
+function requestFingerprint(request: IdempotentRequest): string {
+  return createHash('sha256')
+    .update(`${request.method}\n${request.originalUrl}\n${JSON.stringify(request.body ?? null)}`)
+    .digest('base64url');
+}
+
+/**
+ * Function purgeExpiredIdempotencyKeys
+ *
+ * @description
+ * Deletes stored responses past their retention. Run it from a scheduled job, in a system
+ * transaction; the interceptor itself never deletes, it only overwrites an expired key that is
+ * used again.
+ *
+ * @param {TransactionScope<TSchema>} scope - Scope of a system transaction.
+ * @returns {Promise<number>} Number of rows deleted.
+ */
+export async function purgeExpiredIdempotencyKeys<TSchema extends DatabaseSchema>(
+  scope: TransactionScope<TSchema>,
+): Promise<number> {
+  const deleted: { id: string }[] = await scope.db
+    .delete(idempotencyKeys)
+    .where(lt(idempotencyKeys.expiresAt, sql`now()`))
+    .returning({ id: idempotencyKeys.id });
+  return deleted.length;
+}
+
+/**
+ * Class IdempotencyInterceptor
+ *
+ * @description
+ * Implements `Idempotency-Key` for the routes marked with `@Idempotent()`. The key and the
+ * response are stored in the service's own database, in the same transaction as the use case:
+ * the stored response exists if and only if the effect was committed.
+ *
+ * | Situation                                        | Answer                                    |
+ * | ------------------------------------------------ | ----------------------------------------- |
+ * | First request with a key                         | The handler runs; its response is stored  |
+ * | Same key, same request, within 24 hours          | The stored response, `Idempotent-Replayed: true`; the handler does not run |
+ * | Same key, another method, path or body           | 422 `idempotency.key-reused`              |
+ * | Same key while the first request is still running | 409 `idempotency.in-progress`            |
+ * | Handler fails                                    | Its error; nothing is stored, a retry runs again |
+ * | No header                                        | The handler runs normally, or 400 `idempotency.key-required` with `required` |
+ * | Malformed key                                    | 400 `idempotency.key-invalid`             |
+ *
+ * How it works: the interceptor opens the transaction (tenant runner for a request with an
+ * organization, system runner otherwise), takes a transaction-level advisory lock on the key,
+ * and runs the handler inside. The `run` of the use case joins that transaction. Consequences
+ * for a marked route: the whole handler is in the transaction, so it must not call another
+ * service before the use case; and its status comes from `@HttpCode()` or the NestJS default,
+ * not from a manual `response.status()`.
+ *
+ * A key belongs to the organization of the verified token. Requests without an organization
+ * share one namespace: their keys must be unguessable, as a UUID is.
+ */
+@Injectable()
+export class IdempotencyInterceptor implements NestInterceptor {
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Receives the two runners and the metadata reader.
+   *
+   * @param {TenantTransactionRunner<DatabaseSchema>} tenant - Runner of requests with an organization.
+   * @param {SystemTransactionRunner<DatabaseSchema>} system - Runner of requests without one.
+   * @param {Reflector} reflector - Reader of the route declarations.
+   * @constructor
+   */
+  public constructor(
+    private readonly tenant: TenantTransactionRunner<DatabaseSchema>,
+    private readonly system: SystemTransactionRunner<DatabaseSchema>,
+    private readonly reflector: Reflector,
+  ) {}
+  // #endregion
+
+  // #region Methods
+  /**
+   * Method intercept
+   *
+   * @description
+   * Applies the idempotency protocol to a marked route; any other route passes through.
+   *
+   * @param {ExecutionContext} context - Execution context of the request.
+   * @param {CallHandler} next - Rest of the request pipeline.
+   * @returns {Observable<unknown>} The response stream, fresh or replayed.
+   * @throws {ProblemException} 400, 409 or 422, as listed on the class.
+   */
+  public intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const options: IdempotentOptions | undefined =
+      context.getType() === 'http'
+        ? this.reflector.get<IdempotentOptions | undefined>(IDEMPOTENT_KEY, context.getHandler())
+        : undefined;
+    if (options === undefined) {
+      return next.handle();
+    }
+    const request: IdempotentRequest = context.switchToHttp().getRequest();
+    const header: string | string[] | undefined = request.headers['idempotency-key'];
+    if (header === undefined) {
+      if (options.required === true) {
+        throw new ProblemException({
+          status: 400,
+          code: 'idempotency.key-required',
+          detail: 'This route requires an Idempotency-Key header.',
+        });
+      }
+      return next.handle();
+    }
+    if (typeof header !== 'string' || !KEY_PATTERN.test(header)) {
+      throw new ProblemException({
+        status: 400,
+        code: 'idempotency.key-invalid',
+        detail: 'Idempotency-Key must be 1 to 255 printable ASCII characters.',
+      });
+    }
+    return from(this.execute(context, next, request, header));
+  }
+
+  /**
+   * Method execute
+   *
+   * @description
+   * Opens the transaction of the request and runs the protocol inside it.
+   *
+   * @param {ExecutionContext} context - Execution context of the request.
+   * @param {CallHandler} next - Rest of the request pipeline.
+   * @param {IdempotentRequest} request - Incoming request.
+   * @param {string} key - Validated idempotency key.
+   * @returns {Promise<unknown>} The response body, fresh or replayed.
+   */
+  private execute(
+    context: ExecutionContext,
+    next: CallHandler,
+    request: IdempotentRequest,
+    key: string,
+  ): Promise<unknown> {
+    const principal: InternalPrincipal | undefined = principalOf(request);
+    const organizationId: string | null = principal?.organizationId ?? null;
+    const work: (scope: TransactionScope<DatabaseSchema>) => Promise<unknown> = (
+      scope: TransactionScope<DatabaseSchema>,
+    ) => this.runOnce(context, next, request, key, organizationId, scope);
+    if (principal === undefined || organizationId === null) {
+      return this.system.run(work);
+    }
+    // The organization context interceptor may be registered after this one: open the context
+    // from the same verified principal rather than depend on the order.
+    return getOrganizationContext() === undefined
+      ? runWithOrganizationContext(
+          {
+            organizationId,
+            actor: principal.actor,
+            role: principal.role,
+            scopes: principal.scopes,
+          },
+          () => this.tenant.run(work),
+        )
+      : this.tenant.run(work);
+  }
+
+  /**
+   * Method runOnce
+   *
+   * @description
+   * Inside the transaction: locks the key, replays a stored response or runs the handler and
+   * stores its response.
+   *
+   * @param {ExecutionContext} context - Execution context of the request.
+   * @param {CallHandler} next - Rest of the request pipeline.
+   * @param {IdempotentRequest} request - Incoming request.
+   * @param {string} key - Validated idempotency key.
+   * @param {string | null} organizationId - Organization of the verified token, if any.
+   * @param {TransactionScope<DatabaseSchema>} scope - Scope of the transaction.
+   * @returns {Promise<unknown>} The response body, fresh or replayed.
+   */
+  private async runOnce(
+    context: ExecutionContext,
+    next: CallHandler,
+    request: IdempotentRequest,
+    key: string,
+    organizationId: string | null,
+    scope: TransactionScope<DatabaseSchema>,
+  ): Promise<unknown> {
+    const locked: { rows: unknown[] } = await scope.client.query(
+      'select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired',
+      [`cadenway.idempotency:${organizationId ?? ''}:${key}`],
+    );
+    if ((locked.rows[0] as { acquired?: unknown } | undefined)?.acquired !== true) {
+      throw new ProblemException({
+        status: 409,
+        code: 'idempotency.in-progress',
+        detail: 'A request with this Idempotency-Key is still running.',
+      });
+    }
+    const fingerprint: string = requestFingerprint(request);
+    const response: IdempotentResponse = context.switchToHttp().getResponse();
+    const stored: {
+      requestFingerprint: string;
+      responseHeaders: Record<string, string>;
+      responseBody: unknown;
+      expired: boolean;
+    }[] = await scope.db
+      .select({
+        requestFingerprint: idempotencyKeys.requestFingerprint,
+        responseHeaders: idempotencyKeys.responseHeaders,
+        responseBody: idempotencyKeys.responseBody,
+        expired: sql<boolean>`${idempotencyKeys.expiresAt} <= now()`,
+      })
+      .from(idempotencyKeys)
+      .where(
+        and(
+          organizationId === null
+            ? isNull(idempotencyKeys.organizationId)
+            : eq(idempotencyKeys.organizationId, organizationId),
+          eq(idempotencyKeys.key, key),
+        ),
+      );
+    const existing: (typeof stored)[number] | undefined = stored[0];
+    if (existing !== undefined && !existing.expired) {
+      if (existing.requestFingerprint !== fingerprint) {
+        throw new ProblemException({
+          status: 422,
+          code: 'idempotency.key-reused',
+          detail: 'This Idempotency-Key was already used for another request.',
+        });
+      }
+      for (const [name, value] of Object.entries(existing.responseHeaders)) {
+        response.setHeader(name, value);
+      }
+      response.setHeader(IDEMPOTENT_REPLAYED_HEADER, 'true');
+      return existing.responseBody ?? undefined;
+    }
+    const body: unknown = await lastValueFrom(next.handle(), { defaultValue: undefined });
+    const headers: Record<string, string> = {};
+    for (const name of REPLAYED_HEADERS) {
+      const value: unknown = response.getHeader(name);
+      if (typeof value === 'string') {
+        headers[name] = value;
+      }
+    }
+    const record: {
+      requestFingerprint: string;
+      responseStatus: number;
+      responseHeaders: Record<string, string>;
+      responseBody: unknown;
+      expiresAt: ReturnType<typeof sql<Date>>;
+    } = {
+      requestFingerprint: fingerprint,
+      // NestJS applies the status after the interceptors: read what it will apply.
+      responseStatus:
+        this.reflector.get<number | undefined>(HTTP_CODE_METADATA, context.getHandler()) ??
+        (request.method === 'POST' ? 201 : 200),
+      responseHeaders: headers,
+      responseBody: body ?? null,
+      expiresAt: sql<Date>`now() + make_interval(hours => ${IDEMPOTENCY_RETENTION_HOURS})`,
+    };
+    await scope.db
+      .insert(idempotencyKeys)
+      .values({ organizationId, key, ...record })
+      .onConflictDoUpdate({
+        target: [idempotencyKeys.organizationId, idempotencyKeys.key],
+        set: { ...record, createdAt: sql`now()` },
+      });
+    return body;
+  }
+  // #endregion
+}
