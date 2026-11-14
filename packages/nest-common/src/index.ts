@@ -8,6 +8,45 @@
  * @packageDocumentation
  */
 export {
+  internalTokenSignerConfigShape,
+  internalTokenVerifierConfigShape,
+  type InternalTokenSignerConfig,
+  type InternalTokenVerifierConfig,
+} from './auth/internal-token.config.js';
+export {
+  InternalAccess,
+  InternalTokenGuard,
+  OrganizationContextInterceptor,
+  principalOf,
+  SkipInternalToken,
+  type InternalAccessOptions,
+} from './auth/internal-token.guard.js';
+export {
+  INTERNAL_TOKEN_ALGORITHM,
+  INTERNAL_TOKEN_LIFETIME_SECONDS,
+  InternalTokenSigner,
+  InternalTokenVerifier,
+  type Ed25519PrivateJwk,
+  type Ed25519PublicJwk,
+  type InternalPrincipal,
+  type InternalTokenClaims,
+  type InternalTokenSignerOptions,
+  type InternalTokenVerifierOptions,
+  type InvalidTokenReason,
+} from './auth/internal-token.js';
+export {
+  InternalTokenModule,
+  type InternalTokenModuleOptions,
+} from './auth/internal-token.module.js';
+export {
+  getOrganizationContext,
+  requireOrganizationId,
+  runWithOrganizationContext,
+  type InternalActor,
+  type InternalActorType,
+  type OrganizationContext,
+} from './auth/organization-context.js';
+export {
   baseConfigShape,
   type BaseConfig,
   type ConfigShape,

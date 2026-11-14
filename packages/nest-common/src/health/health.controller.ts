@@ -1,6 +1,8 @@
 import { Controller, Get } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, type HealthCheckResult } from '@nestjs/terminus';
 
+import { SkipInternalToken } from '../auth/internal-token.guard.js';
+
 /**
  * Class HealthController
  *
@@ -9,8 +11,11 @@ import { HealthCheck, HealthCheckService, type HealthCheckResult } from '@nestjs
  *
  * Internal to the package: applications import `HealthModule` and never this class, so its
  * constructor can change when readiness gets dependency indicators.
+ *
+ * The probes carry no internal token: the routes are exempt from the internal-token guard.
  */
 @Controller('health')
+@SkipInternalToken()
 export class HealthController {
   // #region Constructor
   /**
