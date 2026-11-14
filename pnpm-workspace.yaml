@@ -27,11 +27,8 @@ catalog:
   # Same major as `@cadenway/contracts`, so an application holds a single copy.
   zod: ^4.6.0
 
-# A version must be two days old before pnpm resolves it, the delay Renovate already applies. The
-# value is in minutes. Cadenway packages are exempt: they are taken as soon as they are published.
-minimumReleaseAge: 2880
-minimumReleaseAgeExclude:
-  - '@cadenway/*'
+# Disable pnpm's default release-age delay.
+minimumReleaseAge: 0
 
 # A version that loses the provenance or the trusted publisher of an earlier one is refused.
 trustPolicy: no-downgrade
