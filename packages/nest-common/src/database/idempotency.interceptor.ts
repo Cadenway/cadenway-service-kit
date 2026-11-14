@@ -8,7 +8,6 @@ import {
   type ExecutionContext,
   type NestInterceptor,
 } from '@nestjs/common';
-import { HTTP_CODE_METADATA } from '@nestjs/common/constants.js';
 import { Reflector } from '@nestjs/core';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { from, lastValueFrom, type Observable } from 'rxjs';
@@ -25,6 +24,7 @@ import {
   SystemTransactionRunner,
   TenantTransactionRunner,
   type DatabaseSchema,
+  type TransactionOptions,
   type TransactionScope,
 } from './transaction-runner.js';
 
@@ -77,6 +77,19 @@ export interface IdempotentOptions {
    * @readonly
    */
   readonly required?: boolean;
+
+  /**
+   * Property isolationLevel
+   *
+   * @description
+   * Isolation level of the transaction the interceptor opens around the handler. Defaults to
+   * the PostgreSQL default, `read committed`. Set it when the use case of the route asks for a
+   * stricter level: a use case joins this transaction and cannot raise its level afterwards.
+   *
+   * @type {'read committed' | 'repeatable read' | 'serializable' | undefined}
+   * @readonly
+   */
+  readonly isolationLevel?: 'read committed' | 'repeatable read' | 'serializable';
   // #endregion
 }
 
@@ -141,6 +154,20 @@ interface IdempotentRequest {
  * Part of the Express response the interceptor uses.
  */
 interface IdempotentResponse {
+  // #region Properties
+  /**
+   * Property statusCode
+   *
+   * @description
+   * Status of the response, which NestJS sets from `@HttpCode()` or its default before the
+   * interceptors run.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly statusCode: number;
+  // #endregion
+
   // #region Methods
   /**
    * Method getHeader
@@ -217,15 +244,19 @@ export function Idempotent(options: IdempotentOptions = {}): CustomDecorator {
  * Function requestFingerprint
  *
  * @description
- * Computes what identifies a request besides its key: the method, the path with its query
- * string, and the parsed body.
+ * Computes what identifies a request besides its key: who sends it, the method, the path with
+ * its query string, and the parsed body. The actor is part of it so that a key learnt by another
+ * member, or by another anonymous caller, replays nothing: it answers 422.
  *
  * @param {IdempotentRequest} request - Incoming request.
+ * @param {string} actor - Type and id of the verified actor.
  * @returns {string} A SHA-256 digest, in base64url.
  */
-function requestFingerprint(request: IdempotentRequest): string {
+function requestFingerprint(request: IdempotentRequest, actor: string): string {
   return createHash('sha256')
-    .update(`${request.method}\n${request.originalUrl}\n${JSON.stringify(request.body ?? null)}`)
+    .update(
+      `${actor}\n${request.method}\n${request.originalUrl}\n${JSON.stringify(request.body ?? null)}`,
+    )
     .digest('base64url');
 }
 
@@ -272,8 +303,9 @@ export async function purgeExpiredIdempotencyKeys<TSchema extends DatabaseSchema
  * organization, system runner otherwise), takes a transaction-level advisory lock on the key,
  * and runs the handler inside. The `run` of the use case joins that transaction. Consequences
  * for a marked route: the whole handler is in the transaction, so it must not call another
- * service before the use case; and its status comes from `@HttpCode()` or the NestJS default,
- * not from a manual `response.status()`.
+ * service before the use case; its status comes from `@HttpCode()` or the NestJS default, not
+ * from a manual `response.status()`; and a use case that needs a stricter isolation level states
+ * it on the route (`@Idempotent({ isolationLevel })`).
  *
  * A key belongs to the organization of the verified token. Requests without an organization
  * share one namespace: their keys must be unguessable, as a UUID is.
@@ -338,7 +370,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         detail: 'Idempotency-Key must be 1 to 255 printable ASCII characters.',
       });
     }
-    return from(this.execute(context, next, request, header));
+    return from(this.execute(context, next, request, header, options));
   }
 
   /**
@@ -351,6 +383,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
    * @param {CallHandler} next - Rest of the request pipeline.
    * @param {IdempotentRequest} request - Incoming request.
    * @param {string} key - Validated idempotency key.
+   * @param {IdempotentOptions} options - Declaration of the route.
    * @returns {Promise<unknown>} The response body, fresh or replayed.
    */
   private execute(
@@ -358,14 +391,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
     next: CallHandler,
     request: IdempotentRequest,
     key: string,
+    options: IdempotentOptions,
   ): Promise<unknown> {
+    const transactionOptions: TransactionOptions =
+      options.isolationLevel === undefined ? {} : { isolationLevel: options.isolationLevel };
     const principal: InternalPrincipal | undefined = principalOf(request);
     const organizationId: string | null = principal?.organizationId ?? null;
     const work: (scope: TransactionScope<DatabaseSchema>) => Promise<unknown> = (
       scope: TransactionScope<DatabaseSchema>,
     ) => this.runOnce(context, next, request, key, organizationId, scope);
     if (principal === undefined || organizationId === null) {
-      return this.system.run(work);
+      return this.system.run(work, transactionOptions);
     }
     // The organization context interceptor may be registered after this one: open the context
     // from the same verified principal rather than depend on the order.
@@ -377,9 +413,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
             role: principal.role,
             scopes: principal.scopes,
           },
-          () => this.tenant.run(work),
+          () => this.tenant.run(work, transactionOptions),
         )
-      : this.tenant.run(work);
+      : this.tenant.run(work, transactionOptions);
   }
 
   /**
@@ -416,7 +452,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
         detail: 'A request with this Idempotency-Key is still running.',
       });
     }
-    const fingerprint: string = requestFingerprint(request);
+    const actor: InternalPrincipal['actor'] | undefined = principalOf(request)?.actor;
+    const fingerprint: string = requestFingerprint(
+      request,
+      actor === undefined ? 'none' : `${actor.type}:${actor.id ?? ''}`,
+    );
     const response: IdempotentResponse = context.switchToHttp().getResponse();
     const stored: {
       requestFingerprint: string;
@@ -470,10 +510,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       expiresAt: ReturnType<typeof sql<Date>>;
     } = {
       requestFingerprint: fingerprint,
-      // NestJS applies the status after the interceptors: read what it will apply.
-      responseStatus:
-        this.reflector.get<number | undefined>(HTTP_CODE_METADATA, context.getHandler()) ??
-        (request.method === 'POST' ? 201 : 200),
+      responseStatus: response.statusCode,
       responseHeaders: headers,
       responseBody: body ?? null,
       expiresAt: sql<Date>`now() + make_interval(hours => ${IDEMPOTENCY_RETENTION_HOURS})`,

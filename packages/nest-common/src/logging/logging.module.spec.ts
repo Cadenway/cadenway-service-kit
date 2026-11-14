@@ -7,7 +7,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { HealthModule } from '../health/health.module.js';
 import { createLoggerParams, LoggingModule } from './logging.module.js';
-import { maskEmails, REDACTED, redactionPaths } from './redaction.js';
+import {
+  maskEmails,
+  REDACTED,
+  redactedKeySet,
+  sanitizeLogValue,
+  sanitizeSerializedError,
+} from './redaction.js';
 import { resolveRequestId } from './request-id.js';
 
 /**
@@ -228,12 +234,60 @@ describe('createLoggerParams', () => {
 });
 
 describe('redaction helpers', () => {
-  it('expands a key over three object levels', () => {
-    expect(redactionPaths(['set-cookie'])).toEqual([
-      '["set-cookie"]',
-      '*["set-cookie"]',
-      '*.*["set-cookie"]',
-    ]);
+  it('masks a redacted key at any depth, whatever its case and separators', () => {
+    expect(
+      sanitizeLogValue(
+        {
+          access_token: 'a',
+          Authorization: 'b',
+          'Set-Cookie': 'c',
+          DATABASE_URL: 'postgres://svc:secret@db/task',
+          data: { users: [{ email: 'camille@ateliernord.example', id: 'user-1' }] },
+          note: 'write to camille@ateliernord.example',
+          count: 3,
+        },
+        redactedKeySet(['note-internal']),
+      ),
+    ).toEqual({
+      access_token: REDACTED,
+      Authorization: REDACTED,
+      'Set-Cookie': REDACTED,
+      DATABASE_URL: REDACTED,
+      data: { users: [{ email: REDACTED, id: 'user-1' }] },
+      note: `write to ${REDACTED}`,
+      count: 3,
+    });
+  });
+
+  it('masks whole whatever is nested deeper than six levels', () => {
+    expect(
+      sanitizeLogValue({ a: { b: { c: { d: { e: { f: { g: 'deep' } } } } } } }, redactedKeySet()),
+    ).toEqual({ a: { b: { c: { d: { e: { f: REDACTED } } } } } });
+  });
+
+  it('drops the SQL values of a failed query from a serialized error', () => {
+    expect(
+      sanitizeSerializedError(
+        {
+          type: 'DrizzleQueryError',
+          message:
+            'Failed query: insert into "users" ("email", "password_hash") values ($1, $2)\nparams: camille@ateliernord.example,$argon2id$hash',
+          stack:
+            'Error: Failed query: insert into "users"\nparams: camille@ateliernord.example,$argon2id$hash\n    at file.ts:1:1',
+          query: 'insert into "users" ("email", "password_hash") values ($1, $2)',
+          params: ['camille@ateliernord.example', '$argon2id$hash'],
+          detail: 'Key (email)=(camille@ateliernord.example) already exists.',
+          where: 'SQL statement',
+          code: '23505',
+        },
+        redactedKeySet(),
+      ),
+    ).toEqual({
+      type: 'DrizzleQueryError',
+      message: 'Failed query: insert into "users" ("email", "password_hash") values ($1, $2)',
+      stack: 'Error: Failed query: insert into "users"\n    at file.ts:1:1',
+      code: '23505',
+    });
   });
 
   it('masks every e-mail address of a text', () => {

@@ -69,13 +69,39 @@ export interface CreateApplicationOptions {
    * Property internalToken
    *
    * @description
-   * Verifier and signer options of the internal token. Defaults to none: no route requires a
-   * token and no signer exists, which is what an application gets before it is configured.
+   * Verifier and signer options of the internal token. A service gives `verifier`; an
+   * application that calls others gives `signer`.
    *
    * @type {InternalTokenModuleOptions | undefined}
    * @readonly
    */
   readonly internalToken?: InternalTokenModuleOptions;
+
+  /**
+   * Property internalTokenVerification
+   *
+   * @description
+   * Whether every route must carry a verified internal token. Defaults to `required`:
+   * `createApplication` then throws when `internalToken.verifier` is missing, so a service
+   * cannot start with open routes by omission. A public gateway, which authenticates its callers
+   * itself, sets `off`.
+   *
+   * @type {'required' | 'off' | undefined}
+   * @readonly
+   */
+  readonly internalTokenVerification?: 'required' | 'off';
+
+  /**
+   * Property acceptIncomingRequestTimeout
+   *
+   * @description
+   * Lets the caller shorten the request budget with `X-Request-Timeout-Ms`. Defaults to
+   * `true`; a public edge sets it to `false`.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly acceptIncomingRequestTimeout?: boolean;
 
   /**
    * Property requestBudgetMs
@@ -133,9 +159,10 @@ export interface CreateApplicationOptions {
  * - structured logs (`LoggingModule`) and the NestJS logger routed to them;
  * - `ProblemFilter` for every error, `ZodValidationPipe` for `zodDto` parameters;
  * - `RouteNameInterceptor` and `EtagInterceptor`;
- * - the internal token guard and the organization context, when `internalToken.verifier` is given;
+ * - the internal token guard and the organization context, required unless
+ *   `internalTokenVerification` is `off`;
  * - the JSON body limit and the request deadline;
- * - shutdown hooks, with telemetry flushed last.
+ * - shutdown hooks, with telemetry flushed after the application closed its own resources.
  *
  * It does not listen: the caller calls `app.listen(port)`. It imports no health or database
  * module either: the module of the application declares what it depends on.
@@ -143,11 +170,20 @@ export interface CreateApplicationOptions {
  * @param {Type<unknown>} applicationModule - Root module of the application.
  * @param {CreateApplicationOptions} options - Identity of the application and optional settings.
  * @returns {Promise<NestExpressApplication>} The application, ready to listen.
+ * @throws {Error} When no internal token verifier is configured and verification was not turned off.
  */
 export async function createApplication(
   applicationModule: Type<unknown>,
   options: CreateApplicationOptions,
 ): Promise<NestExpressApplication> {
+  if (
+    (options.internalTokenVerification ?? 'required') === 'required' &&
+    options.internalToken?.verifier === undefined
+  ) {
+    throw new Error(
+      'createApplication: internalToken.verifier is required. Set internalTokenVerification to "off" only for an application that authenticates its callers itself.',
+    );
+  }
   const root: DynamicModule = {
     module: ApplicationRootModule,
     imports: [
@@ -180,7 +216,12 @@ export async function createApplication(
   app.useLogger(app.get(Logger));
   applyJsonBodyLimit(app, options.jsonBodyLimitBytes ?? JSON_BODY_LIMIT_BYTES);
   app.use(
-    requestDeadlineMiddleware({ budgetMs: options.requestBudgetMs ?? DEFAULT_REQUEST_BUDGET_MS }),
+    requestDeadlineMiddleware({
+      budgetMs: options.requestBudgetMs ?? DEFAULT_REQUEST_BUDGET_MS,
+      ...(options.acceptIncomingRequestTimeout === undefined
+        ? {}
+        : { acceptIncoming: options.acceptIncomingRequestTimeout }),
+    }),
   );
   // The deployment starts the new version next to the old one, then stops the old one: the stop
   // must close open connections instead of cutting them.

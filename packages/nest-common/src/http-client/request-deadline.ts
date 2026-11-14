@@ -72,6 +72,19 @@ export interface RequestDeadlineOptions {
    * @readonly
    */
   readonly budgetMs?: number;
+
+  /**
+   * Property acceptIncoming
+   *
+   * @description
+   * Lets the caller shorten the budget with `X-Request-Timeout-Ms`. Defaults to `true`, for a
+   * service called by a gateway; a public edge sets it to `false`, so a client cannot make its
+   * own requests fail early.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly acceptIncoming?: boolean;
   // #endregion
 }
 
@@ -94,18 +107,10 @@ const storage: AsyncLocalStorage<RequestDeadline> = new AsyncLocalStorage<Reques
  *
  * @param {number} budgetMs - Time granted to the work, in milliseconds.
  * @param {() => TResult} work - Work to run.
- * @param {object} request - Incoming request, when there is one.
  * @returns {TResult} What the work returns.
  */
-export function runWithDeadline<TResult>(
-  budgetMs: number,
-  work: () => TResult,
-  request?: object,
-): TResult {
-  return storage.run(
-    { expiresAt: performance.now() + budgetMs, ...(request === undefined ? {} : { request }) },
-    work,
-  );
+export function runWithDeadline<TResult>(budgetMs: number, work: () => TResult): TResult {
+  return storage.run({ expiresAt: performance.now() + budgetMs }, work);
 }
 
 /**
@@ -156,7 +161,11 @@ export function requestDeadlineMiddleware(
       REQUEST_TIMEOUT_HEADER.toLowerCase()
     ];
     const granted: number =
-      typeof header === 'string' && /^[1-9]\d{0,8}$/u.test(header) ? Number(header) : budgetMs;
-    runWithDeadline(Math.min(budgetMs, granted), next, request);
+      options.acceptIncoming !== false &&
+      typeof header === 'string' &&
+      /^[1-9]\d{0,8}$/u.test(header)
+        ? Number(header)
+        : budgetMs;
+    storage.run({ expiresAt: performance.now() + Math.min(budgetMs, granted), request }, next);
   };
 }

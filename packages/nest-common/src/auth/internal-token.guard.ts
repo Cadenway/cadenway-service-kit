@@ -104,8 +104,9 @@ const PRINCIPAL_PROPERTY: 'internalPrincipal' = 'internalPrincipal';
  *
  * @description
  * Declares what a controller or a route accepts from the internal token, when the defaults (an
- * organization, no anonymous actor, any trusted issuer) do not fit. The declaration on a method
- * replaces the one on its class.
+ * organization, no anonymous actor, any trusted issuer) do not fit. A declaration on a method
+ * is merged over the one on its class: each option it sets replaces the class one, the others
+ * are kept.
  *
  * @param {InternalAccessOptions} options - Accepted actors, organization requirement and issuers.
  * @returns {CustomDecorator} The class or method decorator.
@@ -229,11 +230,18 @@ export class InternalTokenGuard implements CanActivate {
       });
     }
     const principal: InternalPrincipal = await this.verifier.verify(match[1]);
-    const access: InternalAccessOptions =
-      this.reflector.getAllAndOverride<InternalAccessOptions | undefined>(INTERNAL_ACCESS_KEY, [
-        context.getHandler(),
+    // Merged, not overridden: a restriction declared on the controller, such as its issuers,
+    // must survive a route that only changes the accepted actors.
+    const access: InternalAccessOptions = {
+      ...this.reflector.get<InternalAccessOptions | undefined>(
+        INTERNAL_ACCESS_KEY,
         context.getClass(),
-      ]) ?? {};
+      ),
+      ...this.reflector.get<InternalAccessOptions | undefined>(
+        INTERNAL_ACCESS_KEY,
+        context.getHandler(),
+      ),
+    };
     if (access.issuers !== undefined && !access.issuers.includes(principal.issuer)) {
       throw forbidden('auth.issuer-not-allowed', 'This route does not accept this issuer.');
     }

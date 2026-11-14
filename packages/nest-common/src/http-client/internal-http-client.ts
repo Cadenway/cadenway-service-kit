@@ -3,7 +3,7 @@ import {
   BrokenCircuitError,
   circuitBreaker,
   ConsecutiveBreaker,
-  handleAll,
+  handleWhen,
   type CircuitBreakerPolicy,
 } from 'cockatiel';
 
@@ -150,6 +150,17 @@ export interface InternalRequestInit extends RequestInit {
 }
 
 /**
+ * Constant MAX_PROBLEM_BYTES
+ *
+ * @description
+ * Largest error body of a called service that is parsed. A larger one is not a problem document
+ * and is ignored.
+ *
+ * @type {number}
+ */
+const MAX_PROBLEM_BYTES: number = 65_536;
+
+/**
  * Class UpstreamFailure
  *
  * @description
@@ -165,11 +176,13 @@ class UpstreamFailure extends Error {
    * Records what went wrong with one attempt.
    *
    * @param {'unreachable' | 'timeout' | 'unavailable' | 'failed'} kind - Kind of failure; `unavailable` is a 503, `failed` another server error.
+   * @param {boolean} counted - Whether the circuit breaker counts the failure against the called service.
    * @param {unknown} cause - Underlying error, kept for the logs.
    * @constructor
    */
   public constructor(
     public readonly kind: 'unreachable' | 'timeout' | 'unavailable' | 'failed',
+    public readonly counted: boolean,
     cause?: unknown,
   ) {
     super(`upstream ${kind}`, { cause });
@@ -306,10 +319,16 @@ export class InternalHttpClient {
       MAX_CALL_TIMEOUT_MS,
     );
     this.fetchImplementation = options.fetch ?? fetch;
-    this.breaker = circuitBreaker(handleAll, {
-      halfOpenAfter: options.breakerHalfOpenAfterMs ?? 10_000,
-      breaker: new ConsecutiveBreaker(options.breakerThreshold ?? 5),
-    });
+    // Only failures of the called service open the circuit. A timeout cut short by the budget of
+    // the incoming request, or a call its caller aborted, says nothing about that service: were
+    // they counted, one caller sending a tiny budget could open the circuit for every tenant.
+    this.breaker = circuitBreaker(
+      handleWhen((error: unknown) => error instanceof UpstreamFailure && error.counted),
+      {
+        halfOpenAfter: options.breakerHalfOpenAfterMs ?? 10_000,
+        breaker: new ConsecutiveBreaker(options.breakerThreshold ?? 5),
+      },
+    );
   }
   // #endregion
 
@@ -336,6 +355,7 @@ export class InternalHttpClient {
         `Call to ${this.options.service} outside an organization context: pass explicit claims.`,
       );
     }
+    const url: URL = this.resolve(path);
     const method: string = (init.method ?? 'GET').toUpperCase();
     const headers: Headers = new Headers(init.headers);
     const retryable: boolean =
@@ -365,7 +385,7 @@ export class InternalHttpClient {
       let response: Response;
       try {
         response = await this.breaker.execute(() =>
-          this.attempt(path, { ...init, method, headers }, timeoutMs),
+          this.attempt(url, { ...init, method, headers }, timeoutMs),
         );
       } catch (error) {
         if (error instanceof BrokenCircuitError) {
@@ -393,25 +413,47 @@ export class InternalHttpClient {
   }
 
   /**
+   * Method resolve
+   *
+   * @description
+   * Resolves a route against the base URL and refuses anything that would leave the called
+   * service: the internal token must never be sent to another origin.
+   *
+   * @param {string} path - Path of the route, starting with one slash.
+   * @returns {URL} The address to call.
+   * @throws {Error} When the path is not a path of the called service: a programming error.
+   */
+  private resolve(path: string): URL {
+    const base: URL = new URL(this.options.baseUrl);
+    const url: URL = new URL(path, base);
+    if (!path.startsWith('/') || url.origin !== base.origin) {
+      throw new Error(`Call to ${this.options.service}: the path must be a path of that service.`);
+    }
+    return url;
+  }
+
+  /**
    * Method attempt
    *
    * @description
    * Sends the call once. A connection error, a timeout and a server error reject, so the circuit
    * breaker counts them; a client error resolves.
    *
-   * @param {string} path - Path of the route, relative to the base URL.
+   * @param {URL} url - Address of the route, already checked against the base URL.
    * @param {RequestInit} init - Options of `fetch`, with the final headers.
    * @param {number} timeoutMs - Time granted to this attempt, in milliseconds.
    * @returns {Promise<Response>} The response, whose status is below 500.
    * @throws {UpstreamFailure} When the service did not answer or answered a server error.
    */
-  private async attempt(path: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  private async attempt(url: URL, init: RequestInit, timeoutMs: number): Promise<Response> {
     const timeout: AbortSignal = AbortSignal.timeout(timeoutMs);
     const caller: AbortSignal | null | undefined = init.signal;
     let response: Response;
     try {
-      response = await this.fetchImplementation(new URL(path, this.options.baseUrl), {
+      response = await this.fetchImplementation(url, {
         ...init,
+        // A redirect would carry the internal token to wherever it points.
+        redirect: 'error',
         signal:
           caller === undefined || caller === null ? timeout : AbortSignal.any([caller, timeout]),
       });
@@ -419,11 +461,14 @@ export class InternalHttpClient {
       if (caller?.aborted === true) {
         throw caller.reason;
       }
-      throw new UpstreamFailure(timeout.aborted ? 'timeout' : 'unreachable', error);
+      if (timeout.aborted) {
+        throw new UpstreamFailure('timeout', timeoutMs >= this.callTimeoutMs, error);
+      }
+      throw new UpstreamFailure('unreachable', true, error);
     }
     if (response.status >= 500) {
       await response.body?.cancel();
-      throw new UpstreamFailure(response.status === 503 ? 'unavailable' : 'failed');
+      throw new UpstreamFailure(response.status === 503 ? 'unavailable' : 'failed', true);
     }
     return response;
   }
@@ -461,7 +506,10 @@ export class InternalHttpClient {
   private async clientError(response: Response): Promise<ProblemException> {
     let upstream: Record<string, unknown> = {};
     try {
-      const parsed: unknown = await response.json();
+      const parsed: unknown =
+        Number(response.headers.get('content-length') ?? 0) > MAX_PROBLEM_BYTES
+          ? undefined
+          : await response.json();
       if (typeof parsed === 'object' && parsed !== null) {
         upstream = parsed as Record<string, unknown>;
       }

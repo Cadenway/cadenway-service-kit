@@ -239,6 +239,8 @@ export class DatabaseModule {
             connectionString: options.connectionString,
             max: options.poolSize ?? DEFAULT_POOL_SIZE,
             connectionTimeoutMillis: options.connectionTimeoutMs ?? 5000,
+            // Lets the operating system notice a peer that vanished without closing.
+            keepAlive: true,
             ...(options.applicationName === undefined
               ? {}
               : { application_name: options.applicationName }),

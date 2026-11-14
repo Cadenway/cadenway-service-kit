@@ -64,7 +64,7 @@ export function formatEtag(version: number): string {
  *
  * @param {string | undefined} header - Value of the `If-Match` header.
  * @returns {IfMatchCondition} The accepted versions, `'*'`, or `undefined` when the header is absent.
- * @throws {ProblemException} 400 `request.invalid-if-match` when the header is not a list of entity tags.
+ * @throws {ProblemException} 400 `request.if-match-invalid` when the header is not a list of entity tags.
  */
 export function parseIfMatch(header: string | undefined): IfMatchCondition {
   if (header === undefined || header.trim() === '') {
@@ -80,7 +80,7 @@ export function parseIfMatch(header: string | undefined): IfMatchCondition {
     if (match === null) {
       throw new ProblemException({
         status: 400,
-        code: 'request.invalid-if-match',
+        code: 'request.if-match-invalid',
         detail: 'If-Match must be "*" or a list of quoted entity tags.',
       });
     }

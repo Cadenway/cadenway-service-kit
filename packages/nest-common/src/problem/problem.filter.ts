@@ -83,7 +83,7 @@ const DEFAULT_CODES: Readonly<Record<number, string>> = {
   403: 'http.forbidden',
   404: 'http.not-found',
   409: 'http.conflict',
-  412: 'http.precondition-failed',
+  412: 'precondition.failed',
   422: 'http.unprocessable-content',
   429: 'http.too-many-requests',
   500: 'internal.unexpected',

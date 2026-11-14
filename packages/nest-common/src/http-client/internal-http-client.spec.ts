@@ -82,7 +82,7 @@ interface Reply {
  * @type {OrganizationContext}
  */
 const context: OrganizationContext = {
-  organizationId: 'org-atelier-nord',
+  organizationId: '0193a1f0-0000-7000-8000-00000000000a',
   actor: { type: 'user', id: 'user-camille' },
   role: 'member',
   scopes: ['tasks:write'],
@@ -181,7 +181,7 @@ describe('InternalHttpClient', () => {
     expect(principal).toMatchObject({
       issuer: 'api-gateway',
       audience: 'task-service',
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       actor: { type: 'user', id: 'user-camille' },
       scopes: ['tasks:write'],
     });
@@ -370,6 +370,44 @@ describe('InternalHttpClient', () => {
       detail: 'No such task in this organization.',
       details: { taskId: 'CAD-999', service: 'task-service' },
     });
+    expect(after.status).toBe(200);
+  });
+
+  it('refuses a path that would send the internal token to another origin', async () => {
+    for (const path of [
+      'https://evil.example/steal',
+      '//evil.example/steal',
+      '/\\evil.example',
+      'tasks',
+    ]) {
+      await expect(runWithOrganizationContext(context, () => client().fetch(path))).rejects.toThrow(
+        /must be a path of that service/u,
+      );
+    }
+    expect(received).toHaveLength(0);
+  });
+
+  it('does not let timeouts caused by a short request budget open the circuit', async () => {
+    const guarded: InternalHttpClient = client({ breakerThreshold: 2 });
+    replies = [
+      { status: 200, delayMs: 150 },
+      { status: 200, delayMs: 150 },
+      { status: 200, delayMs: 150 },
+    ];
+    for (let call: number = 0; call < 3; call += 1) {
+      const problem: Problem = await problemOf(
+        runWithDeadline(40, () =>
+          runWithOrganizationContext(context, () => guarded.fetch('/slow', { method: 'POST' })),
+        ),
+      );
+      expect(problem.code).toBe('upstream.timeout');
+    }
+    await delay(200);
+
+    const after: Response = await runWithOrganizationContext(context, () =>
+      guarded.fetch('/tasks'),
+    );
+
     expect(after.status).toBe(200);
   });
 

@@ -7,16 +7,16 @@ transaction runners with `Idempotency-Key`, the internal HTTP client, the health
 dependency indicators, and one bootstrap helper that applies all of it. The rest of what the
 [repository instructions](../../AGENTS.md) list for this package is not implemented yet.
 
-`@nestjs/common`, `@nestjs/core`, `@opentelemetry/api`, `reflect-metadata`, `rxjs` and `zod` are
-peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers, needed
+`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@opentelemetry/api`,
+`reflect-metadata`, `rxjs` and `zod` are peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers, needed
 only by the `/database` entry point.
 
-| Entry point                       | Holds                                                                     |
-| --------------------------------- | ------------------------------------------------------------------------- |
-| `@cadenway/nest-common`           | Configuration, logs, HTTP formats, route-name interceptor, health module  |
-| `@cadenway/nest-common/database`  | PostgreSQL pool, tenant and system transaction runners, `Idempotency-Key` |
-| `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                        |
-| `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node             |
+| Entry point                       | Holds                                                                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `@cadenway/nest-common`           | Bootstrap, configuration, logs, HTTP formats, internal token, internal HTTP client, route-name interceptor, health module |
+| `@cadenway/nest-common/database`  | PostgreSQL pool, tenant and system transaction runners, `Idempotency-Key`                                                 |
+| `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                                                                        |
+| `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node                                                             |
 
 ## Bootstrap
 
@@ -43,34 +43,37 @@ const app = await createApplication(AppModule, {
 await app.listen(config.PORT);
 ```
 
-| Installed                                                    | From                                                         |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| Structured logs, NestJS logger routed to them                | [Logs](#logs)                                                |
-| `ProblemFilter` for every error                              | [Errors](#errors)                                            |
-| `ZodValidationPipe` for `zodDto` parameters                  | [Validation](#validation)                                    |
-| `RouteNameInterceptor`                                       | [Telemetry](#telemetry)                                      |
-| `EtagInterceptor`                                            | [Entity tags](#entity-tags)                                  |
-| Internal token guard and organization context                | [Internal token](#internal-token), only with `internalToken` |
-| JSON body limit of 1 MB                                      | [Body limit](#body-limit)                                    |
-| Request deadline of 10 seconds                               | [Request deadline](#request-deadline)                        |
-| Shutdown hooks, telemetry flushed when the application stops | `shutdownTelemetry`                                          |
+| Installed                                                                                                                                   | From                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Structured logs, NestJS logger routed to them                                                                                               | [Logs](#logs)                                                |
+| `ProblemFilter` for every error                                                                                                             | [Errors](#errors)                                            |
+| `ZodValidationPipe` for `zodDto` parameters                                                                                                 | [Validation](#validation)                                    |
+| `RouteNameInterceptor`                                                                                                                      | [Telemetry](#telemetry)                                      |
+| `EtagInterceptor`                                                                                                                           | [Entity tags](#entity-tags)                                  |
+| Internal token guard and organization context                                                                                               | [Internal token](#internal-token), only with `internalToken` |
+| JSON body limit of 1 MB                                                                                                                     | [Body limit](#body-limit)                                    |
+| Request deadline of 10 seconds                                                                                                              | [Request deadline](#request-deadline)                        |
+| Shutdown hooks; telemetry flushed after the application closed its own resources, within 3 seconds, a failed flush being logged and ignored | `shutdownTelemetry`                                          |
 
 It does not listen, and it imports neither `HealthModule` nor `DatabaseModule`: the module of the
 application declares what it depends on.
 
-| Option                    | Default                          | Effect                                                                                       |
-| ------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------- |
-| `service`                 | Required                         | Name in the logs                                                                             |
-| `version`                 | `readPackageVersion()`           | Version in the logs, read from `package.json` in the working directory, `0.0.0` when missing |
-| `config`                  | `info`, JSON lines, `production` | `LOG_LEVEL`, `LOG_PRETTY` and `NODE_ENV` of the validated configuration                      |
-| `internalToken`           | None                             | Verifier and signer options. Without it no route requires a token                            |
-| `requestBudgetMs`         | 10 000                           | Time a request may take, bounding its calls to other services                                |
-| `jsonBodyLimitBytes`      | 1 048 576                        | Largest JSON body                                                                            |
-| `acceptIncomingRequestId` | `true`                           | Keeps a well-formed incoming `X-Request-Id`                                                  |
-| `logDestination`          | stdout                           | Stream that receives the lines, for tests                                                    |
+| Option                         | Default                          | Effect                                                                                                                                                                                             |
+| ------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`                      | Required                         | Name in the logs                                                                                                                                                                                   |
+| `version`                      | `readPackageVersion()`           | Version in the logs, read from `package.json` in the working directory, `0.0.0` when missing                                                                                                       |
+| `config`                       | `info`, JSON lines, `production` | `LOG_LEVEL`, `LOG_PRETTY` and `NODE_ENV` of the validated configuration                                                                                                                            |
+| `internalToken`                | None                             | Verifier and signer options                                                                                                                                                                        |
+| `internalTokenVerification`    | `required`                       | `createApplication` throws when `internalToken.verifier` is missing, so a service cannot start with open routes by omission. `off` is for a public gateway, which authenticates its callers itself |
+| `acceptIncomingRequestTimeout` | `true`                           | Lets the caller shorten the request budget with `X-Request-Timeout-Ms`; a public edge sets `false`                                                                                                 |
+| `requestBudgetMs`              | 10 000                           | Time a request may take, bounding its calls to other services                                                                                                                                      |
+| `jsonBodyLimitBytes`           | 1 048 576                        | Largest JSON body                                                                                                                                                                                  |
+| `acceptIncomingRequestId`      | `true`                           | Keeps a well-formed incoming `X-Request-Id`                                                                                                                                                        |
+| `logDestination`               | stdout                           | Stream that receives the lines, for tests                                                                                                                                                          |
 
-A service sets `internalToken.verifier`; a public gateway, which authenticates sessions, sets
-`internalToken.signer` only.
+A service sets `internalToken.verifier`. A public gateway, which authenticates sessions, sets
+`internalToken.signer` only, `internalTokenVerification: 'off'`, and `false` for both
+`acceptIncomingRequestId` and `acceptIncomingRequestTimeout`.
 
 The telemetry of the same service is one more file, preloaded before `main.js`:
 
@@ -136,33 +139,35 @@ Every line is one JSON object with `level` (as a label), `time` (ISO 8601, UTC),
 `method`, `route` (the matched pattern, `null` when no route matched), `status` and `durationMs`:
 `info` below 400, `warn` from 400, `error` from 500.
 
-| Never written                                 | Why                                                                |
-| --------------------------------------------- | ------------------------------------------------------------------ |
-| Request and response bodies, headers, cookies | The request object is not attached to the lines                    |
-| Query strings and raw paths                   | Only the route pattern is logged                                   |
-| Remote addresses                              | Same                                                               |
-| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                   |
-| Values of the redacted keys                   | Replaced by `[REDACTED]` in the first three levels of an object    |
-| E-mail addresses in messages and error texts  | Replaced by `[REDACTED]` in every string argument and logged error |
+| Never written                                 | Why                                                                                                                                                             |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and response bodies, headers, cookies | The request object is not attached to the lines                                                                                                                 |
+| Query strings and raw paths                   | Only the route pattern is logged                                                                                                                                |
+| Remote addresses                              | Same                                                                                                                                                            |
+| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                                                                                                                |
+| Values of the redacted keys                   | Replaced by `[REDACTED]` at any depth, whatever the case and separators of the key                                                                              |
+| Anything nested deeper than six levels        | Replaced whole by `[REDACTED]`: a line carries identifiers, not payloads                                                                                        |
+| SQL values                                    | The `query`, `params`, `detail` and `where` of a database error are dropped, and the `params:` line of a failed Drizzle query is cut from its message and stack |
+| E-mail addresses                              | Replaced by `[REDACTED]` in every message, logged error and string value of a logged object                                                                     |
 
 Redacted keys (`DEFAULT_REDACTED_KEYS`): `authorization`, `cookie`, `set-cookie`, `password`,
 `currentPassword`, `newPassword`, `token`, `accessToken`, `refreshToken`, `idToken`,
-`sessionToken`, `secret`, `clientSecret`, `apiKey`, `privateKey`, `email`. The key-based redaction
-covers the root of a logged object and two levels below; a deeper value is not masked, so log
-identifiers, not whole payloads.
+`sessionToken`, `secret`, `clientSecret`, `apiKey`, `privateKey`, `privateJwk`,
+`internalTokenPrivateJwk`, `databaseUrl`, `connectionString`, `email`. A key matches whatever its
+case and separators: `accessToken`, `access_token` and `Access-Token` are one key.
 
 ### Options
 
-| Option                    | Default      | Effect                                                                                                                                           |
-| ------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `service`                 | Required     | `service` field                                                                                                                                  |
-| `version`                 | Required     | `version` field                                                                                                                                  |
-| `level`                   | `info`       | Minimum level written                                                                                                                            |
-| `pretty`                  | `false`      | Uses the `pino-pretty` transport of the application's own `devDependencies`; throws when `environment` is `production` or the package is missing |
-| `environment`             | `production` | Runtime environment, used to refuse `pretty`                                                                                                     |
-| `redactKeys`              | `[]`         | Keys masked in addition to the defaults; the defaults cannot be removed                                                                          |
-| `acceptIncomingRequestId` | `true`       | Keeps a well-formed incoming `X-Request-Id` (8 to 128 characters among letters, digits, `.`, `_`, `:`, `-`)                                      |
-| `destination`             | stdout       | Stream that receives the lines, for tests; ignored with `pretty`                                                                                 |
+| Option                    | Default                | Effect                                                                                                                                           |
+| ------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `service`                 | Required               | `service` field                                                                                                                                  |
+| `version`                 | `readPackageVersion()` | `version` field; the version of `package.json` in the working directory, `0.0.0` when missing                                                    |
+| `level`                   | `info`                 | Minimum level written                                                                                                                            |
+| `pretty`                  | `false`                | Uses the `pino-pretty` transport of the application's own `devDependencies`; throws when `environment` is `production` or the package is missing |
+| `environment`             | `production`           | Runtime environment, used to refuse `pretty`                                                                                                     |
+| `redactKeys`              | `[]`                   | Keys masked in addition to the defaults; the defaults cannot be removed                                                                          |
+| `acceptIncomingRequestId` | `true`                 | Keeps a well-formed incoming `X-Request-Id` (8 to 128 characters among letters, digits, `.`, `_`, `:`, `-`)                                      |
+| `destination`             | stdout                 | Stream that receives the lines, for tests; ignored with `pretty`                                                                                 |
 
 ### Request id
 
@@ -248,10 +253,10 @@ applications translate from `code`.
 | Anything else                          | 500 `internal.unexpected`, with no detail                      |
 
 Codes produced by this package: `http.bad-request`, `http.unauthorized`, `http.forbidden`,
-`http.not-found`, `http.conflict`, `http.precondition-failed`, `http.unprocessable-content`,
+`http.not-found`, `http.conflict`, `http.unprocessable-content`,
 `http.too-many-requests`, `http.service-unavailable`, `internal.unexpected`, `request.invalid`,
-`request.body-too-large`, `request.invalid-if-match`, `request.if-match-required`,
-`precondition.failed` and `pagination.invalid-cursor`.
+`request.body-too-large`, `request.if-match-invalid`, `request.if-match-required`,
+`precondition.failed` and `pagination.cursor-invalid`.
 
 - A stack trace or the text of an unexpected error is never sent. From status 500 the error is
   handed to the request logger, which writes it on the `request failed` line.
@@ -305,7 +310,7 @@ return buildPage(rows, query.limit, (last) =>
 | ---------------------------------- | -------------------------------------------------------------------------------------- |
 | `pageQueryShape`                   | Zod shape of `cursor` and `limit`: `limit` from 1 to 100, 50 by default                |
 | `encodeCursor(position, filters)`  | Pass everything that defines the list as `filters`: the filters and the sort           |
-| `decodeCursor(cursor, filters)`    | 400 `pagination.invalid-cursor` for a malformed cursor or one issued for other filters |
+| `decodeCursor(cursor, filters)`    | 400 `pagination.cursor-invalid` for a malformed cursor or one issued for other filters |
 | `buildPage(rows, limit, cursorOf)` | Expects `limit + 1` rows; `nextCursor` is `null` on the last page                      |
 
 The cursor is not signed and not secret: it only positions a query that still filters on the
@@ -318,7 +323,7 @@ The `version` of an aggregate is its `ETag`.
 | Helper                                                   | Behavior                                                                                                     |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `EtagInterceptor`                                        | Sets `ETag: "<version>"` when a handler returns an object with an integer `version`; lists are left alone    |
-| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.invalid-if-match` |
+| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.if-match-invalid` |
 | `assertVersionMatch(condition, currentVersion, options)` | 412 `precondition.failed` when the versions differ. Call it inside the transaction that writes               |
 | `formatEtag(version)`, `parseIfMatch(header)`            | The underlying conversions                                                                                   |
 
@@ -380,7 +385,8 @@ keys is refused at start-up.
 
 ### Claims and subjects
 
-`signer.sign(audience, claims)` takes who the call is made for:
+`signer.sign(audience, claims)` takes who the call is made for. `organizationId` is a UUID, as every
+entity id of the contracts:
 
 | Claim            | Content                                                                             |
 | ---------------- | ----------------------------------------------------------------------------------- |
@@ -416,7 +422,8 @@ an anonymous actor. A route that differs declares it:
 | `organization` | `required`                            | `optional` accepts a token with no organization |
 | `issuers`      | Every trusted issuer                  | Issuers the route accepts                       |
 
-A declaration on a method replaces the one on its class. `@SkipInternalToken()` exempts a route
+A declaration on a method is merged over the one on its class: each option it sets replaces the
+class one, the others are kept, so an `issuers` restriction of a controller survives. `@SkipInternalToken()` exempts a route
 from the token altogether; `HealthModule` uses it for the probes, and nothing that reads or writes
 data should.
 
@@ -429,8 +436,12 @@ data should.
 | No organization on a route that requires one | 403 `auth.organization-required`                |
 
 `details.reason` is one of `malformed`, `issuer` (not trusted), `key` (unknown `kid` for that
+
 issuer), `signature`, `audience`, `expired` (older than 60 seconds, whatever its own expiry says;
 5 seconds of clock difference are tolerated, see `clockToleranceSeconds`) and `claims`.
+
+The signer and the verifier options also take `clock`, a function returning the current date:
+the system clock by default, a test seam otherwise.
 
 ### Organization context
 
@@ -478,6 +489,10 @@ const response = await client.fetch('/internal/v1/tasks/CAD-482');
 | Trace           | `traceparent` is added by the undici instrumentation of `startTelemetry`                                                    |
 | Failures        | Thrown as `ProblemException`; `fetch` only resolves with a response below 400                                               |
 
+`fetch(path, init)` takes a path of the called service, starting with one slash. Anything that
+would resolve to another origin throws, and redirects are refused: the internal token never leaves
+the called service.
+
 A call is idempotent when its method is `GET`, `HEAD`, `PUT`, `DELETE` or `OPTIONS`, when it carries
 an `Idempotency-Key` header, or when `init.idempotent` says so; and only a call without a body or
 with a string body is sent again. A timeout is not retried.
@@ -485,7 +500,7 @@ with a string body is sent again. A timeout is not retried.
 | Outcome                               | Thrown                                                                                            |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | 400, 403, 404, 409, 412, 422, 429     | The same status, with the `code`, `title`, `detail` and `details` of the called service's problem |
-| Another client error                  | 400 `upstream.error`                                                                              |
+| Another client error                  | 400, with the `code` of the called service when it answered a problem, `upstream.error` otherwise |
 | 401                                   | 503 `upstream.unauthorized`: the internal token was refused, a configuration defect               |
 | 503                                   | 503 `upstream.unavailable`                                                                        |
 | Another server error                  | 503 `upstream.failed`                                                                             |
@@ -495,7 +510,10 @@ with a string body is sent again. A timeout is not retried.
 | Time of the current request exhausted | 503 `upstream.deadline-exceeded`, without calling                                                 |
 
 Every problem names the called service in `details.service`. Connection errors, timeouts and
-server errors count as failures for the breaker; client errors do not.
+server errors count as failures for the breaker. Client errors do not, and neither do a call its
+caller aborted nor a timeout shortened by the budget of the incoming request: they say nothing
+about the called service, and one caller with a tiny budget must not open the circuit for
+everyone.
 
 | Option                   | Default  | Effect                                          |
 | ------------------------ | -------- | ----------------------------------------------- |
@@ -511,7 +529,8 @@ server errors count as failures for the breaker; client errors do not.
 
 `requestDeadlineMiddleware({ budgetMs })` opens the deadline of each incoming request: 10 seconds
 by default, shortened to `X-Request-Timeout-Ms` when the caller sends a smaller positive integer.
-It does not interrupt a handler that overruns; it bounds the calls the handler makes.
+It does not interrupt a handler that overruns; it bounds the calls the handler makes. With
+`acceptIncoming: false` the header is ignored, which is what a public edge wants.
 `remainingBudgetMs()` reads the time left and `runWithDeadline(budgetMs, work)` opens a deadline
 outside HTTP.
 
@@ -564,7 +583,19 @@ await this.tenant.run(async (tx) => {
 - A `run` called inside a transaction of the same kind (and, for a tenant, the same organization)
   joins it. Starting a system transaction inside a tenant one, or the reverse, throws: a use case
   never changes its own access.
-- `run(work, { isolationLevel, readOnly })`: `read committed` and read-write by default.
+- `run(work, { isolationLevel, readOnly })`: `read committed` and read-write by default. A joined
+  transaction must already be at least as strict as what the nested `run` asks: otherwise it
+  throws rather than drop the guarantee.
+- `tx.db` is the Drizzle database without `transaction`: on one connection Drizzle would issue its
+  own `COMMIT` and end the transaction of the runner. Type a repository with
+  `TransactionDatabase<typeof schema>`.
+- A scope dies with its transaction: its `client` and `db` then reject, and a `run` started by
+  work that outlived the transaction opens a new one.
+- When the work swallowed the error of a failed statement, PostgreSQL rolls back at `COMMIT`: the
+  runner throws `TransactionAbortedError` instead of reporting a success.
+- A connection lost during a transaction rejects the work and is discarded; it does not crash the
+  process. The pool enables TCP keep-alive. `statement_timeout`, `lock_timeout` and
+  `idle_in_transaction_session_timeout` are set per role, by cadenway-ops.
 - The system runner removes the filter: every query of a system transaction names the rows it
   means. Never use it to serve the request of a user.
 
@@ -578,7 +609,8 @@ an `organization_id uuid` column declares the policy of the kit:
 pgTable('tasks', {/* columns */}, () => [organizationPolicy()]);
 ```
 
-Its predicate, also exported as `organizationIsolation`:
+The policy is named `organization_isolation` unless `organizationPolicy(name)` is given another
+name. Its predicate, also exported as `organizationIsolation`:
 
 ```sql
 organization_id = nullif(current_setting('app.organization_id', true), '')::uuid
@@ -613,7 +645,10 @@ What a marked route must respect:
 - The replayed status is the one NestJS applies from `@HttpCode()` or its default (201 for `POST`),
   not a manual `response.status()`. The `Location` header is stored and replayed; `ETag` is derived
   again from the replayed body.
-- A key belongs to the organization of the verified token. Requests without an organization share
+- `@Idempotent({ isolationLevel })` opens the transaction at that level, for a use case that
+  needs more than `read committed`.
+- A key belongs to the organization of the verified token, and a stored response to the actor
+  that obtained it: the same key sent by another member answers 422. Requests without an organization share
   one namespace and are served in a system transaction: their keys must be unguessable, as a UUID
   is.
 - Expired keys are overwritten when used again, never deleted by the interceptor. Schedule

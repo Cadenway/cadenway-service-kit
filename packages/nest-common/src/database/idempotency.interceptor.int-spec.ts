@@ -376,6 +376,24 @@ describe('IdempotencyInterceptor', () => {
     expect(await count('idempotency_keys')).toBe(0);
   });
 
+  it('does not replay a response to another member who learnt the key', async () => {
+    await send('/internal/v1/tasks', { title: 'CAD-482' }, 'key-0007');
+    const other: string = await gateway.sign('task-service', {
+      actor: { type: 'user', id: 'user-other-member' },
+      organizationId: ATELIER_NORD,
+    });
+
+    const replay: Response = await request(app.getHttpServer())
+      .post('/internal/v1/tasks')
+      .set('Authorization', `Bearer ${other}`)
+      .set('Idempotency-Key', 'key-0007')
+      .send({ title: 'CAD-482' });
+
+    expect(replay.status).toBe(422);
+    expect(replay.body).toMatchObject({ code: 'idempotency.key-reused' });
+    expect(probe.runs).toBe(1);
+  });
+
   it('keeps the keys of two organizations apart', async () => {
     const first: Response = await send('/internal/v1/tasks', { title: 'CAD-482' }, 'key-0005');
     const other: Response = await send(

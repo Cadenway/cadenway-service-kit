@@ -1,6 +1,14 @@
 import { fileURLToPath } from 'node:url';
 
-import { Body, Controller, Get, Module, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Module,
+  Post,
+  Query,
+  type OnApplicationShutdown,
+} from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request, { type Response } from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -122,7 +130,7 @@ describe('createApplication', () => {
     lines.length = 0;
     token = await gateway.sign('sample-service', {
       actor: { type: 'user', id: 'user-camille' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
     });
   });
 
@@ -161,7 +169,7 @@ describe('createApplication', () => {
       budgetMs: number;
     };
     expect(body.limit).toBe(50);
-    expect(body.organizationId).toBe('org-atelier-nord');
+    expect(body.organizationId).toBe('0193a1f0-0000-7000-8000-00000000000a');
     expect(body.budgetMs).toBeGreaterThan(0);
     expect(body.budgetMs).toBeLessThanOrEqual(1500);
     expect(invalid.body).toMatchObject({ code: 'request.invalid' });
@@ -197,7 +205,7 @@ describe('createApplication', () => {
       version: '1.2.3',
       route: '/internal/v1/samples',
       status: 200,
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       userId: 'user-camille',
     });
   });
@@ -215,6 +223,7 @@ describe('createApplication', () => {
     const other: NestExpressApplication = await createApplication(SampleModule, {
       service: 'sample-service',
       config: { LOG_LEVEL: 'silent' },
+      internalTokenVerification: 'off',
     });
     await other.init();
 
@@ -223,6 +232,78 @@ describe('createApplication', () => {
     registerTelemetryShutdown(undefined);
 
     expect(flushed).toBe(1);
+  });
+
+  it('flushes telemetry after the application released its own resources, and survives a failed flush', async () => {
+    const order: string[] = [];
+    registerTelemetryShutdown(() => {
+      order.push('telemetry');
+      return Promise.reject(new Error('collector unreachable'));
+    });
+
+    /**
+     * Class ResourceModule
+     *
+     * @description
+     * Module of an application that closes a resource at shutdown, as the database module does.
+     */
+    @Module({ imports: [SampleModule] })
+    class ResourceModule implements OnApplicationShutdown {
+      // #region Methods
+      /**
+       * Method onApplicationShutdown
+       *
+       * @description
+       * Records when the application releases its resource.
+       *
+       * @returns {void}
+       */
+      public onApplicationShutdown(): void {
+        order.push('application');
+      }
+      // #endregion
+    }
+
+    const other: NestExpressApplication = await createApplication(ResourceModule, {
+      service: 'sample-service',
+      config: { LOG_LEVEL: 'silent' },
+      internalTokenVerification: 'off',
+    });
+    await other.init();
+    await expect(other.close()).resolves.toBeUndefined();
+    registerTelemetryShutdown(undefined);
+
+    expect(order).toEqual(['application', 'telemetry']);
+  });
+
+  it('refuses to start without a verifier unless verification is turned off', async () => {
+    await expect(createApplication(SampleModule, { service: 'sample-service' })).rejects.toThrow(
+      /internalToken\.verifier is required/u,
+    );
+    await expect(
+      createApplication(SampleModule, {
+        service: 'sample-service',
+        internalToken: {},
+      }),
+    ).rejects.toThrow(/internalToken\.verifier is required/u);
+  });
+
+  it('ignores the timeout header of a caller when told not to accept it', async () => {
+    const edge: NestExpressApplication = await createApplication(SampleModule, {
+      service: 'sample-gateway',
+      config: { LOG_LEVEL: 'silent' },
+      internalTokenVerification: 'off',
+      acceptIncomingRequestTimeout: false,
+    });
+    await edge.init();
+
+    const response: Response = await request(edge.getHttpServer())
+      .get('/internal/v1/samples')
+      .set('X-Request-Timeout-Ms', '50')
+      .expect(200);
+    await edge.close();
+
+    expect((response.body as { budgetMs: number }).budgetMs).toBeGreaterThan(5000);
   });
 });
 
