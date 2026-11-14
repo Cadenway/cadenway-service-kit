@@ -244,10 +244,10 @@ export function encodeCursor(position: CursorPosition, filters: unknown): string
  * Builds the problem answered to a cursor that cannot be used.
  *
  * @param {string} detail - What is wrong with the cursor.
- * @returns {ProblemException} A 400 `pagination.invalid-cursor` problem.
+ * @returns {ProblemException} A 400 `pagination.cursor-invalid` problem.
  */
 function invalidCursor(detail: string): ProblemException {
-  return new ProblemException({ status: 400, code: 'pagination.invalid-cursor', detail });
+  return new ProblemException({ status: 400, code: 'pagination.cursor-invalid', detail });
 }
 
 /**
@@ -259,7 +259,7 @@ function invalidCursor(detail: string): ProblemException {
  * @param {string} cursor - Cursor sent by the caller.
  * @param {unknown} filters - Filters and sort of the current request.
  * @returns {CursorPosition} The position the page starts after.
- * @throws {ProblemException} 400 `pagination.invalid-cursor` when the cursor is malformed or was issued for other filters.
+ * @throws {ProblemException} 400 `pagination.cursor-invalid` when the cursor is malformed or was issued for other filters.
  */
 export function decodeCursor(cursor: string, filters: unknown): CursorPosition {
   if (cursor.length > MAX_CURSOR_LENGTH) {

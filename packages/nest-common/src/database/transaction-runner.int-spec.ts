@@ -13,6 +13,7 @@ import {
   getActiveTransaction,
   SystemTransactionRunner,
   TenantTransactionRunner,
+  TransactionAbortedError,
   type TransactionScope,
 } from './transaction-runner.js';
 
@@ -286,6 +287,105 @@ describe('transaction runners', () => {
     );
 
     expect(seen).toEqual([['CAD-482', 'CAD-483'], ['OPS-1'], ['CAD-482', 'CAD-483'], ['OPS-1']]);
+  });
+
+  it('survives a connection killed during a transaction and discards it', async () => {
+    const single: pg.Pool = new pg.Pool({ connectionString: database.appUrl, max: 1 });
+    single.on('error', () => undefined);
+    const runner: SystemTransactionRunner = new SystemTransactionRunner(single);
+    try {
+      await expect(
+        runner.run(async (scope: TransactionScope) => {
+          const backend: { rows: unknown[] } = await scope.client.query(
+            'select pg_backend_pid() as pid',
+          );
+          await database.admin.query('select pg_terminate_backend($1)', [
+            (backend.rows[0] as { pid: number }).pid,
+          ]);
+          await scope.client.query('select pg_sleep(1)');
+        }),
+      ).rejects.toThrow();
+
+      const after: string[] = await runner.run(async (scope: TransactionScope) =>
+        titles(await scope.client.query('select title from tasks')),
+      );
+      expect(after).toHaveLength(3);
+    } finally {
+      await single.end();
+    }
+  });
+
+  it('refuses to report a success when PostgreSQL rolled the transaction back at commit', async () => {
+    await expect(
+      as(ATELIER_NORD, () =>
+        tenant.run(async (scope: TransactionScope) => {
+          await scope.client.query('insert into tasks (organization_id, title) values ($1, $2)', [
+            ATELIER_NORD,
+            'lost-write',
+          ]);
+          await scope.client.query('select 1 / 0').catch(() => undefined);
+          return 'looks fine';
+        }),
+      ),
+    ).rejects.toBeInstanceOf(TransactionAbortedError);
+
+    expect(scopeTitles(await database.admin.query('select title from tasks'))).not.toContain(
+      'lost-write',
+    );
+  });
+
+  it('kills the scope of a finished transaction and refuses a nested Drizzle transaction', async () => {
+    let kept: TransactionScope | undefined;
+    let nested: unknown;
+    let release: () => void = (): void => undefined;
+    const finished: Promise<void> = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Work started inside the transaction that outlives it, as a forgotten `await` would.
+    const later: { pending: Promise<number> } = { pending: Promise.resolve(0) };
+    await as(ATELIER_NORD, () =>
+      tenant.run(async (scope: TransactionScope) => {
+        kept = scope;
+        nested = await (
+          scope.db as unknown as { transaction(work: () => Promise<void>): Promise<void> }
+        )
+          .transaction(() => Promise.resolve())
+          .catch((error: unknown) => error);
+        later.pending = finished.then(() =>
+          tenant.run(async (again: TransactionScope) => {
+            expect(again).not.toBe(scope);
+            const rows: { rows: unknown[] } = await again.client.query('select title from tasks');
+            return rows.rows.length;
+          }),
+        );
+      }),
+    );
+    release();
+
+    expect((nested as Error).message).toMatch(/use the transaction runner/u);
+    await expect(kept?.client.query('select 1')).rejects.toThrow(/transaction is over/u);
+    await expect(kept?.db.execute(sql`select 1`)).rejects.toMatchObject({
+      cause: { message: expect.stringMatching(/transaction is over/u) as unknown },
+    });
+    expect(await later.pending).toBe(2);
+  });
+
+  it('refuses to join a transaction that is less strict than asked', async () => {
+    await expect(
+      as(ATELIER_NORD, () =>
+        tenant.run(() =>
+          tenant.run(() => Promise.resolve('weaker'), { isolationLevel: 'serializable' }),
+        ),
+      ),
+    ).rejects.toThrow(/cannot provide the serializable isolation level/u);
+    const joined: string = await as(ATELIER_NORD, () =>
+      tenant.run(
+        () => tenant.run(() => Promise.resolve('same'), { isolationLevel: 'repeatable read' }),
+        { isolationLevel: 'serializable' },
+      ),
+    );
+
+    expect(joined).toBe('same');
   });
 
   it('honours the read-only and isolation options', async () => {

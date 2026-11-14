@@ -41,6 +41,32 @@ type LogLine = Record<string, unknown>;
 const lines: LogLine[] = [];
 
 /**
+ * Class AutomationController
+ *
+ * @description
+ * Controller reserved to one issuer, with a route that changes another option.
+ */
+@Controller('internal/v1/automation')
+@InternalAccess({ issuers: ['automation-service'], actors: ['automation'] })
+class AutomationController {
+  // #region Methods
+  /**
+   * Method run
+   *
+   * @description
+   * Route that only relaxes the organization requirement of its controller.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Post('runs')
+  @InternalAccess({ organization: 'optional' })
+  public run(): { ok: boolean } {
+    return { ok: true };
+  }
+  // #endregion
+}
+
+/**
  * Class TaskController
  *
  * @description
@@ -147,7 +173,7 @@ describe('InternalTokenGuard', () => {
         }),
         HealthModule,
       ],
-      controllers: [TaskController],
+      controllers: [TaskController, AutomationController],
     }).compile();
     app = moduleRef.createNestApplication();
     app.useGlobalFilters(new ProblemFilter());
@@ -165,7 +191,7 @@ describe('InternalTokenGuard', () => {
   it('refuses a token whose aud names another service', async () => {
     const token: string = await gateway.sign('billing-service', {
       actor: { type: 'user', id: 'user-camille' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
     });
 
     const response: Response = await request(app.getHttpServer())
@@ -201,7 +227,7 @@ describe('InternalTokenGuard', () => {
   it('derives the organization context from the verified token only', async () => {
     const token: string = await gateway.sign('task-service', {
       actor: { type: 'user', id: 'user-camille' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       role: 'admin',
       scopes: ['tasks:read'],
     });
@@ -209,13 +235,13 @@ describe('InternalTokenGuard', () => {
     const response: Response = await request(app.getHttpServer())
       .get('/internal/v1/tasks?organizationId=org-other')
       .set('Authorization', `Bearer ${token}`)
-      .set('X-Organization-Id', 'org-other')
+      .set('X-Organization-Id', '0193a1f0-0000-7000-8000-00000000000b')
       .expect(200);
 
     expect(response.body).toEqual({
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       context: {
-        organizationId: 'org-atelier-nord',
+        organizationId: '0193a1f0-0000-7000-8000-00000000000a',
         actor: { type: 'user', id: 'user-camille' },
         role: 'admin',
         scopes: ['tasks:read'],
@@ -224,7 +250,9 @@ describe('InternalTokenGuard', () => {
   });
 
   it('keeps the contexts of concurrent requests apart', async () => {
-    const organizations: string[] = ['org-a', 'org-b', 'org-c', 'org-d'];
+    const organizations: string[] = ['c', 'd', 'e', 'f'].map(
+      (suffix: string) => `0193a1f0-0000-7000-8000-00000000000${suffix}`,
+    );
 
     const responses: Response[] = await Promise.all(
       organizations.map(async (organizationId: string) =>
@@ -248,7 +276,7 @@ describe('InternalTokenGuard', () => {
   it('writes organizationId and userId on the lines of the request', async () => {
     const token: string = await gateway.sign('task-service', {
       actor: { type: 'user', id: 'user-camille' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
     });
 
     await request(app.getHttpServer())
@@ -257,13 +285,13 @@ describe('InternalTokenGuard', () => {
       .expect(200);
 
     expect(lines.find((line) => line.msg === 'listing tasks')).toMatchObject({
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       userId: 'user-camille',
     });
     expect(lines.find((line) => line.msg === 'request completed')).toMatchObject({
       route: '/internal/v1/tasks',
       status: 200,
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       userId: 'user-camille',
     });
   });
@@ -316,7 +344,7 @@ describe('InternalTokenGuard', () => {
   it('restricts a route to the issuers it declares', async () => {
     const claims: { actor: { type: 'automation'; id: string }; organizationId: string } = {
       actor: { type: 'automation', id: 'rule-42' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
     };
 
     await request(app.getHttpServer())
@@ -325,6 +353,24 @@ describe('InternalTokenGuard', () => {
       .expect(201);
     const refused: Response = await request(app.getHttpServer())
       .post('/internal/v1/actions')
+      .set('Authorization', `Bearer ${await gateway.sign('task-service', claims)}`)
+      .expect(403);
+
+    expect(refused.body).toMatchObject({ code: 'auth.issuer-not-allowed' });
+  });
+
+  it('keeps a restriction of the controller on a route that declares something else', async () => {
+    const claims: { actor: { type: 'automation'; id: string }; organizationId: null } = {
+      actor: { type: 'automation', id: 'rule-42' },
+      organizationId: null,
+    };
+
+    await request(app.getHttpServer())
+      .post('/internal/v1/automation/runs')
+      .set('Authorization', `Bearer ${await automation.sign('task-service', claims)}`)
+      .expect(201);
+    const refused: Response = await request(app.getHttpServer())
+      .post('/internal/v1/automation/runs')
       .set('Authorization', `Bearer ${await gateway.sign('task-service', claims)}`)
       .expect(403);
 

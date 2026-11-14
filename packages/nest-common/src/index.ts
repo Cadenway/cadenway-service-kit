@@ -101,17 +101,12 @@ export {
   type BodyParserHost,
 } from './http/body-limit.js';
 export { routePatternOf } from './http/route.js';
-export {
-  createLoggerParams,
-  LoggingModule,
-  type LoggingModuleOptions,
-} from './logging/logging.module.js';
+export { LoggingModule, type LoggingModuleOptions } from './logging/logging.module.js';
 export {
   buildPage,
   decodeCursor,
   DEFAULT_PAGE_LIMIT,
   encodeCursor,
-  filterFingerprint,
   MAX_PAGE_LIMIT,
   pageQueryShape,
   type CursorPosition,
@@ -128,7 +123,7 @@ export {
   type ProblemStatus,
 } from './problem/problem.js';
 export { DEFAULT_REDACTED_KEYS, maskEmails, REDACTED } from './logging/redaction.js';
-export { REQUEST_ID_HEADER, requestIdOf, resolveRequestId } from './logging/request-id.js';
+export { REQUEST_ID_HEADER, requestIdOf } from './logging/request-id.js';
 export { nameHttpSpan, RouteNameInterceptor } from './telemetry/route-name.interceptor.js';
 export { shutdownTelemetry } from './telemetry/telemetry-handle.js';
 export {

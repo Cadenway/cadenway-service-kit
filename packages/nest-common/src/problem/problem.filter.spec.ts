@@ -371,7 +371,7 @@ describe('HTTP formats', () => {
         .patch('/samples/long-text')
         .expect(400);
 
-      expect((malformed.body as Problem).code).toBe('request.invalid-if-match');
+      expect((malformed.body as Problem).code).toBe('request.if-match-invalid');
       expect((missing.body as Problem).code).toBe('request.if-match-required');
     });
   });

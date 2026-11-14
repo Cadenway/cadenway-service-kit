@@ -144,8 +144,8 @@ export interface InternalTokenClaims {
    * Property organizationId
    *
    * @description
-   * Organization the call is made in, or `null` for a call outside any organization. Always
-   * `null` for an anonymous actor.
+   * Organization the call is made in, a UUID, or `null` for a call outside any organization.
+   * Always `null` for an anonymous actor.
    *
    * @type {string | null}
    * @readonly
@@ -422,7 +422,8 @@ const claimSetSchema: z.ZodType<TokenClaimSet> = z
       type: z.enum(['user', 'automation', 'git', 'system', 'anonymous']),
       id: z.string().min(1).max(200).nullable(),
     }),
-    organization_id: z.string().min(1).max(200).nullable(),
+    // A UUID, as every entity id of the contracts: the row-level security policies cast it.
+    organization_id: z.uuid().nullable(),
     role: z.string().min(1).max(100).nullable(),
     scopes: z.array(z.string().min(1).max(100)).max(100),
     trace_id: z.string().min(1).max(64).optional(),

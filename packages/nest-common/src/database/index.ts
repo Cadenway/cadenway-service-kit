@@ -33,11 +33,12 @@ export {
   SYSTEM_ACCESS_SETTING,
 } from './organization-policy.js';
 export {
-  getActiveTransaction,
   SystemTransactionRunner,
   TenantTransactionRunner,
+  TransactionAbortedError,
   type DatabaseSchema,
   type TransactionClient,
+  type TransactionDatabase,
   type TransactionKind,
   type TransactionOptions,
   type TransactionScope,

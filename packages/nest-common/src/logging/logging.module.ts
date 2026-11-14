@@ -11,7 +11,13 @@ import type { Options } from 'pino-http';
 import { principalOf } from '../auth/internal-token.guard.js';
 import { getOrganizationContext, type OrganizationContext } from '../auth/organization-context.js';
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
-import { DEFAULT_REDACTED_KEYS, maskEmails, REDACTED, redactionPaths } from './redaction.js';
+import { readPackageVersion } from '../bootstrap/package-version.js';
+import {
+  maskEmails,
+  redactedKeySet,
+  sanitizeLogValue,
+  sanitizeSerializedError,
+} from './redaction.js';
 import { routePatternOf } from '../http/route.js';
 import { REQUEST_ID_HEADER, resolveRequestId } from './request-id.js';
 
@@ -39,11 +45,12 @@ export interface LoggingModuleOptions {
    *
    * @description
    * Released version of the application, written in the `version` field of every line.
+   * Defaults to the version of the `package.json` in the working directory.
    *
-   * @type {string}
+   * @type {string | undefined}
    * @readonly
    */
-  readonly version: string;
+  readonly version?: string;
 
   /**
    * Property level
@@ -231,16 +238,17 @@ function prettyTransport(environment: RuntimeEnvironment): pino.TransportSingleO
  */
 export function createLoggerParams(options: LoggingModuleOptions): Params {
   const acceptIncoming: boolean = options.acceptIncomingRequestId ?? true;
+  const redactedKeys: ReadonlySet<string> = redactedKeySet(options.redactKeys);
   const httpOptions: Options = {
     level: options.level ?? 'info',
-    base: { service: options.service, version: options.version },
+    base: { service: options.service, version: options.version ?? readPackageVersion() },
     timestamp: pino.stdTimeFunctions.isoTime,
-    formatters: { level: (label: string) => ({ level: label }) },
-    mixin: contextFields,
-    redact: {
-      paths: redactionPaths([...DEFAULT_REDACTED_KEYS, ...(options.redactKeys ?? [])]),
-      censor: REDACTED,
+    formatters: {
+      level: (label: string) => ({ level: label }),
+      log: (object: Record<string, unknown>) =>
+        sanitizeLogValue(object, redactedKeys) as Record<string, unknown>,
     },
+    mixin: contextFields,
     hooks: {
       logMethod(args: Parameters<pino.LogFn>, method: pino.LogFn): void {
         const masked: unknown[] = args.map((argument: unknown) =>
@@ -250,14 +258,8 @@ export function createLoggerParams(options: LoggingModuleOptions): Params {
       },
     },
     serializers: {
-      err: (error: Error) => {
-        const serialized: pino.SerializedError = pino.stdSerializers.err(error);
-        return {
-          ...serialized,
-          message: maskEmails(serialized.message),
-          stack: maskEmails(serialized.stack),
-        };
-      },
+      err: (error: Error) =>
+        sanitizeSerializedError({ ...pino.stdSerializers.err(error) }, redactedKeys),
     },
     genReqId: (request: IncomingMessage, response: ServerResponse) => {
       const id: string = resolveRequestId(request.headers['x-request-id'], acceptIncoming);

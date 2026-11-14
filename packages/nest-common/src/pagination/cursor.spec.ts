@@ -58,10 +58,10 @@ describe('cursor codec', () => {
     const cursor: string = encodeCursor(position, { sort: '-dueDate', status: ['open'] });
 
     expect(problemCode(() => decodeCursor(cursor, { sort: 'dueDate', status: ['open'] }))).toBe(
-      '400 pagination.invalid-cursor',
+      '400 pagination.cursor-invalid',
     );
     expect(problemCode(() => decodeCursor(cursor, { sort: '-dueDate' }))).toBe(
-      '400 pagination.invalid-cursor',
+      '400 pagination.cursor-invalid',
     );
   });
 
@@ -71,7 +71,7 @@ describe('cursor codec', () => {
     );
 
     for (const cursor of ['not base64 json', '', forged, 'A'.repeat(4096)]) {
-      expect(problemCode(() => decodeCursor(cursor, {}))).toBe('400 pagination.invalid-cursor');
+      expect(problemCode(() => decodeCursor(cursor, {}))).toBe('400 pagination.cursor-invalid');
     }
   });
 

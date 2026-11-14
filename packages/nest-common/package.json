@@ -57,6 +57,7 @@
   "peerDependencies": {
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
+    "@nestjs/platform-express": "catalog:",
     "@opentelemetry/api": "catalog:",
     "drizzle-orm": "catalog:",
     "pg": "catalog:",

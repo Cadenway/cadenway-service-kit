@@ -22,6 +22,7 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { BatchSpanProcessor, NoopSpanProcessor } from '@opentelemetry/sdk-trace';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
+import { readPackageVersion } from '../bootstrap/package-version.js';
 import { registerTelemetryShutdown } from './telemetry-handle.js';
 
 /**
@@ -47,12 +48,13 @@ export interface TelemetryOptions {
    * Property version
    *
    * @description
-   * Released version of the application, exported as `service.version`.
+   * Released version of the application, exported as `service.version`. Defaults to the
+   * version of the `package.json` in the working directory.
    *
-   * @type {string}
+   * @type {string | undefined}
    * @readonly
    */
-  readonly version: string;
+  readonly version?: string;
   // #endregion
 }
 
@@ -201,7 +203,7 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
     resource: defaultResource().merge(
       resourceFromAttributes({
         [ATTR_SERVICE_NAME]: options.service,
-        [ATTR_SERVICE_VERSION]: options.version,
+        [ATTR_SERVICE_VERSION]: options.version ?? readPackageVersion(),
       }),
     ),
     instrumentations: [

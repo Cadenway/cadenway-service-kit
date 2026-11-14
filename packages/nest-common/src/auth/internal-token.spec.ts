@@ -29,7 +29,7 @@ import {
  */
 const userClaims: InternalTokenClaims = {
   actor: { type: 'user', id: 'user-camille' },
-  organizationId: 'org-atelier-nord',
+  organizationId: '0193a1f0-0000-7000-8000-00000000000a',
   role: 'admin',
   scopes: ['tasks:read', 'tasks:write'],
   traceId: '0af7651916cd43dd8448eb211c80319c',
@@ -90,7 +90,7 @@ describe('internal token', () => {
       issuer: 'api-gateway',
       audience: 'task-service',
       actor: { type: 'user', id: 'user-camille' },
-      organizationId: 'org-atelier-nord',
+      organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       role: 'admin',
       scopes: ['tasks:read', 'tasks:write'],
       traceId: '0af7651916cd43dd8448eb211c80319c',
@@ -101,7 +101,7 @@ describe('internal token', () => {
     const principal: InternalPrincipal = await taskService.verify(
       await automation.sign('task-service', {
         actor: { type: 'automation', id: 'rule-42' },
-        organizationId: 'org-atelier-nord',
+        organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       }),
     );
 
@@ -199,7 +199,7 @@ describe('internal token', () => {
     const forgedPayload: string = Buffer.from(
       JSON.stringify({
         ...(JSON.parse(Buffer.from(payload ?? '', 'base64url').toString('utf8')) as object),
-        organization_id: 'org-other',
+        organization_id: '0193a1f0-0000-7000-8000-00000000000b',
       }),
     ).toString('base64url');
     const symmetric: string = await new SignJWT({ scopes: [] })
@@ -223,7 +223,7 @@ describe('internal token', () => {
   it('refuses a validly signed token whose claims are inconsistent', async () => {
     const token: string = await new SignJWT({
       actor: { type: 'anonymous', id: null },
-      organization_id: 'org-atelier-nord',
+      organization_id: '0193a1f0-0000-7000-8000-00000000000a',
       role: null,
       scopes: [],
     })
@@ -242,7 +242,7 @@ describe('internal token', () => {
     await expect(
       gateway.sign('task-service', {
         actor: { type: 'anonymous', id: null },
-        organizationId: 'org-atelier-nord',
+        organizationId: '0193a1f0-0000-7000-8000-00000000000a',
       }),
     ).rejects.toThrow();
     await expect(
