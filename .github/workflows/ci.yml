@@ -19,8 +19,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # Lets the install read @cadenway/* packages from GitHub Packages. The kit depends on none
-      # yet; the access is ready for the first one.
+      # Lets the install read development dependencies from GitHub Packages.
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,6 +39,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm test:architecture
       - run: pnpm test:integration
       - run: pnpm build
 

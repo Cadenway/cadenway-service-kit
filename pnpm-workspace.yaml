@@ -39,6 +39,9 @@ trustPolicy: no-downgrade
 # Install scripts are reviewed one by one: pnpm refuses an install that would skip an unlisted one.
 # When pnpm reports a new one, add it here with `false` unless the script is really needed.
 allowBuilds:
+  # The architecture check does not start Testcontainers or need native SSH support.
+  cpu-features: false
+  ssh2: false
   # Pulled by the gRPC exporters of `@opentelemetry/sdk-node`. Its script only prints a warning when
   # several copies are installed.
   protobufjs: false

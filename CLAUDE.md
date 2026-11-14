@@ -34,12 +34,11 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:architecture
 pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
 ```
-
-Run the [architecture check](docs/development.md#architecture-check) once the released verifier is installed.
 
 ## Tooling: this repository ships its own `.claude/`
 
