@@ -14,17 +14,58 @@ export {
   type LogLevel,
   type RuntimeEnvironment,
 } from './config/base-config.js';
+export {
+  assertVersionMatch,
+  EtagInterceptor,
+  formatEtag,
+  IfMatch,
+  parseIfMatch,
+  type IfMatchCondition,
+  type VersionCheckOptions,
+} from './concurrency/etag.js';
 export { CONFIG, ConfigModule, type ConfigModuleOptions } from './config/config.module.js';
 export { ConfigError, loadConfig, type ConfigEnvironment } from './config/load-config.js';
 export { HealthModule } from './health/health.module.js';
+export {
+  applyJsonBodyLimit,
+  JSON_BODY_LIMIT_BYTES,
+  type BodyParserHost,
+} from './http/body-limit.js';
 export { routePatternOf } from './http/route.js';
 export {
   createLoggerParams,
   LoggingModule,
   type LoggingModuleOptions,
 } from './logging/logging.module.js';
+export {
+  buildPage,
+  decodeCursor,
+  DEFAULT_PAGE_LIMIT,
+  encodeCursor,
+  filterFingerprint,
+  MAX_PAGE_LIMIT,
+  pageQueryShape,
+  type CursorPosition,
+  type CursorValue,
+  type Page,
+  type PageQuery,
+} from './pagination/cursor.js';
+export { ProblemFilter, toProblem } from './problem/problem.filter.js';
+export {
+  PROBLEM_CONTENT_TYPE,
+  ProblemException,
+  type Problem,
+  type ProblemInit,
+  type ProblemStatus,
+} from './problem/problem.js';
 export { DEFAULT_REDACTED_KEYS, maskEmails, REDACTED } from './logging/redaction.js';
 export { REQUEST_ID_HEADER, requestIdOf, resolveRequestId } from './logging/request-id.js';
 export { nameHttpSpan, RouteNameInterceptor } from './telemetry/route-name.interceptor.js';
 export { shutdownTelemetry } from './telemetry/telemetry-handle.js';
+export {
+  zodDto,
+  ZodValidationPipe,
+  type ValidationIssue,
+  type ZodDto,
+} from './validation/zod-validation.pipe.js';
 export { InjectPinoLogger, Logger, PinoLogger } from 'nestjs-pino';
