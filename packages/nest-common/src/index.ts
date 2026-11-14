@@ -66,6 +66,20 @@ export { CONFIG, ConfigModule, type ConfigModuleOptions } from './config/config.
 export { ConfigError, loadConfig, type ConfigEnvironment } from './config/load-config.js';
 export { HealthModule } from './health/health.module.js';
 export {
+  InternalHttpClient,
+  MAX_CALL_TIMEOUT_MS,
+  type InternalHttpClientOptions,
+  type InternalRequestInit,
+} from './http-client/internal-http-client.js';
+export {
+  DEFAULT_REQUEST_BUDGET_MS,
+  remainingBudgetMs,
+  REQUEST_TIMEOUT_HEADER,
+  requestDeadlineMiddleware,
+  runWithDeadline,
+  type RequestDeadlineOptions,
+} from './http-client/request-deadline.js';
+export {
   applyJsonBodyLimit,
   JSON_BODY_LIMIT_BYTES,
   type BodyParserHost,
