@@ -48,6 +48,7 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:architecture
 pnpm test:integration          # NATS and PostgreSQL in Docker
 pnpm build
 pnpm changeset status
@@ -55,7 +56,7 @@ pnpm changeset status
 
 ## Architecture check
 
-The kit runs the `kit` profile of [`@cadenway/nest-testing/architecture`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing). The local runner is ready for the first release exposing that subpath from cadenway-tooling. Add the published version with `pnpm add -Dw @cadenway/nest-testing@<released-version>`, commit the lockfile, and run `pnpm test:architecture`. Add that command to the `quality` script and the CI quality job after `pnpm test` in the same change.
+Run `pnpm test:architecture` to check package boundaries with the `kit` profile of [`@cadenway/nest-testing/architecture`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing). The check is part of `pnpm quality` and the GitHub Actions quality gate.
 
 ## Collaboration and release
 

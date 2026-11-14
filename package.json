@@ -20,10 +20,11 @@
     "test:architecture": "node --test tests/architecture/project.test.mjs",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
-    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
+    "@cadenway/nest-testing": "0.1.0",
     "@changesets/cli": "^3.0.3",
     "@commitlint/cli": "^21.2.4",
     "@commitlint/config-conventional": "^21.2.4",
