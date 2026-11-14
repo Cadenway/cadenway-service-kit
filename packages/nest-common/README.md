@@ -3,7 +3,7 @@
 Plumbing shared by the Cadenway NestJS services and gateways. Implemented today: typed
 configuration, structured logs, OpenTelemetry start-up, the HTTP formats (errors, validation,
 pagination, entity tags, body limit), the internal token with the organization context, the
-transaction runners with `Idempotency-Key`, and the health routes. The rest of what the
+transaction runners with `Idempotency-Key`, the internal HTTP client, and the health routes. The rest of what the
 [repository instructions](../../AGENTS.md) list for this package is not implemented yet.
 
 `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api`, `reflect-metadata`, `rxjs` and `zod` are
@@ -384,6 +384,73 @@ a query string or a body. The interceptor carries them in an `AsyncLocalStorage`
 `runWithOrganizationContext` is for trusted entry points other than HTTP: the handler of an event
 whose envelope was validated against its contract, or of a job the service itself enqueued. An
 application never calls it for an HTTP request, and never builds a context from request data.
+
+## Internal HTTP client
+
+`InternalHttpClient` calls one other Cadenway service on the native `fetch` of Node. Build one per
+called service and give it to the generated client as its fetch implementation.
+
+```ts
+{
+  provide: TASK_SERVICE_CLIENT,
+  inject: [InternalTokenSigner],
+  useFactory: (signer: InternalTokenSigner) =>
+    new InternalHttpClient({
+      service: 'task-service',
+      baseUrl: config.TASK_SERVICE_URL,
+      signer,
+    }),
+}
+
+const response = await client.fetch('/internal/v1/tasks/CAD-482');
+```
+
+| Concern         | Behavior                                                                                                                    |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Internal token  | Signed for the called service on every call, from the current organization context, or from `init.claims` outside one       |
+| Deadline        | A call gets the time left to the current request, 2 seconds at most, and tells the called service in `X-Request-Timeout-Ms` |
+| Retry           | One, for an idempotent call, after a connection error or a 503 only, when time is left                                      |
+| Circuit breaker | One per client: opened by 5 consecutive failures, one trial call after 10 seconds                                           |
+| Request id      | The `X-Request-Id` of the current request is forwarded                                                                      |
+| Trace           | `traceparent` is added by the undici instrumentation of `startTelemetry`                                                    |
+| Failures        | Thrown as `ProblemException`; `fetch` only resolves with a response below 400                                               |
+
+A call is idempotent when its method is `GET`, `HEAD`, `PUT`, `DELETE` or `OPTIONS`, when it carries
+an `Idempotency-Key` header, or when `init.idempotent` says so; and only a call without a body or
+with a string body is sent again. A timeout is not retried.
+
+| Outcome                               | Thrown                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 400, 403, 404, 409, 412, 422, 429     | The same status, with the `code`, `title`, `detail` and `details` of the called service's problem |
+| Another client error                  | 400 `upstream.error`                                                                              |
+| 401                                   | 503 `upstream.unauthorized`: the internal token was refused, a configuration defect               |
+| 503                                   | 503 `upstream.unavailable`                                                                        |
+| Another server error                  | 503 `upstream.failed`                                                                             |
+| No connection                         | 503 `upstream.unreachable`                                                                        |
+| No answer in time                     | 503 `upstream.timeout`                                                                            |
+| Circuit open                          | 503 `upstream.circuit-open`, without calling                                                      |
+| Time of the current request exhausted | 503 `upstream.deadline-exceeded`, without calling                                                 |
+
+Every problem names the called service in `details.service`. Connection errors, timeouts and
+server errors count as failures for the breaker; client errors do not.
+
+| Option                   | Default  | Effect                                          |
+| ------------------------ | -------- | ----------------------------------------------- |
+| `service`                | Required | `aud` of the tokens and name in the problems    |
+| `baseUrl`                | Required | Base URL, from the `<SERVICE>_URL` variable     |
+| `signer`                 | Required | `InternalTokenSigner` of this application       |
+| `callTimeoutMs`          | 2000     | Longest time of one call; cannot exceed 2000    |
+| `breakerThreshold`       | 5        | Consecutive failures that open the circuit      |
+| `breakerHalfOpenAfterMs` | 10 000   | Time the circuit stays open before a trial call |
+| `fetch`                  | Native   | Fetch implementation, for tests                 |
+
+### Request deadline
+
+`requestDeadlineMiddleware({ budgetMs })` opens the deadline of each incoming request: 10 seconds
+by default, shortened to `X-Request-Timeout-Ms` when the caller sends a smaller positive integer.
+It does not interrupt a handler that overruns; it bounds the calls the handler makes.
+`remainingBudgetMs()` reads the time left and `runWithDeadline(budgetMs, work)` opens a deadline
+outside HTTP.
 
 ## Database
 
