@@ -43,7 +43,7 @@ Use kebab-case for directories and file stems. Use `<module>.module.ts` for comp
 
 | Area                 | Responsibility                                                                                                                                                                             | Allowed dependencies inside the module                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| `domain/`            | Entities, value objects, invariants, domain errors and domain events. Pass time and IDs in explicitly.                                                                                     | Domain only.                                                                  |
+| `domain/`            | Entities, value objects, invariants, domain errors and domain events. Pass time in explicitly; never generate an ID here (see [Time and IDs](#time-and-ids)).                              | Domain only.                                                                  |
 | `application/`       | Commands, queries, their inputs and outputs, and outbound ports. A use case signature is its inbound port.                                                                                 | Application and domain.                                                       |
 | `api/`               | HTTP, broker and job entry points. Validate contracts, translate authenticated context and inputs, call a use case and map the outcome to the protocol.                                    | API and application entry points.                                             |
 | `infrastructure/`    | Implement outbound ports. Map persistence, network and broker representations to and from application or domain types.                                                                     | Infrastructure, domain and application ports.                                 |
@@ -55,10 +55,19 @@ Cross-module imports use only the entry and consumer declared by the owning modu
 
 Gateway handlers and technical capabilities follow the same direction at their real boundaries. HTTP and WebSocket handlers drive application orchestration, and generated clients, Redis and NATS implementations sit behind ports where they are used. Keep routing, verification, aggregation, presence and fan-out in the gateway that owns them. Business invariants and persistent business data belong to the producing services. The service kit contains technical packages with declared exports and package dependencies.
 
+## Time and IDs
+
+The domain reads no clock and generates no ID: both would make a rule depend on its environment.
+
+- **Time** is passed in explicitly. The application reads it from a clock port and hands it to the domain method that needs it.
+- **IDs are assigned by PostgreSQL**, with `uuidv7()` as the column default, never by application code: no `randomUUID()` and no `uuid` package in a service. A new aggregate has no ID until it is stored. The repository inserts it and returns the stored aggregate with the ID read back (`RETURNING`); the use case builds the domain event and its outbox row from that returned value, in the same transaction.
+- An existing aggregate carries its ID like any other state: the domain receives it when the repository loads it, and never invents one.
+- A display key such as `CAD-482` is a business value allocated by the owning module, not the ID.
+
 ## Example: changing a task status
 
 1. The HTTP adapter validates the published route contract and derives the organization and actor from verified context. It maps the request to `ChangeTaskStatus`.
-2. The use case calls its `TaskUnitOfWork` port. The callback receives a task repository and outbox writer bound to one transaction. Load by organization and task ID, then call the task's transition method.
+2. The use case calls its `TaskUnitOfWork` port, implemented with the tenant transaction runner of `@cadenway/nest-common/database`. The callback receives a task repository and outbox writer bound to one transaction. Load by organization and task ID, then call the task's transition method.
 3. If the task accepts the transition, persist it and append the mapped domain event to the outbox before committing. A failure rolls back both writes. An outbox relay publishes after commit. External HTTP calls are performed outside the transaction.
 4. An incoming event handler validates the envelope and passes the event ID to its use case. Record deduplication and transactional effects atomically. Acknowledge after a successful commit and make retries safe for effects outside the database through an idempotency key or durable handoff.
 

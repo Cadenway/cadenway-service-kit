@@ -23,7 +23,7 @@ OpenTelemetry SDK itself.
 | Concern | Rule |
 | --- | --- |
 | Propagation | `traceparent` (W3C) in HTTP headers and in NATS message headers |
-| Start-up | `node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import ./telemetry.js`: the only documented way to instrument an ESM application, and NestJS 12 imports Express as ESM |
+| Start-up | `node --experimental-loader=@cadenway/nest-common/hook.mjs --import ./telemetry.js`: the loader is the only documented way to instrument an ESM application, and NestJS 12 imports Express as ESM. The kit entry point re-exports `@opentelemetry/instrumentation/hook.mjs`, which an application cannot resolve itself under pnpm |
 | Instrumentations | HTTP, Express, pg, ioredis and undici, listed one by one |
 | Route name | An interceptor names the span and sets `http.route`: no OpenTelemetry instrumentation supports NestJS 12 |
 | Export | OTLP over HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`; nothing leaves the process when the variable is unset |

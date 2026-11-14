@@ -39,6 +39,9 @@ allowBuilds:
   # The architecture check does not start Testcontainers or need native SSH support.
   cpu-features: false
   ssh2: false
+  # Pulled by drizzle-kit, a development dependency used by the integration specs. Its script only
+  # checks the platform binary, which pnpm installs as an optional dependency anyway.
+  esbuild: false
   # Pulled by the gRPC exporters of `@opentelemetry/sdk-node`. Its script only prints a warning when
   # several copies are installed.
   protobufjs: false

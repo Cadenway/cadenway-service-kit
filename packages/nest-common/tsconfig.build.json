@@ -8,5 +8,7 @@
     "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts"]
+  // src/testing holds helpers shared by the specs; they import development dependencies and are
+  // not shipped.
+  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts", "src/testing/**"]
 }
