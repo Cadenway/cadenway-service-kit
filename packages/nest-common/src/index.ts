@@ -54,6 +54,11 @@ export {
   type RuntimeEnvironment,
 } from './config/base-config.js';
 export {
+  createApplication,
+  type CreateApplicationOptions,
+} from './bootstrap/create-application.js';
+export { readPackageVersion } from './bootstrap/package-version.js';
+export {
   assertVersionMatch,
   EtagInterceptor,
   formatEtag,
@@ -64,7 +69,18 @@ export {
 } from './concurrency/etag.js';
 export { CONFIG, ConfigModule, type ConfigModuleOptions } from './config/config.module.js';
 export { ConfigError, loadConfig, type ConfigEnvironment } from './config/load-config.js';
-export { HealthModule } from './health/health.module.js';
+export {
+  DEFAULT_INDICATOR_TIMEOUT_MS,
+  natsIndicator,
+  postgresIndicator,
+  redisIndicator,
+  type HealthIndicator,
+  type HealthModuleOptions,
+  type NatsProbe,
+  type PostgresProbe,
+  type RedisProbe,
+} from './health/health-indicators.js';
+export { HealthModule, type HealthModuleAsyncOptions } from './health/health.module.js';
 export {
   InternalHttpClient,
   MAX_CALL_TIMEOUT_MS,

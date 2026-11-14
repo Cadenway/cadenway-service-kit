@@ -5,5 +5,6 @@
  *
  * @packageDocumentation
  */
+export { readPackageVersion } from '../bootstrap/package-version.js';
 export { startTelemetry, type TelemetryHandle, type TelemetryOptions } from './start-telemetry.js';
 export { shutdownTelemetry } from './telemetry-handle.js';
