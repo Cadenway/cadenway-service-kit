@@ -18,14 +18,15 @@ and [Codex](.codex/README.md) for agents, skills, commands and hooks.
 
 The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
 
-cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes four packages; the front end never depends on it.
+cadenway-service-kit publishes the three runtime packages shared by NestJS services and gateways.
 
 | Package                    | Provides                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
 | `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
 | `@cadenway/nest-jobs`      | Durable background jobs kept in the service's own PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, dead letters, cron schedules                             |
-| `@cadenway/nest-testing`   | Disposable PostgreSQL, NATS and Redis for tests, fakes of third-party HTTP services, mockup-based fixtures (Atelier Nord, Sprint 14)                                                              |
+
+The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) is maintained in cadenway-tooling.
 
 ## Language
 
@@ -38,7 +39,7 @@ cadenway-service-kit is the technical base shared by the NestJS services and gat
 
 ## Architectural ownership
 
-- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`, `packages/nest-testing/`: one Nest module or helper set each.
+- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`: one runtime module or helper set each.
 
 ## Boundaries (hard rules)
 
@@ -71,7 +72,6 @@ narrowest check that covers the change first, then widen:
 | nest-common                     | `pnpm test packages/nest-common`                |
 | nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
 | nest-jobs                       | `pnpm test:integration packages/nest-jobs`      |
-| nest-testing                    | `pnpm test packages/nest-testing`               |
 | Any change to a package         | a changeset                                     |
 | Docs or agent instructions only | Scoped formatting and link review               |
 
@@ -111,7 +111,7 @@ not to find another way around it.
   `cw-kit-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
   path-scoped rules and hooks.
 - **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
-- **Builders** (assigned writes): `cw-kit-common-builder`, `cw-kit-messaging-builder`, `cw-kit-testing-builder`, `cw-kit-test-writer`, `cw-kit-release-manager`, `cw-kit-github-maintainer`.
+- **Builders** (assigned writes): `cw-kit-common-builder`, `cw-kit-messaging-builder`, `cw-kit-test-writer`, `cw-kit-release-manager`, `cw-kit-github-maintainer`.
 - **Reviewers** (read-only): `cw-kit-api-stability-reviewer`, `cw-kit-security-reviewer`, `cw-kit-observability-reviewer`, `cw-kit-reliability-reviewer`.
 - Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
   checks, assign disjoint files to parallel agents and integrate their results yourself.

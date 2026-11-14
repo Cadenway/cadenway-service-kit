@@ -80,6 +80,8 @@ pnpm changeset status
 
 The checks run in CI on every pull request; report in the pull request the ones you ran locally.
 
+The [architecture check](../docs/development.md#architecture-check) uses the verifier published by cadenway-tooling.
+
 ## Releases and deployment
 
 Add a changeset with `pnpm changeset` in every pull request that changes a package. The

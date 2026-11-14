@@ -4,6 +4,9 @@ import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller.js';
 
 /**
+ * Class HealthModule
+ *
+ * @description
  * Adds the `GET /health/live` and `GET /health/ready` routes to a service or a gateway.
  *
  * Import the class as is: it takes no option. Both routes answer 200 with the Terminus body

@@ -12,7 +12,6 @@
   "references": [
     { "path": "./packages/nest-common/tsconfig.build.json" },
     { "path": "./packages/nest-jobs/tsconfig.build.json" },
-    { "path": "./packages/nest-messaging/tsconfig.build.json" },
-    { "path": "./packages/nest-testing/tsconfig.build.json" }
+    { "path": "./packages/nest-messaging/tsconfig.build.json" }
   ]
 }

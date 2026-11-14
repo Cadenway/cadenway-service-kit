@@ -1,15 +1,16 @@
 # cadenway-service-kit documentation
 
-Planned role: cadenway-service-kit is the technical base shared by the NestJS services and gateways. It publishes four packages; the front end never depends on it.
+cadenway-service-kit owns the three runtime packages shared by NestJS services and gateways.
 
 ## Current status
 
-At the time this documentation was written, this checkout has no `package.json`, application source tree, or GitHub workflow files. The target architecture, scripts, and workflows in this guide must be created and verified during bootstrap.
+The checkout contains the runtime packages and their build and release workflows. See the package READMEs for implemented capabilities. The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) is maintained in cadenway-tooling.
 
 ## Read the guides
 
 - [Architecture and ownership](architecture.md): boundaries and planned repository structure.
-- [Development and checks](development.md): prerequisites, planned commands and verification.
+- [Hexagonal architecture for NestJS](hexagonal-architecture.md): module template, dependency rules and architecture checks.
+- [Development and checks](development.md): prerequisites, commands and verification.
 - [Domain and integration](integration.md): repository-specific contracts, behavior and dependencies.
 
 ## Sources and policy

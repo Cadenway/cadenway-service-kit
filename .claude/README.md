@@ -1,7 +1,7 @@
 # cadenway-service-kit: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of cadenway-service-kit: **10 agents**,
-11 slash commands, 7 rules, 14 skills, 3 hooks, the project
+This `.claude/` folder ships the Claude Code tooling of cadenway-service-kit: **9 agents**,
+10 slash commands, 7 rules, 14 skills, 3 hooks, the project
 settings.
 
 Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CLAUDE.md](../CLAUDE.md)
@@ -44,7 +44,6 @@ check that writes files. No agent delegates further.
 | --- | --- | --- | --- | --- |
 | `cw-kit-common-builder` | Configuration, guards, logs, traces, health, errors. | opus | high | Assigned writes |
 | `cw-kit-messaging-builder` | NATS, outbox, retries, deduplication. | opus | xhigh | Assigned writes |
-| `cw-kit-testing-builder` | Test helpers and fixtures. | sonnet | high | Assigned writes |
 | `cw-kit-test-writer` | Tests of the kit itself. | sonnet | high | Assigned writes |
 | `cw-kit-release-manager` | Changesets and deprecations. | sonnet | medium | Assigned writes |
 | `cw-kit-api-stability-reviewer` | Public API and defaults. | opus | high | Read-only |
@@ -59,7 +58,6 @@ check that writes files. No agent delegates further.
 | --- | --- | --- |
 | `/cw-common` | Change @cadenway/nest-common. | `cw-kit-common-builder` |
 | `/cw-messaging` | Change @cadenway/nest-messaging. | `cw-kit-messaging-builder` |
-| `/cw-testing` | Change @cadenway/nest-testing. | `cw-kit-testing-builder` |
 | `/cw-test` | Write tests for the kit. | `cw-kit-test-writer` |
 | `/cw-release` | Prepare changesets and deprecations. | `cw-kit-release-manager` |
 | `/cw-api-review` | Check public API stability. | `cw-kit-api-stability-reviewer` |
