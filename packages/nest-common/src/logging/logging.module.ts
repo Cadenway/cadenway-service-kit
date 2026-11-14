@@ -8,6 +8,8 @@ import { LoggerModule, type Params } from 'nestjs-pino';
 import pino from 'pino';
 import type { Options } from 'pino-http';
 
+import { principalOf } from '../auth/internal-token.guard.js';
+import { getOrganizationContext, type OrganizationContext } from '../auth/organization-context.js';
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
 import { DEFAULT_REDACTED_KEYS, maskEmails, REDACTED, redactionPaths } from './redaction.js';
 import { routePatternOf } from '../http/route.js';
@@ -126,6 +128,28 @@ export interface LoggingModuleOptions {
 const HEALTH_PATH_PREFIX: string = '/health/';
 
 /**
+ * Function identityFields
+ *
+ * @description
+ * Builds the fields naming who a line is written for. Identifiers only: never a name or an
+ * e-mail address.
+ *
+ * @param {OrganizationContext | undefined} context - Organization context of the work, if any.
+ * @returns {Record<string, unknown>} `organizationId` and, for a user, `userId`.
+ */
+function identityFields(context: OrganizationContext | undefined): Record<string, unknown> {
+  if (context === undefined) {
+    return {};
+  }
+  return {
+    ...(context.organizationId === null ? {} : { organizationId: context.organizationId }),
+    ...(context.actor.type === 'user' && context.actor.id !== null
+      ? { userId: context.actor.id }
+      : {}),
+  };
+}
+
+/**
  * Function completionFields
  *
  * @description
@@ -134,7 +158,7 @@ const HEALTH_PATH_PREFIX: string = '/health/';
  * @param {IncomingMessage} request - Request that just completed.
  * @param {ServerResponse} response - Its response.
  * @param {unknown} durationMs - Time spent handling it, in milliseconds.
- * @returns {Record<string, unknown>} The `method`, `route`, `status` and `durationMs` fields.
+ * @returns {Record<string, unknown>} The `method`, `route`, `status`, `durationMs` and identity fields.
  */
 function completionFields(
   request: IncomingMessage,
@@ -146,21 +170,25 @@ function completionFields(
     route: routePatternOf(request),
     status: response.statusCode,
     durationMs,
+    ...identityFields(principalOf(request)),
   };
 }
 
 /**
- * Function traceFields
+ * Function contextFields
  *
  * @description
- * Reads the identifiers of the active OpenTelemetry span, so a log line can be joined to its
- * trace.
+ * Reads what joins a line to its trace and to who it is written for: the identifiers of the
+ * active OpenTelemetry span and of the current organization context.
  *
- * @returns {Record<string, unknown>} `traceId` and `spanId`, or nothing outside a span.
+ * @returns {Record<string, unknown>} `traceId`, `spanId`, `organizationId` and `userId`, each when known.
  */
-function traceFields(): Record<string, unknown> {
-  const context: SpanContext | undefined = trace.getActiveSpan()?.spanContext();
-  return context === undefined ? {} : { traceId: context.traceId, spanId: context.spanId };
+function contextFields(): Record<string, unknown> {
+  const span: SpanContext | undefined = trace.getActiveSpan()?.spanContext();
+  return {
+    ...(span === undefined ? {} : { traceId: span.traceId, spanId: span.spanId }),
+    ...identityFields(getOrganizationContext()),
+  };
 }
 
 /**
@@ -193,8 +221,8 @@ function prettyTransport(environment: RuntimeEnvironment): pino.TransportSingleO
  *
  * @description
  * Builds the `nestjs-pino` parameters shared by every Cadenway backend: one JSON line per event
- * with `service`, `version`, `traceId`, `spanId` and `requestId`; one completion line per request
- * with `method`, `route`, `status` and `durationMs`; default redaction; no request body, header,
+ * with `service`, `version`, `traceId`, `spanId`, `requestId`, `organizationId` and `userId`; one
+ * completion line per request with `method`, `route`, `status` and `durationMs`; default redaction; no request body, header,
  * query string or address.
  *
  * @param {LoggingModuleOptions} options - Options of the logging module.
@@ -208,7 +236,7 @@ export function createLoggerParams(options: LoggingModuleOptions): Params {
     base: { service: options.service, version: options.version },
     timestamp: pino.stdTimeFunctions.isoTime,
     formatters: { level: (label: string) => ({ level: label }) },
-    mixin: traceFields,
+    mixin: contextFields,
     redact: {
       paths: redactionPaths([...DEFAULT_REDACTED_KEYS, ...(options.redactKeys ?? [])]),
       censor: REDACTED,

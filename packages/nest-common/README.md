@@ -2,7 +2,8 @@
 
 Plumbing shared by the Cadenway NestJS services and gateways. Implemented today: typed
 configuration, structured logs, OpenTelemetry start-up, the HTTP formats (errors, validation,
-pagination, entity tags, body limit) and the health routes. The rest of what the
+pagination, entity tags, body limit), the internal token with the organization context, and the
+health routes. The rest of what the
 [repository instructions](../../AGENTS.md) list for this package is not implemented yet.
 
 `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api`, `reflect-metadata`, `rxjs` and `zod` are
@@ -66,7 +67,7 @@ LoggingModule.forRoot({
 
 Every line is one JSON object with `level` (as a label), `time` (ISO 8601, UTC), `service`,
 `version`, `msg` and, inside a request, `requestId`; inside a traced request, `traceId` and
-`spanId`. Each request writes one completion line, `request completed` or `request failed`, with
+`spanId`; inside an organization context, `organizationId` and, for a user, `userId`. Each request writes one completion line, `request completed` or `request failed`, with
 `method`, `route` (the matched pattern, `null` when no route matched), `status` and `durationMs`:
 `info` below 400, `warn` from 400, `error` from 500.
 
@@ -265,6 +266,122 @@ contract set). A weak tag (`W/"7"`) never matches, as `If-Match` requires a stro
 `applyJsonBodyLimit(app, limitBytes = JSON_BODY_LIMIT_BYTES)` registers the JSON body parser with
 a limit of 1 MB (1 048 576 bytes). Call it before the application is initialized. A larger body
 answers 400 `request.body-too-large`; a malformed one answers 400 `http.bad-request`.
+
+## Internal token
+
+A service never receives the credential of a user. Every call between backends carries an
+internal token: a JWT signed with `alg: Ed25519`, valid 60 seconds, with `aud` set to the called
+service and a `kid` header.
+
+Several services issue it: the API gateway, the realtime gateway, automation-service and
+integration-service. Each has its own key; a called service lists the issuers it trusts with their
+verification keys. A key is accepted only for the issuer it is configured under.
+
+```ts
+InternalTokenModule.forRoot({
+  // This service receives internal calls.
+  verifier: {
+    audience: config.INTERNAL_TOKEN_AUDIENCE,
+    trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+  },
+  // This service calls other services.
+  signer: {
+    issuer: config.INTERNAL_TOKEN_ISSUER,
+    privateJwk: config.INTERNAL_TOKEN_PRIVATE_JWK,
+  },
+});
+```
+
+Both options are optional and independent. With `verifier`, the module registers
+`InternalTokenGuard` and `OrganizationContextInterceptor` for every HTTP route. With `signer`,
+`InternalTokenSigner` can be injected. With neither, nothing changes.
+
+### Configuration
+
+Keys and issuers come from the environment, never from code. Spread
+`internalTokenVerifierConfigShape` and `internalTokenSignerConfigShape` into the application
+schema.
+
+| Variable                         | Value                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `INTERNAL_TOKEN_AUDIENCE`        | Name of this service, lowercase kebab-case (`task-service`): the `aud` it accepts                |
+| `INTERNAL_TOKEN_TRUSTED_ISSUERS` | One line of JSON: `{"<issuer>":[{"kty":"OKP","crv":"Ed25519","x":"<public>","kid":"<key id>"}]}` |
+| `INTERNAL_TOKEN_ISSUER`          | Name of this service, written as `iss`                                                           |
+| `INTERNAL_TOKEN_PRIVATE_JWK`     | One line of JSON, a secret: `{"kty":"OKP","crv":"Ed25519","x":"...","d":"...","kid":"<key id>"}` |
+
+None has a default. Several keys under one issuer allow a rotation: add the new key to the
+verifiers, switch the signer, then remove the old key. A private key listed among the verification
+keys is refused at start-up.
+
+### Claims and subjects
+
+`signer.sign(audience, claims)` takes who the call is made for:
+
+| Claim            | Content                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `actor`          | `{ type, id }` with `type` among `user`, `automation`, `git`, `system`, `anonymous` |
+| `organizationId` | Organization of the call, or `null`                                                 |
+| `role`           | Member role of a user, `null` by default                                            |
+| `scopes`         | Scopes granted to the caller, none by default                                       |
+| `traceId`        | Trace id of the request, optional; the trace itself travels in `traceparent`        |
+
+A `user`, an `automation` and a `git` actor carry an id. An `anonymous` actor carries no id, no
+organization, no role and no scope; `system` may carry no id. Inconsistent claims are refused at
+signing and at verification.
+
+### Routes
+
+Every HTTP route requires a valid token. By default it also requires an organization and refuses
+an anonymous actor. A route that differs declares it:
+
+```ts
+// No user and no organization yet: sign-up, sign-in, the intake form.
+@InternalAccess({ actors: ['anonymous'], organization: 'optional' })
+
+// Introspection or a webhook: the calling service acts as itself.
+@InternalAccess({ actors: ['system'], organization: 'optional' })
+
+// An action reserved to one caller.
+@InternalAccess({ issuers: ['automation-service'], actors: ['automation'] })
+```
+
+| Option         | Default                               | Effect                                          |
+| -------------- | ------------------------------------- | ----------------------------------------------- |
+| `actors`       | `user`, `automation`, `git`, `system` | Actor types the route accepts                   |
+| `organization` | `required`                            | `optional` accepts a token with no organization |
+| `issuers`      | Every trusted issuer                  | Issuers the route accepts                       |
+
+A declaration on a method replaces the one on its class. `@SkipInternalToken()` exempts a route
+from the token altogether; `HealthModule` uses it for the probes, and nothing that reads or writes
+data should.
+
+| Situation                                    | Answer                                          |
+| -------------------------------------------- | ----------------------------------------------- |
+| No `Authorization: Bearer` header            | 401 `auth.token-missing`                        |
+| Token refused                                | 401 `auth.token-invalid`, with `details.reason` |
+| Issuer not accepted by the route             | 403 `auth.issuer-not-allowed`                   |
+| Actor type not accepted by the route         | 403 `auth.actor-not-allowed`                    |
+| No organization on a route that requires one | 403 `auth.organization-required`                |
+
+`details.reason` is one of `malformed`, `issuer` (not trusted), `key` (unknown `kid` for that
+issuer), `signature`, `audience`, `expired` (older than 60 seconds, whatever its own expiry says;
+5 seconds of clock difference are tolerated, see `clockToleranceSeconds`) and `claims`.
+
+### Organization context
+
+The organization and the actor of a request come from the verified token only: never from a path,
+a query string or a body. The interceptor carries them in an `AsyncLocalStorage`:
+
+| Function                                  | Returns                                                                       |
+| ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `getOrganizationContext()`                | `{ organizationId, actor, role, scopes }`, or `undefined` outside any context |
+| `requireOrganizationId()`                 | The organization id; throws when there is none (a programming error)          |
+| `principalOf(request)`                    | The verified principal of a request, with `issuer`, `audience` and `traceId`  |
+| `runWithOrganizationContext(context, fn)` | Runs work inside a context                                                    |
+
+`runWithOrganizationContext` is for trusted entry points other than HTTP: the handler of an event
+whose envelope was validated against its contract, or of a job the service itself enqueued. An
+application never calls it for an HTTP request, and never builds a context from request data.
 
 ## Health module
 
