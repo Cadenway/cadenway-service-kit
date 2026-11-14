@@ -1,11 +1,33 @@
 /**
- * Public entry point of `@cadenway/nest-jobs`.
+ * Public entry point of `@cadenway/nest-jobs`: the durable background jobs of the Cadenway
+ * services, kept in each service's own PostgreSQL database through pg-boss. Everything a consumer
+ * may import is listed here by name.
  *
- * The package will hold the durable background jobs of the services, kept in each service's own
- * PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, a
- * dead-letter queue and cron schedules. Nothing is implemented yet: the entry point exports
- * nothing, so the package builds and packs as a shell.
+ * `provisionJobs` runs as the migrator role and holds every DDL statement; `JobsModule` and
+ * `JobsService` run as the application role and hold none.
  *
  * @packageDocumentation
  */
-export {};
+export { JobsModule } from './jobs.module.js';
+export { JobsService } from './jobs.service.js';
+export { JobsNotProvisionedError } from './jobs-not-provisioned.error.js';
+export { provisionJobs } from './provision-jobs.js';
+export type { ProvisionJobsOptions } from './provision-jobs.js';
+export type { JobQueueDeclaration } from './job-queue.js';
+export type {
+  JobsConnectionOptions,
+  JobsModuleAsyncOptions,
+  JobsModuleOptions,
+  RunInOrganization,
+} from './jobs-options.js';
+export type {
+  Job,
+  JobEnqueueOptions,
+  JobEnqueueResult,
+  JobHandler,
+  JobScheduleOptions,
+  JobWorkOptions,
+  JobsQueryResult,
+  JobsTransaction,
+  JobsTransactionClient,
+} from './job.js';
