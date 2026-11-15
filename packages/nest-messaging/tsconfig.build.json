@@ -8,5 +8,9 @@
     "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts"]
+  // src/testing holds helpers shared by the specs; they import development dependencies and are
+  // not shipped.
+  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts", "src/testing/**"],
+  // The package imports `@cadenway/nest-common`: `tsc -b` builds it first.
+  "references": [{ "path": "../nest-common/tsconfig.build.json" }]
 }
