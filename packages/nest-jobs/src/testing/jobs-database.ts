@@ -108,9 +108,14 @@ export interface JobsTestServer {
    *
    * @param {boolean} [ownedByMigrator] - Whether the migrator role owns the database and may
    * therefore create schemas in it. Defaults to `true`.
+   * @param {boolean} [opsDefaultPrivileges] - Whether the database is set up as cadenway-ops sets
+   * up a service database, default privileges included. Defaults to `true`.
    * @returns {Promise<JobsTestDatabase>} The database and its connections.
    */
-  createDatabase(ownedByMigrator?: boolean): Promise<JobsTestDatabase>;
+  createDatabase(
+    ownedByMigrator?: boolean,
+    opsDefaultPrivileges?: boolean,
+  ): Promise<JobsTestDatabase>;
 
   /**
    * Method stop
@@ -174,6 +179,136 @@ export async function waitFor(
 }
 
 /**
+ * Constant PG_BOSS_SCHEMA_LOCK
+ *
+ * @description
+ * SQL expression of the advisory lock pg-boss 12.38.2 takes around the installation and every
+ * migration of the `pgboss` schema (`advisoryLockKey` in its plans). Holding it stops a
+ * provisioning run right before pg-boss installs or migrates.
+ *
+ * @type {string}
+ */
+export const PG_BOSS_SCHEMA_LOCK: string =
+  "('x' || encode(sha224((current_database() || '.pgboss.pgboss')::bytea), 'hex'))::bit(64)::bigint";
+
+/**
+ * Constant PROVISIONING_LOCK
+ *
+ * @description
+ * SQL expression of the advisory lock every provisioning transaction of the `pgboss` schema takes.
+ * Holding it stops a provisioning run at its next transaction.
+ *
+ * @type {string}
+ */
+export const PROVISIONING_LOCK: string =
+  "pg_catalog.hashtextextended('cadenway.nest-jobs.provision.pgboss', 0)";
+
+/**
+ * Interface HeldLock
+ *
+ * @description
+ * A session-level advisory lock held by a test.
+ */
+export interface HeldLock {
+  // #region Methods
+  /**
+   * Method release
+   *
+   * @description
+   * Releases the lock and closes its session.
+   *
+   * @returns {Promise<void>} Resolves once the session is closed.
+   */
+  release(): Promise<void>;
+  // #endregion
+}
+
+/**
+ * Function holdAdvisoryLock
+ *
+ * @description
+ * Takes a session-level advisory lock on a session of its own and keeps it until released,
+ * waiting for whoever holds it first.
+ *
+ * @param {JobsConnectionOptions} connection - Role and database to lock in.
+ * @param {string} key - SQL expression of the lock key.
+ * @returns {Promise<HeldLock>} The held lock.
+ */
+export async function holdAdvisoryLock(
+  connection: JobsConnectionOptions,
+  key: string,
+): Promise<HeldLock> {
+  const client: Client = new Client({ ...connection });
+  await client.connect();
+  await client.query(`SELECT pg_catalog.pg_advisory_lock(${key})`);
+  return {
+    async release(): Promise<void> {
+      try {
+        await client.query(`SELECT pg_catalog.pg_advisory_unlock(${key})`);
+      } finally {
+        await client.end();
+      }
+    },
+  };
+}
+
+/**
+ * Function waitForAdvisoryWaiter
+ *
+ * @description
+ * Waits until a session of a role waits for an advisory lock, which tells a test that the run it
+ * started has reached the step the lock guards.
+ *
+ * @param {JobsTestDatabase} database - Database the session is connected to.
+ * @param {string} role - Role of the waiting session.
+ * @returns {Promise<void>} Resolves once such a session waits.
+ */
+export async function waitForAdvisoryWaiter(
+  database: JobsTestDatabase,
+  role: string,
+): Promise<void> {
+  await waitFor(async (): Promise<boolean> => {
+    const waiting: QueryResult<{ count: number }> = await queryAs<{ count: number }>(
+      database.admin,
+      `SELECT count(*)::int AS count
+       FROM pg_catalog.pg_locks l
+       JOIN pg_catalog.pg_stat_activity a ON a.pid = l.pid
+       WHERE l.locktype = 'advisory' AND NOT l.granted AND a.datname = $1 AND a.usename = $2`,
+      [database.name, role],
+    );
+    return (waiting.rows[0]?.count ?? 0) > 0;
+  }, 20_000);
+}
+
+/**
+ * Function opsServiceDatabaseStatements
+ *
+ * @description
+ * The statements cadenway-ops runs in a service database once its two roles exist
+ * (`compose/postgres/init/10-service-databases.sh`), run here as the superuser. The default
+ * privileges are the part that matters to the jobs: every schema, table and sequence the migrator
+ * role creates is opened to the application role at once, pg-boss objects included.
+ *
+ * @param {string} database - Name of the service database.
+ * @returns {readonly string[]} Statements, in execution order.
+ */
+function opsServiceDatabaseStatements(database: string): readonly string[] {
+  return [
+    `REVOKE ALL ON DATABASE ${database} FROM PUBLIC`,
+    `REVOKE ALL ON DATABASE ${database} FROM ${APP_ROLE}`,
+    `GRANT CONNECT ON DATABASE ${database} TO ${APP_ROLE}`,
+    // The migrator owns its database in cadenway-ops; the tests that make another role the owner
+    // keep it able to connect.
+    `GRANT CONNECT ON DATABASE ${database} TO ${MIGRATOR_ROLE}`,
+    'REVOKE CREATE ON SCHEMA public FROM PUBLIC',
+    `GRANT USAGE ON SCHEMA public TO ${APP_ROLE}`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${MIGRATOR_ROLE} GRANT USAGE ON SCHEMAS TO ${APP_ROLE}`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${MIGRATOR_ROLE} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${APP_ROLE}`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${MIGRATOR_ROLE} GRANT USAGE, SELECT ON SEQUENCES TO ${APP_ROLE}`,
+  ];
+}
+
+/**
  * Function startJobsTestServer
  *
  * @description
@@ -202,11 +337,19 @@ export async function startJobsTestServer(): Promise<JobsTestServer> {
   let created: number = 0;
 
   return {
-    async createDatabase(ownedByMigrator: boolean = true): Promise<JobsTestDatabase> {
+    async createDatabase(
+      ownedByMigrator: boolean = true,
+      opsDefaultPrivileges: boolean = true,
+    ): Promise<JobsTestDatabase> {
       created += 1;
       const name: string = `service_${String(created)}`;
       const owner: string = ownedByMigrator ? ` OWNER ${MIGRATOR_ROLE}` : '';
       await queryAs(admin, `CREATE DATABASE ${name}${owner}`);
+      if (opsDefaultPrivileges) {
+        for (const statement of opsServiceDatabaseStatements(name)) {
+          await queryAs({ ...admin, database: name }, statement);
+        }
+      }
       return {
         name,
         admin: { ...admin, database: name },

@@ -76,17 +76,22 @@ await provisionJobs({
 succeed. In order, it:
 
 1. checks that `appRole` exists, before changing anything;
-2. refuses to go on when the stored schema is newer than the pg-boss version of this package, or
-   when the queue table holds rows this package does not create (see the guard below);
-3. installs the pg-boss schema, or migrates it to the version this package expects, creating the
-   schema itself only when it does not exist yet (a schema created beforehand and owned by the
-   migrator role works without `CREATE` on the database);
-4. waits for the index builds a migration queues. pg-boss builds them in the background, one
+2. on a first install, creates the schema itself when it does not exist yet (a schema created
+   beforehand and owned by the migrator role works without `CREATE` on the database) and closes it
+   to every role but its owner and the migrator role (see below);
+3. on an installed schema, refuses to go on when the stored schema is newer than the pg-boss
+   version of this package, older than its background index builds (schema version 27, pg-boss
+   12.6), or when the queue table holds rows this package does not create (see the guard below);
+   then holds the index builds of pg-boss back;
+4. installs the pg-boss schema, or migrates it to the version this package expects, checks `bam`
+   and `version` again and only then releases the index builds;
+5. waits for the index builds a migration queues. pg-boss builds them in the background, one
    `CREATE INDEX CONCURRENTLY` at a time, and only an instance allowed to migrate runs them: the
-   runtime is not, so they finish here. A fresh install queues none;
-5. creates each dead-letter queue and each declared queue, or updates it to match its declaration.
+   runtime is not, so they finish here. A fresh install queues none; a migration waits up to 10
+   seconds more for the first pass, since the builds are released after pg-boss started;
+6. creates each dead-letter queue and each declared queue, or updates it to match its declaration.
    A queue removed from the list is left in place, with its jobs and its schedules;
-6. grants the application role its runtime access, in one transaction, and closes its connections.
+7. grants the application role its runtime access, in one transaction, and closes its connections.
 
 | Option               | Default  | Meaning                                                                                                   |
 | -------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
@@ -102,16 +107,52 @@ The schema must be a schema of its own: the grants below cover every table of it
 
 - `USAGE` on the schema;
 - `SELECT, INSERT, UPDATE, DELETE` on its tables: jobs, queues, schedules, the instance registry;
-- on `version`: `SELECT`, and `UPDATE` on the interval-claim columns only. The role cannot change
-  the stored schema version, which decides the migrations the next provisioning runs;
+- on `version`: `SELECT`, and `UPDATE` on the claim columns the runtime stamps (`cron_on`,
+  `flow_on`, `reindex_on`, `monitor_backoff_on`) only. The role cannot change the stored schema
+  version, which decides the migrations the next provisioning runs, nor the index-build claim
+  `bam_on`, which only an instance that migrates stamps;
 - on `bam`: nothing. That table lists statements pg-boss executes verbatim as the role that
   migrates; the runtime never reads or writes it;
 - `USAGE, SELECT` on its sequences and `EXECUTE` on its functions.
 
 It is not granted `CREATE` on the schema, `TRUNCATE`, `REFERENCES` or `TRIGGER`, and it owns no
-object, so it cannot run DDL on the pg-boss tables. No default privilege is set: a table that a
-later pg-boss version adds is granted by the provisioning run that creates it, and not before.
-Grants given to other roles, or by hand, are not managed.
+object, so it cannot run DDL on the pg-boss tables. This package sets no default privilege: a table
+that a later pg-boss version adds is granted by the provisioning run that creates it.
+
+### Platform default privileges
+
+cadenway-ops gives each application role default privileges on everything its migrator role
+creates (`ALTER DEFAULT PRIVILEGES FOR ROLE <service>_migrator`: `USAGE` on schemas, data access
+to tables, `USAGE, SELECT` on sequences). Those apply to the pg-boss objects too, the moment
+pg-boss creates them, and a per-schema default privilege cannot take a global one back. Left
+alone, the application role would reach `bam` while the provisioning that runs its rows is still
+going. The provisioning closes that window itself:
+
+- **First install.** `provisionJobs` creates the schema, rather than letting pg-boss do it, and in
+  the same transaction revokes every privilege on it from every role but its owner and the
+  migrator role, `PUBLIC` included. pg-boss then installs in a schema the application role cannot
+  use: the default privileges still land on the new tables, but a table is out of reach without
+  the usage of its schema. They are revoked from `bam` and `version` before any index build, and
+  the application role gets the usage of the schema in the same commit as its final grants. The
+  run refuses to install when the application role can still use the schema after the revoke (a
+  superuser, an owner, or a grant the migrator role cannot revoke).
+- **Installed schema.** The runtime may be live, so the usage of the schema is not revoked.
+  Instead, before pg-boss starts, the provisioning stamps the index-build claim `bam_on` a day
+  ahead: pg-boss runs no index build until that claim is cleared. After the install or migration,
+  it checks `bam` and `version` again and clears the claim in the same transaction. A migration
+  can create tables, `bam` itself in the pg-boss 12.6 migration, and the default privileges open
+  them at once.
+
+On both checks, a privilege on `bam`, or a table-level write on `version`, held by a role that
+cannot use the schema is revoked and the run goes on. Held by a role that can use the schema, it
+means rows may have been planted: the run fails closed, executes nothing, revokes nothing, and
+leaves the index builds held. Revoke the privilege, check that every pending row of `bam` is an
+index build of pg-boss, then run the provisioning again. A run that stops between the hold and
+the release leaves the builds held for a day at most; the next successful run releases them.
+
+When `appRole` is the role `provisionJobs` connects as, there is no boundary to enforce: no access
+is managed at all and a warning says so. Use that only on a local stack with a single role, with
+`allowPrivilegedRole` on the runtime.
 
 ### The guard on the queue table
 
