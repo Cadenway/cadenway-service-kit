@@ -16,6 +16,7 @@ import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 import {
   DUPLICATE_WINDOW_MS,
   EVENTS_MAX_AGE_DAYS,
+  RESTRICTED_MAX_AGE_MS,
   type ResolvedMessagingOptions,
 } from '../messaging-options.js';
 
@@ -429,7 +430,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     await this.ensureStream({
       name: options.restrictedStream,
       subject: `${options.restrictedSubjectPrefix}.>`,
-      maxAgeMs: EVENTS_MAX_AGE_DAYS * DAY_MS,
+      maxAgeMs: RESTRICTED_MAX_AGE_MS,
       maxBytes: options.restrictedMaxBytes,
     });
     await this.ensureStream({
