@@ -1,11 +1,10 @@
-import type { ConstructorOptions } from 'pg-boss';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertConnection,
   assertRoleName,
   assertSchemaName,
   resolveJobsModuleOptions,
-  toRuntimeBossOptions,
   type JobsConnectionOptions,
   type JobsModuleOptions,
   type ResolvedJobsModuleOptions,
@@ -19,7 +18,11 @@ import {
  *
  * @type {JobsConnectionOptions}
  */
-const connection: JobsConnectionOptions = { host: 'database.internal', database: 'service' };
+const connection: JobsConnectionOptions = {
+  host: 'database.internal',
+  user: 'service_app',
+  database: 'service',
+};
 
 describe('resolveJobsModuleOptions', () => {
   it('applies the documented defaults', async () => {
@@ -33,6 +36,8 @@ describe('resolveJobsModuleOptions', () => {
 
     expect(options.schema).toBe('pgboss');
     expect(options.shutdownTimeoutMs).toBe(30_000);
+    expect(options.deadLetterCheckIntervalSeconds).toBe(60);
+    expect(options.allowPrivilegedRole).toBe(false);
     expect(options.queues).toEqual([]);
     expect(ran).toBe(true);
   });
@@ -49,64 +54,78 @@ describe('resolveJobsModuleOptions', () => {
       schema: 'jobs',
       runInOrganization,
       shutdownTimeoutMs: 5_000,
+      deadLetterCheckIntervalSeconds: 0,
+      allowPrivilegedRole: true,
     });
 
     expect(options.schema).toBe('jobs');
     expect(options.shutdownTimeoutMs).toBe(5_000);
+    expect(options.deadLetterCheckIntervalSeconds).toBe(0);
+    expect(options.allowPrivilegedRole).toBe(true);
     expect(options.runInOrganization).toBe(runInOrganization);
     expect(options.queues[0]?.deadLetter).toBe('reminders.dead-letter');
   });
 
   it.each([
     ['no connection', { queues: [] }, /connection is required/],
-    ['a connection that names no server', { connection: {}, queues: [] }, /connectionString or a/],
+    ['a connection that names no server', { connection: {}, queues: [] }, /connectionString, or/],
     ['an uppercase schema', { connection, queues: [], schema: 'Jobs' }, /schema must be/],
     ['a quoted schema', { connection, queues: [], schema: '"jobs"' }, /schema must be/],
+    ['the public schema', { connection, queues: [], schema: 'public' }, /schema of its own/],
     ['a short shutdown', { connection, queues: [], shutdownTimeoutMs: 999 }, /shutdownTimeoutMs/],
     ['a wrapper that is not a function', { connection, queues: [], runInOrganization: 1 }, /runIn/],
+    [
+      'a negative dead-letter interval',
+      { connection, queues: [], deadLetterCheckIntervalSeconds: -1 },
+      /deadLetterCheckIntervalSeconds must be an integer of at least 0/,
+    ],
+    [
+      'a fractional dead-letter interval',
+      { connection, queues: [], deadLetterCheckIntervalSeconds: 0.5 },
+      /deadLetterCheckIntervalSeconds/,
+    ],
+    [
+      'a privileged-role flag that is not a boolean',
+      { connection, queues: [], allowPrivilegedRole: 'yes' },
+      /allowPrivilegedRole must be a boolean/,
+    ],
     ['an invalid queue', { connection, queues: [{ name: 'a b' }] }, /Queue name must contain/],
   ])('rejects %s', (_case: string, options: unknown, message: RegExp) => {
     expect(() => resolveJobsModuleOptions(options as JobsModuleOptions)).toThrow(message);
   });
 });
 
-describe('toRuntimeBossOptions', () => {
-  it('never lets the runtime run DDL and keeps its pool at two connections', () => {
-    const options: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsModuleOptions({ connection, queues: [], schema: 'jobs' }),
-    );
-
-    expect(options).toEqual({
-      host: 'database.internal',
-      database: 'service',
-      schema: 'jobs',
-      max: 2,
-      migrate: false,
-      createSchema: false,
-      supervise: true,
-      schedule: true,
-      reindex: false,
-      persistQueueStats: false,
-      persistWarnings: false,
-    });
+describe('assertConnection', () => {
+  it.each([
+    ['a connection URI', { connectionString: 'postgres://service_app@database.internal/service' }],
+    ['a host with its user and database', connection],
+  ])('accepts %s', (_case: string, candidate: JobsConnectionOptions) => {
+    expect(() => {
+      assertConnection(candidate);
+    }).not.toThrow();
   });
 
-  it('does not let a connection object override the fixed settings', () => {
-    const hostile: unknown = { host: 'database.internal', migrate: true, max: 50 };
-
-    const options: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsModuleOptions({ connection: hostile as JobsConnectionOptions, queues: [] }),
-    );
-
-    expect(options.migrate).toBe(false);
-    expect(options.max).toBe(2);
-  });
+  it.each([
+    ['a host alone', { host: 'database.internal' }],
+    ['a host without a user', { host: 'database.internal', database: 'service' }],
+    ['a host without a database', { host: 'database.internal', user: 'service_app' }],
+    ['a user and a database without a host', { user: 'service_app', database: 'service' }],
+    ['an empty connection URI', { connectionString: '' }],
+  ])(
+    'rejects %s, which would be completed from the PG* variables',
+    (_case: string, candidate: JobsConnectionOptions) => {
+      expect(() => {
+        assertConnection(candidate);
+      }).toThrow(/connection needs a connectionString, or a host with a user and a database/);
+    },
+  );
 });
 
 describe('assertSchemaName and assertRoleName', () => {
   it('accept lowercase identifiers', () => {
     expect(() => {
       assertSchemaName('pgboss_jobs');
+      assertSchemaName('publications');
       assertRoleName('task_app');
     }).not.toThrow();
   });
@@ -120,6 +139,15 @@ describe('assertSchemaName and assertRoleName', () => {
       expect(() => {
         assertSchemaName(name);
       }).toThrow(/schema must be/);
+    },
+  );
+
+  it.each([['public'], ['information_schema'], ['pg_catalog'], ['pg_temp_3']])(
+    'reject the reserved schema %s',
+    (schema: string) => {
+      expect(() => {
+        assertSchemaName(schema);
+      }).toThrow(/schema must be a schema of its own/);
     },
   );
 

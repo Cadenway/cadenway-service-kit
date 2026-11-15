@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Logger, type DynamicModule, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Client, type QueryResult } from 'pg';
-import { getRollbackPlans } from 'pg-boss';
+import { PgBoss, getRollbackPlans, type Job as BossJob } from 'pg-boss';
 import {
   afterAll,
   afterEach,
@@ -17,10 +17,11 @@ import {
 
 import type { Job, JobEnqueueResult } from './job.js';
 import { JobsNotProvisionedError } from './jobs-not-provisioned.error.js';
-import type { JobsModuleOptions } from './jobs-options.js';
+import { resolveJobsModuleOptions, type JobsModuleOptions } from './jobs-options.js';
 import { JobsModule } from './jobs.module.js';
 import { JobsService } from './jobs.service.js';
 import { provisionJobs } from './provision-jobs.js';
+import { toRuntimeBossOptions } from './runtime-boss-options.js';
 import { CONFIGURATION, ConfigurationModule } from './testing/configuration.module.js';
 import {
   APP_ROLE,
@@ -283,7 +284,8 @@ describe('JobsModule', () => {
     );
   });
 
-  it('fails the attempt of a handler still running after the shutdown timeout, so it is retried', async () => {
+  it('fails and logs the attempt of a handler still running after the shutdown timeout, so it is retried', async () => {
+    const warnings: MockInstance = vi.spyOn(Logger.prototype, 'warn');
     const database: JobsTestDatabase = await server.createDatabase();
     const queues: JobsModuleOptions['queues'] = [{ name: 'reminders' }];
     await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
@@ -314,8 +316,160 @@ describe('JobsModule', () => {
       expect(Date.now() - closingAt).toBeGreaterThanOrEqual(1_000);
       expect(await stateOf(database, enqueued.jobId)).toBe('retry');
       expect(await runtimeSessions(database)).toBe(0);
+      expect(warnings.mock.calls.map((call: unknown[]): string => String(call[0]))).toEqual([
+        `Job ${enqueued.jobId} of queue "reminders" failed attempt 1 of 6 and will be retried: it was still running when the shutdown timeout of 1000 ms passed`,
+      ]);
     } finally {
       release();
+    }
+  });
+
+  it('logs, from the dead-letter watch, a job dead-lettered by supervision after its worker died', async () => {
+    const errors: MockInstance = vi.spyOn(Logger.prototype, 'error');
+    const database: JobsTestDatabase = await server.createDatabase();
+    const queues: JobsModuleOptions['queues'] = [
+      { name: 'crashed', retryLimit: 0, expireInSeconds: 1 },
+      { name: 'quiet' },
+    ];
+    await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+    const options: JobsModuleOptions = {
+      connection: database.app,
+      queues,
+      deadLetterCheckIntervalSeconds: 1,
+    };
+    const app: INestApplicationContext = await start(JobsModule.forRoot(options));
+
+    try {
+      const enqueued: JobEnqueueResult = await enqueueCommitted(
+        database,
+        app.get(JobsService),
+        'crashed',
+      );
+      // A worker of another process claims the job, then dies without settling it.
+      const dead: PgBoss = new PgBoss(toRuntimeBossOptions(resolveJobsModuleOptions(options)));
+      await dead.start();
+      const claimed: BossJob[] = await dead.fetch('crashed');
+      await dead.stop();
+      expect(claimed.map((job: BossJob): string => job.id)).toEqual([enqueued.jobId]);
+      expect(await stateOf(database, enqueued.jobId)).toBe('active');
+
+      // Once the attempt has expired, the supervision pass of any live instance fails it in SQL.
+      await sleep(2_200);
+      const supervisor: PgBoss = new PgBoss(
+        toRuntimeBossOptions(resolveJobsModuleOptions(options)),
+      );
+      await supervisor.start();
+      await supervisor.supervise();
+      await supervisor.stop();
+
+      expect(await stateOf(database, enqueued.jobId)).toBe('failed');
+      const messages: () => string[] = (): string[] =>
+        errors.mock.calls.map((call: unknown[]): string => String(call[0]));
+      await waitFor(
+        (): boolean =>
+          messages().includes(
+            '1 job(s) reached the dead-letter queue "crashed.dead-letter" since the previous check.',
+          ),
+        30_000,
+      );
+      await sleep(2_500);
+      expect(messages()).toEqual([
+        '1 job(s) reached the dead-letter queue "crashed.dead-letter" since the previous check.',
+      ]);
+      expect(JSON.stringify(errors.mock.calls)).not.toContain('"step"');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not watch the dead-letter queues when the interval is zero', async () => {
+    const errors: MockInstance = vi.spyOn(Logger.prototype, 'error');
+    const database: JobsTestDatabase = await server.createDatabase();
+    const queues: JobsModuleOptions['queues'] = [
+      { name: 'doomed', retryLimit: 0, retryDelaySeconds: 0 },
+    ];
+    await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+    const app: INestApplicationContext = await start(
+      JobsModule.forRoot({ connection: database.app, queues, deadLetterCheckIntervalSeconds: 0 }),
+    );
+
+    try {
+      const jobs: JobsService = app.get(JobsService);
+      await jobs.work('doomed', (): Promise<void> => Promise.reject(new Error('refused')), {
+        pollingIntervalSeconds: 0.5,
+      });
+      const enqueued: JobEnqueueResult = await enqueueCommitted(database, jobs, 'doomed');
+      await waitFor(
+        async (): Promise<boolean> => (await stateOf(database, enqueued.jobId)) === 'failed',
+        15_000,
+      );
+      await sleep(7_000);
+
+      expect(errors.mock.calls.map((call: unknown[]): string => String(call[0]))).toEqual([
+        `Job ${enqueued.jobId} of queue "doomed" failed its last attempt (1 of 1) and moves to the dead-letter queue "doomed.dead-letter": Error: refused`,
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses to start as a role that can create objects in the schema, unless allowed', async () => {
+    const database: JobsTestDatabase = await server.createDatabase();
+    const queues: JobsModuleOptions['queues'] = [{ name: 'reminders' }];
+    await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+
+    const failure: unknown = await start(
+      JobsModule.forRoot({ connection: database.migrator, queues }),
+    ).catch((error: unknown): unknown => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(JobsNotProvisionedError);
+    expect((failure as Error).message).toMatch(
+      /^The runtime is connected as "svc_migrator", a role that can create objects in the pg-boss schema "pgboss"\. Connect as the application role/,
+    );
+    await waitFor(async (): Promise<boolean> => (await runtimeSessions(database)) === 0, 5_000);
+
+    const app: INestApplicationContext = await start(
+      JobsModule.forRoot({ connection: database.migrator, queues, allowPrivilegedRole: true }),
+    );
+    await app.close();
+  });
+
+  it('warns about a stored schedule whose queue left the declarations and lets it be removed', async () => {
+    const warnings: MockInstance = vi.spyOn(Logger.prototype, 'warn');
+    const database: JobsTestDatabase = await server.createDatabase();
+    await provisionJobs({
+      connection: database.migrator,
+      appRole: APP_ROLE,
+      queues: [{ name: 'reminders' }, { name: 'digests' }],
+    });
+    const first: INestApplicationContext = await start(
+      JobsModule.forRoot({
+        connection: database.app,
+        queues: [{ name: 'reminders' }, { name: 'digests' }],
+      }),
+    );
+    await first
+      .get(JobsService)
+      .schedule('digests', '0 8 * * *', { timeZone: 'Europe/Paris', key: 'daily' });
+    await first.close();
+    expect(warnings.mock.calls).toEqual([]);
+
+    const second: INestApplicationContext = await start(
+      JobsModule.forRoot({ connection: database.app, queues: [{ name: 'reminders' }] }),
+    );
+
+    try {
+      expect(warnings.mock.calls.map((call: unknown[]): string => String(call[0]))).toEqual([
+        'A schedule is stored for queue "digests" (key "daily"), which is not declared: it still creates jobs that nothing consumes. Remove it with unschedule(), or declare the queue.',
+      ]);
+
+      await second.get(JobsService).unschedule('digests', { key: 'daily' });
+
+      const stored: QueryResult = await queryAs(database.admin, 'SELECT name FROM pgboss.schedule');
+      expect(stored.rows).toEqual([]);
+    } finally {
+      await second.close();
     }
   });
 

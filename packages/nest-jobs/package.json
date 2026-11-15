@@ -23,7 +23,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "pg-boss": "^12.38.2"
+    "pg-boss": "12.38.2"
   },
   "peerDependencies": {
     "@nestjs/common": "catalog:",

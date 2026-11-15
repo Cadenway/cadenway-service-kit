@@ -102,6 +102,28 @@ interface JobRow {
    * @readonly
    */
   readonly source_id: string | null;
+
+  /**
+   * Property output
+   *
+   * @description
+   * What pg-boss stored about the last failure of the job, or `null`.
+   *
+   * @type {unknown}
+   * @readonly
+   */
+  readonly output: unknown;
+
+  /**
+   * Property source_output
+   *
+   * @description
+   * On a dead letter, the stored failure of the job it was copied from, or `null`.
+   *
+   * @type {unknown}
+   * @readonly
+   */
+  readonly source_output: unknown;
   // #endregion
 }
 
@@ -143,6 +165,8 @@ const queues: readonly JobQueueDeclaration[] = [
   { name: 'doomed', retryLimit: 2, retryDelaySeconds: 1 },
   { name: 'scoped' },
   { name: 'digests' },
+  { name: 'slow', retryLimit: 0, expireInSeconds: 1 },
+  { name: 'stuck', retryLimit: 0, expireInSeconds: 1 },
 ];
 
 /**
@@ -219,7 +243,8 @@ describe('JobsService', () => {
   async function jobsOf(queue: string): Promise<JobRow[]> {
     const result: QueryResult<JobRow> = await queryAs<JobRow>(
       database.admin,
-      `SELECT id, state::text AS state, retry_count, data, source_name, source_id
+      `SELECT id, state::text AS state, retry_count, data, source_name, source_id, output,
+              source_output
        FROM pgboss.job WHERE name = $1 ORDER BY created_on`,
       [queue],
     );
@@ -335,6 +360,7 @@ describe('JobsService', () => {
         payload: { reminderId: 'r-1' },
         organizationId: 'org-1',
         attempt: 1,
+        signal: expect.any(AbortSignal) as AbortSignal,
       },
     ]);
     expect(received.map((job: Job): string => job.id)).not.toContain(rolledBack.jobId);
@@ -377,12 +403,24 @@ describe('JobsService', () => {
       jobs.enqueue(tx, 'occurrences-other', { reminderId: 'r-1' }, { occurrenceKey: 'r-1:1' }),
     );
 
+    const otherOrganization: JobEnqueueResult = await transact(
+      'org-2',
+      'COMMIT',
+      (tx: JobsTransaction) =>
+        jobs.enqueue(tx, 'occurrences', { reminderId: 'r-1' }, { occurrenceKey: 'r-1:1' }),
+    );
+    const noOrganization: JobEnqueueResult = await transact(null, 'COMMIT', (tx: JobsTransaction) =>
+      jobs.enqueue(tx, 'occurrences', { reminderId: 'r-1' }, { occurrenceKey: 'r-1:1' }),
+    );
+
     expect(second).toEqual({ jobId: first.jobId, duplicate: true });
     expect(nextOccurrence.duplicate).toBe(false);
     expect(otherQueue.duplicate).toBe(false);
     expect(otherQueue.jobId).not.toBe(first.jobId);
+    expect(otherOrganization.duplicate).toBe(false);
+    expect(noOrganization.duplicate).toBe(false);
     expect((await jobsOf('occurrences')).map((row: JobRow): string => row.id).sort()).toEqual(
-      [first.jobId, nextOccurrence.jobId].sort(),
+      [first.jobId, nextOccurrence.jobId, otherOrganization.jobId, noOrganization.jobId].sort(),
     );
 
     await jobs.work(
@@ -467,7 +505,11 @@ describe('JobsService', () => {
       (job: Job): Promise<void> => {
         attempts.push(job.attempt);
         startedAt.push(Date.now());
-        return Promise.reject(new Error('smtp refused'));
+        return Promise.reject(
+          Object.assign(new Error('smtp refused', { cause: new Error('cause-marker-77') }), {
+            recipient: 'property-marker-41',
+          }),
+        );
       },
       { pollingIntervalSeconds: 0.5 },
     );
@@ -504,6 +546,84 @@ describe('JobsService', () => {
     expect(JSON.stringify([...errors.mock.calls, ...warnings.mock.calls])).not.toContain(
       'payload-marker-9f2',
     );
+    const failed: JobRow[] = await jobsOf('doomed');
+    const deadLetters: JobRow[] = await jobsOf('doomed.dead-letter');
+    for (const stored of [failed[0]?.output, deadLetters[0]?.source_output]) {
+      expect(stored).toMatchObject({ name: 'Error', message: 'Error: smtp refused' });
+      expect(Object.keys(stored as object).sort()).toEqual(['message', 'name', 'stack']);
+      expect(JSON.stringify(stored)).not.toMatch(/property-marker-41|cause-marker-77/);
+    }
+  });
+
+  it('aborts the signal of an attempt that outlives expireInSeconds and logs its dead letter', async () => {
+    const errors: MockInstance = vi.spyOn(Logger.prototype, 'error');
+    let startedAt: number = 0;
+    let abortedAt: number = 0;
+    await jobs.work(
+      'slow',
+      (job: Job): Promise<void> =>
+        new Promise<void>((resolve: () => void): void => {
+          startedAt = Date.now();
+          job.signal.addEventListener(
+            'abort',
+            (): void => {
+              abortedAt = Date.now();
+              resolve();
+            },
+            { once: true },
+          );
+        }),
+      { pollingIntervalSeconds: 0.5 },
+    );
+
+    const enqueued: JobEnqueueResult = await transact('org-1', 'COMMIT', (tx: JobsTransaction) =>
+      jobs.enqueue(tx, 'slow', {}),
+    );
+    await waitFor(
+      async (): Promise<boolean> => (await jobsOf('slow.dead-letter')).length > 0,
+      20_000,
+    );
+    await waitFor((): boolean => abortedAt > 0, 5_000);
+
+    expect(abortedAt - startedAt).toBeGreaterThanOrEqual(950);
+    expect(abortedAt - startedAt).toBeLessThan(5_000);
+    expect(await jobsOf('slow')).toMatchObject([{ id: enqueued.jobId, state: 'failed' }]);
+    expect(
+      messagesOf(errors).filter((message: string): boolean => message.includes(enqueued.jobId)),
+    ).toEqual([
+      `Job ${enqueued.jobId} of queue "slow" failed its last attempt (1 of 1) and moves to the dead-letter queue "slow.dead-letter": it ran longer than the 1 seconds of expireInSeconds`,
+    ]);
+  });
+
+  it('logs once the attempt of a handler that ignores its signal past expireInSeconds', async () => {
+    const errors: MockInstance = vi.spyOn(Logger.prototype, 'error');
+    let returned: boolean = false;
+    await jobs.work(
+      'stuck',
+      async (): Promise<void> => {
+        await sleep(2_500);
+        returned = true;
+      },
+      { pollingIntervalSeconds: 0.5 },
+    );
+
+    const enqueued: JobEnqueueResult = await transact('org-1', 'COMMIT', (tx: JobsTransaction) =>
+      jobs.enqueue(tx, 'stuck', {}),
+    );
+    await waitFor(
+      async (): Promise<boolean> => (await jobsOf('stuck.dead-letter')).length > 0,
+      20_000,
+    );
+
+    expect(returned).toBe(false);
+    await waitFor((): boolean => returned, 10_000);
+    await sleep(200);
+    expect(
+      messagesOf(errors).filter((message: string): boolean => message.includes(enqueued.jobId)),
+    ).toEqual([
+      `Job ${enqueued.jobId} of queue "stuck" failed its last attempt (1 of 1) and moves to the dead-letter queue "stuck.dead-letter": it ran longer than the 1 seconds of expireInSeconds`,
+    ]);
+    expect(await jobsOf('stuck')).toMatchObject([{ id: enqueued.jobId, state: 'failed' }]);
   });
 
   it('runs each handler inside runInOrganization with the organization of its job', async () => {
@@ -549,7 +669,18 @@ describe('JobsService', () => {
     await expect(jobs.schedule('undeclared', '0 8 * * *', { timeZone: 'UTC' })).rejects.toThrow(
       /is not declared/,
     );
-    await expect(jobs.unschedule('undeclared')).rejects.toThrow(/is not declared/);
+    await expect(jobs.unschedule('not a queue')).rejects.toThrow(/Queue name must contain only/);
+  });
+
+  it('refuses a second worker on a queue', async () => {
+    const handler: (job: Job) => Promise<void> = (): Promise<void> => Promise.resolve();
+
+    await expect(jobs.work('transactional', handler)).rejects.toThrow(
+      /Queue "transactional" already has a worker in this process/,
+    );
+    await expect(jobs.work('transactional', handler, { concurrency: 4 })).rejects.toThrow(
+      /already has a worker/,
+    );
   });
 
   it('stores a schedule with its explicit time zone, replaces it and removes it', async () => {
@@ -598,7 +729,8 @@ describe('JobsService', () => {
       },
     ]);
 
-    await jobs.unschedule('digests', 'daily');
+    await jobs.unschedule('digests', { key: 'daily' });
+    await jobs.unschedule('digests', { key: 'never-registered' });
     expect(await stored()).toEqual([]);
   });
 

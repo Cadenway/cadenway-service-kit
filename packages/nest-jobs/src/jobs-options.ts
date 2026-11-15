@@ -1,7 +1,6 @@
 import type { ConnectionOptions } from 'node:tls';
 
 import type { FactoryProvider, ModuleMetadata } from '@nestjs/common';
-import type { ConstructorOptions } from 'pg-boss';
 
 import { resolveJobQueues, type JobQueueDeclaration, type ResolvedJobQueue } from './job-queue.js';
 
@@ -48,6 +47,28 @@ export const JOBS_POOL_SIZE: number = 2;
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS: number = 30_000;
 
 /**
+ * Constant DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS
+ *
+ * @description
+ * Seconds between two counts of the jobs that arrived in the dead-letter queues.
+ *
+ * @type {number}
+ */
+export const DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS: number = 60;
+
+/**
+ * Constant RESERVED_SCHEMA_PATTERN
+ *
+ * @description
+ * Schemas that cannot hold the pg-boss tables. `public` holds business tables in many databases,
+ * and the table grants of the provisioning would widen the application role on them; the others
+ * belong to PostgreSQL.
+ *
+ * @type {RegExp}
+ */
+const RESERVED_SCHEMA_PATTERN: RegExp = /^(?:public|information_schema|pg_.*)$/u;
+
+/**
  * Constant IDENTIFIER_PATTERN
  *
  * @description
@@ -83,10 +104,15 @@ const MAX_IDENTIFIER_BYTES: number = 63;
  * Interface JobsConnectionOptions
  *
  * @description
- * How to reach the service's own PostgreSQL database. Give `connectionString`, or `host` with the
- * other fields; one of the two is required so the connection never falls back silently on the
- * `PG*` environment variables. The role is the migrator role for `provisionJobs` and the
+ * How to reach the service's own PostgreSQL database: the migrator role for `provisionJobs`, the
  * application role for `JobsModule`.
+ *
+ * Give `connectionString`, or `host` with `user` and `database`: the three are required together
+ * so the role and the database are never read from the `PG*` environment variables, which could
+ * carry those of the other role. What is left unset (`port`, `password`, `ssl`) still follows the
+ * driver: its default, then `PGPORT`, `PGPASSWORD` and `PGSSLMODE`. A connection URI is handed to
+ * the driver as is; a part it does not carry falls back the same way, so write the user and the
+ * database in it.
  */
 export interface JobsConnectionOptions {
   // #region Properties
@@ -94,7 +120,8 @@ export interface JobsConnectionOptions {
    * Property connectionString
    *
    * @description
-   * PostgreSQL connection URI. Never logged by this package.
+   * PostgreSQL connection URI, with the user and the database in it. Never logged by this
+   * package. No default.
    *
    * @type {string}
    * @readonly
@@ -105,7 +132,7 @@ export interface JobsConnectionOptions {
    * Property host
    *
    * @description
-   * Server host name, when no connection URI is given.
+   * Server host name, when no connection URI is given. No default.
    *
    * @type {string}
    * @readonly
@@ -116,7 +143,7 @@ export interface JobsConnectionOptions {
    * Property port
    *
    * @description
-   * Server port. Defaults to the driver's default, 5432.
+   * Server port. Defaults to the driver's: `PGPORT`, then 5432.
    *
    * @type {number}
    * @readonly
@@ -127,7 +154,7 @@ export interface JobsConnectionOptions {
    * Property database
    *
    * @description
-   * Database name.
+   * Database name. Required with `host`. No default.
    *
    * @type {string}
    * @readonly
@@ -138,7 +165,7 @@ export interface JobsConnectionOptions {
    * Property user
    *
    * @description
-   * Role to connect as.
+   * Role to connect as. Required with `host`. No default.
    *
    * @type {string}
    * @readonly
@@ -149,7 +176,8 @@ export interface JobsConnectionOptions {
    * Property password
    *
    * @description
-   * Password of the role. Never logged by this package.
+   * Password of the role. Never logged by this package. Defaults to the driver's: `PGPASSWORD`,
+   * then the password file.
    *
    * @type {string}
    * @readonly
@@ -160,8 +188,8 @@ export interface JobsConnectionOptions {
    * Property ssl
    *
    * @description
-   * TLS settings handed to the driver. Defaults to the driver's default, no TLS unless the
-   * connection URI asks for it.
+   * TLS settings handed to the driver. Defaults to the driver's: `PGSSLMODE`, then no TLS unless
+   * the connection URI asks for it.
    *
    * @type {boolean | ConnectionOptions}
    * @readonly
@@ -247,12 +275,38 @@ export interface JobsModuleOptions {
    *
    * @description
    * Time running handlers get to finish at shutdown, in milliseconds, at least 1000. Past it their
-   * attempts are failed and retried later. Defaults to 30000.
+   * attempts are failed, which uses one retry, and logged. Defaults to 30000.
    *
    * @type {number}
    * @readonly
    */
   readonly shutdownTimeoutMs?: number;
+
+  /**
+   * Property deadLetterCheckIntervalSeconds
+   *
+   * @description
+   * Whole seconds between two counts of the jobs that arrived in each declared dead-letter queue.
+   * Each count above zero is logged as an error, which covers the dead letters no running handler
+   * can log, such as those of a crashed process. `0` disables the watch. Defaults to 60.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly deadLetterCheckIntervalSeconds?: number;
+
+  /**
+   * Property allowPrivilegedRole
+   *
+   * @description
+   * Lets the runtime start with a role that can create objects in the pg-boss schema. Start-up
+   * refuses such a role by default, because it means the service runs as the migrator role or as
+   * an owner. Meant for a local stack with a single role. Defaults to `false`.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly allowPrivilegedRole?: boolean;
   // #endregion
 }
 
@@ -362,6 +416,28 @@ export interface ResolvedJobsModuleOptions {
    * @readonly
    */
   readonly shutdownTimeoutMs: number;
+
+  /**
+   * Property deadLetterCheckIntervalSeconds
+   *
+   * @description
+   * Seconds between two counts of the dead-letter arrivals; `0` when the watch is off.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly deadLetterCheckIntervalSeconds: number;
+
+  /**
+   * Property allowPrivilegedRole
+   *
+   * @description
+   * Whether a role that can create objects in the schema may run the runtime.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly allowPrivilegedRole: boolean;
   // #endregion
 }
 
@@ -383,10 +459,11 @@ function runDirectly(_organizationId: string | null, work: () => Promise<void>):
  * Function assertSchemaName
  *
  * @description
- * Refuses a schema name that would not read the same quoted and unquoted, or that pg-boss rejects.
+ * Refuses a schema name that would not read the same quoted and unquoted, that pg-boss rejects, or
+ * that is not a schema of its own: `public`, `information_schema` and the `pg_` schemas.
  *
  * @param {unknown} schema - Candidate schema name.
- * @throws {Error} When the name is not a lowercase identifier of at most 50 bytes.
+ * @throws {Error} When the name is not a lowercase identifier of at most 50 bytes, or is reserved.
  */
 export function assertSchemaName(schema: unknown): asserts schema is string {
   if (
@@ -396,6 +473,11 @@ export function assertSchemaName(schema: unknown): asserts schema is string {
   ) {
     throw new Error(
       'schema must be at most 50 lowercase letters, digits or underscores and cannot start with a digit.',
+    );
+  }
+  if (RESERVED_SCHEMA_PATTERN.test(schema)) {
+    throw new Error(
+      `schema must be a schema of its own: "${schema}" is reserved, and the grants on its tables would reach tables that are not pg-boss tables.`,
     );
   }
 }
@@ -426,19 +508,25 @@ export function assertRoleName(role: unknown): asserts role is string {
  * Function assertConnection
  *
  * @description
- * Refuses connection options that name no server, so the driver never falls back silently on the
- * `PG*` environment variables or on localhost.
+ * Refuses connection options that do not name the server, the role and the database, so none of
+ * the three is read from the `PG*` environment variables: a container that carries the variables
+ * of the migrator role would otherwise run the runtime as that role. A connection URI is not
+ * parsed here; the parts it lacks, and the unset `port`, `password` and `ssl`, still follow the
+ * driver's fallbacks.
  *
  * @param {unknown} connection - Candidate connection options.
- * @throws {Error} When neither `connectionString` nor `host` is set.
+ * @throws {Error} When there is no `connectionString` and `host`, `user` or `database` is missing.
  */
 export function assertConnection(connection: unknown): asserts connection is JobsConnectionOptions {
   if (typeof connection !== 'object' || connection === null) {
     throw new Error('connection is required.');
   }
   const candidate: JobsConnectionOptions = connection;
-  if (!candidate.connectionString && !candidate.host) {
-    throw new Error('connection needs a connectionString or a host.');
+  if (candidate.connectionString) {
+    return;
+  }
+  if (!candidate.host || !candidate.user || !candidate.database) {
+    throw new Error('connection needs a connectionString, or a host with a user and a database.');
   }
 }
 
@@ -465,40 +553,22 @@ export function resolveJobsModuleOptions(options: JobsModuleOptions): ResolvedJo
   if (typeof runInOrganization !== 'function') {
     throw new Error('runInOrganization must be a function.');
   }
+  const deadLetterCheckIntervalSeconds: number =
+    options.deadLetterCheckIntervalSeconds ?? DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS;
+  if (!Number.isInteger(deadLetterCheckIntervalSeconds) || deadLetterCheckIntervalSeconds < 0) {
+    throw new Error('deadLetterCheckIntervalSeconds must be an integer of at least 0.');
+  }
+  const allowPrivilegedRole: unknown = options.allowPrivilegedRole ?? false;
+  if (typeof allowPrivilegedRole !== 'boolean') {
+    throw new Error('allowPrivilegedRole must be a boolean.');
+  }
   return {
     connection,
     queues: resolveJobQueues(options.queues),
     schema,
     runInOrganization: options.runInOrganization ?? runDirectly,
     shutdownTimeoutMs,
-  };
-}
-
-/**
- * Function toRuntimeBossOptions
- *
- * @description
- * Builds the pg-boss options of the runtime, the application role.
- *
- * The runtime never runs DDL: `migrate` and `createSchema` are off, so start-up only checks the
- * installed schema version, and `reindex` is off because rebuilding an index needs its ownership.
- * Queue statistics and warnings are not persisted, which keeps maintenance to plain DML. The fixed
- * values are written after the connection so a connection object cannot override them.
- *
- * @param {ResolvedJobsModuleOptions} options - Resolved module options.
- * @returns {ConstructorOptions} Options for the pg-boss constructor.
- */
-export function toRuntimeBossOptions(options: ResolvedJobsModuleOptions): ConstructorOptions {
-  return {
-    ...options.connection,
-    schema: options.schema,
-    max: JOBS_POOL_SIZE,
-    migrate: false,
-    createSchema: false,
-    supervise: true,
-    schedule: true,
-    reindex: false,
-    persistQueueStats: false,
-    persistWarnings: false,
+    deadLetterCheckIntervalSeconds,
+    allowPrivilegedRole,
   };
 }

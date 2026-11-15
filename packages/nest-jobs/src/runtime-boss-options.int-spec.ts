@@ -5,8 +5,9 @@ import type { QueryResult } from 'pg';
 import { PgBoss, type Job as BossJob } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { resolveJobsModuleOptions, toRuntimeBossOptions } from './jobs-options.js';
+import { resolveJobsModuleOptions } from './jobs-options.js';
 import { provisionJobs } from './provision-jobs.js';
+import { toRuntimeBossOptions } from './runtime-boss-options.js';
 import {
   APP_ROLE,
   queryAs,

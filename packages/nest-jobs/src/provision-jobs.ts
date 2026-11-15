@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Logger } from '@nestjs/common';
-import { Client, type QueryResult } from 'pg';
+import { Client, escapeIdentifier, type QueryResult } from 'pg';
 import {
   PgBoss,
   type BamEntry,
@@ -29,6 +29,8 @@ import {
   type JobsConnectionOptions,
 } from './jobs-options.js';
 import { describeError } from './describe-error.js';
+import { expectedSchemaVersion } from './pg-boss-schema.js';
+import { inProvisioningTransaction } from './provisioning-transaction.js';
 
 /**
  * Constant DEFAULT_MIGRATION_TIMEOUT_MS
@@ -71,6 +73,28 @@ const BAM_INTERVAL_SECONDS: number = 10;
  * @type {string}
  */
 const STANDARD_POLICY: string = 'standard';
+
+/**
+ * Constant SHARED_JOB_TABLE
+ *
+ * @description
+ * Table pg-boss stores the jobs of every queue that is not partitioned in. This package creates no
+ * other kind of queue.
+ *
+ * @type {string}
+ */
+const SHARED_JOB_TABLE: string = 'job_common';
+
+/**
+ * Constant QUEUE_LOCK_TIMEOUT_MS
+ *
+ * @description
+ * Time the provisioning waits for the writes in flight on the queue table before a migration, in
+ * milliseconds.
+ *
+ * @type {number}
+ */
+const QUEUE_LOCK_TIMEOUT_MS: number = 30_000;
 
 /**
  * Constant logger
@@ -323,28 +347,47 @@ async function waitForIndexBuilds(boss: PgBoss, schema: string, timeoutMs: numbe
  * @description
  * Lists the statements that give the application role what the runtime needs and nothing more.
  *
- * The runtime reads and writes every pg-boss table (jobs, queues, schedules, the interval claims of
- * the version table, the instance registry) and calls its functions; it never creates, alters or
- * drops an object. So the role gets usage of the schema, data access to its tables, and execution
- * of its functions, but not CREATE on the schema, TRUNCATE, REFERENCES or TRIGGER. The default
- * privileges cover objects the migrator role creates later in the schema, such as the table of a
- * future pg-boss version. Both names were validated as plain lowercase identifiers.
+ * The runtime reads and writes the pg-boss tables (jobs, queues, schedules, the instance registry)
+ * and calls its functions; it never creates, alters or drops an object. So the role gets usage of
+ * the schema, data access to its tables and execution of its functions, but not CREATE on the
+ * schema, TRUNCATE, REFERENCES or TRIGGER. Two tables are then narrowed, because the migrator role
+ * acts on what they hold:
+ *
+ * - `bam` lists the statements pg-boss runs, verbatim, as the role that migrates. The runtime never
+ *   reads or writes it, so the application role keeps no right on it. With one, a compromised
+ *   service could have the next provisioning run a statement of its choice as the migrator role.
+ * - `version` holds the installed schema version, which decides the migrations to run, and the
+ *   interval claims of the background passes. The runtime only reads it and stamps the claims, so
+ *   the role keeps SELECT and gets UPDATE on the claim columns alone.
+ *
+ * No default privilege is set: a table of a later pg-boss version is granted by the provisioning
+ * run that creates it, after it was looked at here. Both names were validated as plain lowercase
+ * identifiers and the column names are quoted.
  *
  * @param {string} schema - Schema that holds the pg-boss tables.
  * @param {string} appRole - Role the runtime connects as.
- * @returns {readonly string[]} GRANT statements, in execution order.
+ * @param {readonly string[]} claimColumns - Columns of `version` other than the version itself.
+ * @returns {readonly string[]} Statements, in execution order.
  */
-function grantStatements(schema: string, appRole: string): readonly string[] {
+function grantStatements(
+  schema: string,
+  appRole: string,
+  claimColumns: readonly string[],
+): readonly string[] {
   const target: string = `SCHEMA "${schema}" TO "${appRole}"`;
-  const later: string = `ALTER DEFAULT PRIVILEGES IN SCHEMA "${schema}" GRANT`;
+  const columns: string = claimColumns
+    .map((column: string): string => escapeIdentifier(column))
+    .join(', ');
   return [
     `GRANT USAGE ON ${target}`,
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN ${target}`,
+    `REVOKE ALL PRIVILEGES ON TABLE "${schema}".bam FROM "${appRole}"`,
+    `REVOKE INSERT, UPDATE, DELETE ON TABLE "${schema}".version FROM "${appRole}"`,
+    ...(columns === ''
+      ? []
+      : [`GRANT UPDATE (${columns}) ON TABLE "${schema}".version TO "${appRole}"`]),
     `GRANT USAGE, SELECT ON ALL SEQUENCES IN ${target}`,
     `GRANT EXECUTE ON ALL FUNCTIONS IN ${target}`,
-    `${later} SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${appRole}"`,
-    `${later} USAGE, SELECT ON SEQUENCES TO "${appRole}"`,
-    `${later} EXECUTE ON FUNCTIONS TO "${appRole}"`,
   ];
 }
 
@@ -360,15 +403,103 @@ function grantStatements(schema: string, appRole: string): readonly string[] {
  * @returns {Promise<void>} Resolves once the grants are committed.
  */
 async function grantRuntimeAccess(client: Client, schema: string, appRole: string): Promise<void> {
-  await client.query('BEGIN');
-  try {
-    for (const statement of grantStatements(schema, appRole)) {
+  await inProvisioningTransaction(client, schema, async (): Promise<void> => {
+    const columns: QueryResult<{ column_name: string }> = await client.query<{
+      column_name: string;
+    }>(
+      `SELECT column_name::text AS column_name
+       FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'version' AND column_name <> 'version'
+       ORDER BY ordinal_position`,
+      [schema],
+    );
+    const claimColumns: string[] = columns.rows.map(
+      (row: { column_name: string }): string => row.column_name,
+    );
+    for (const statement of grantStatements(schema, appRole, claimColumns)) {
       await client.query(statement);
     }
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
+  });
+}
+
+/**
+ * Function readStoredVersion
+ *
+ * @description
+ * Reads the pg-boss schema version stored in the database, before pg-boss is started.
+ *
+ * @param {Client} client - Connection of the migrator role.
+ * @param {string} schema - Schema that holds the pg-boss tables.
+ * @returns {Promise<number | null>} The stored version, or `null` when pg-boss is not installed.
+ */
+async function readStoredVersion(client: Client, schema: string): Promise<number | null> {
+  const installed: QueryResult<{ installed: boolean }> = await client.query<{
+    installed: boolean;
+  }>('SELECT pg_catalog.to_regclass($1) IS NOT NULL AS installed', [`"${schema}".version`]);
+  if (installed.rows[0]?.installed !== true) {
+    return null;
+  }
+  const stored: QueryResult<{ version: number }> = await client.query<{ version: number }>(
+    `SELECT version FROM "${schema}".version`,
+  );
+  return stored.rows[0]?.version ?? null;
+}
+
+/**
+ * Function guardQueueRows
+ *
+ * @description
+ * Makes sure no row of the queue table can steer what the migrator role is about to run.
+ *
+ * A pg-boss migration loops over the rows of `queue` flagged as partitioned and executes DDL built
+ * from their `table_name`. The runtime needs INSERT and UPDATE on `queue`, so a compromised
+ * service could plant such a row. This package never creates a partitioned queue: any row that is
+ * partitioned, or that names another table than the shared one, is refused, on every run.
+ *
+ * When a migration is pending the check must also hold until the migration ran. The application
+ * role first loses its write access to `queue`, which the grants give back at the end of the run;
+ * then a lock on the table waits for the writes already in flight, and the rows are checked under
+ * it. Meanwhile a running service keeps enqueuing and working jobs, which do not write to `queue`;
+ * only its supervision passes and a restart fail until the run ends.
+ *
+ * @param {Client} client - Connection of the migrator role.
+ * @param {string} schema - Schema that holds the pg-boss tables.
+ * @param {string} appRole - Role the runtime connects as.
+ * @param {boolean} migrationPending - Whether pg-boss is about to migrate the schema.
+ * @returns {Promise<void>} Resolves when the queue table holds only rows this package creates.
+ * @throws {Error} When a queue row is partitioned or names another job table.
+ */
+async function guardQueueRows(
+  client: Client,
+  schema: string,
+  appRole: string,
+  migrationPending: boolean,
+): Promise<void> {
+  if (migrationPending) {
+    await inProvisioningTransaction(client, schema, async (): Promise<void> => {
+      await client.query(
+        `REVOKE INSERT, UPDATE, DELETE ON TABLE "${schema}".queue FROM "${appRole}"`,
+      );
+    });
+  }
+  let foreign: string[] = [];
+  await inProvisioningTransaction(client, schema, async (): Promise<void> => {
+    if (migrationPending) {
+      await client.query(`SET LOCAL lock_timeout = '${String(QUEUE_LOCK_TIMEOUT_MS)}ms'`);
+      await client.query(`LOCK TABLE "${schema}".queue IN SHARE ROW EXCLUSIVE MODE`);
+    }
+    const rows: QueryResult<{ name: string }> = await client.query<{ name: string }>(
+      `SELECT name FROM "${schema}".queue
+       WHERE partition IS DISTINCT FROM false OR table_name IS DISTINCT FROM $1
+       ORDER BY name LIMIT 10`,
+      [SHARED_JOB_TABLE],
+    );
+    foreign = rows.rows.map((row: { name: string }): string => JSON.stringify(row.name));
+  });
+  if (foreign.length > 0) {
+    throw new Error(
+      `The queue table of schema "${schema}" holds rows this package does not create (partitioned, or on another job table): ${foreign.join(', ')}. Nothing was installed or migrated. Inspect these rows: a migration would run DDL built from them.`,
+    );
   }
 }
 
@@ -459,11 +590,15 @@ async function installSchemaAndQueues(
  * and grants the application role data access to the schema. It runs every DDL statement the jobs
  * need: the runtime runs none. It is idempotent and safe to run on every deployment.
  *
+ * It refuses to go on, before changing anything, when the stored schema is newer than the pg-boss
+ * version of this package, or when the queue table holds rows this package does not create.
+ *
  * @param {ProvisionJobsOptions} options - Migrator connection, queue declarations and target role.
  * @returns {Promise<void>} Resolves once the schema, the queues and the grants are in place and
  * every connection is closed.
- * @throws {Error} When an option is invalid, the application role does not exist, the migrator role
- * lacks a right, or the index builds do not finish in time.
+ * @throws {Error} When an option is invalid, the application role does not exist, the stored
+ * schema is newer than this package, the queue table holds foreign rows, the migrator role lacks a
+ * right, or the index builds do not finish in time.
  */
 export async function provisionJobs(options: ProvisionJobsOptions): Promise<void> {
   const connection: unknown = options.connection;
@@ -495,6 +630,17 @@ export async function provisionJobs(options: ProvisionJobsOptions): Promise<void
       'SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1',
       [schema],
     );
+    const expected: number = expectedSchemaVersion();
+    const stored: number | null =
+      schemas.rows.length === 0 ? null : await readStoredVersion(client, schema);
+    if (stored !== null && stored > expected) {
+      throw new Error(
+        `Schema "${schema}" is at pg-boss version ${String(stored)}, newer than the version ${String(expected)} of this package: nothing was changed. Provision with the release of the kit that brought that version.`,
+      );
+    }
+    if (stored !== null) {
+      await guardQueueRows(client, schema, appRole, stored < expected);
+    }
     const version: number | null = await installSchemaAndQueues(
       connection,
       schema,

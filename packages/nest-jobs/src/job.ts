@@ -89,9 +89,10 @@ export interface JobEnqueueOptions {
    * Property occurrenceKey
    *
    * @description
-   * Key that identifies the occurrence within its queue, such as `<reminder id>:<occurrence>`. A
-   * second enqueue with the same queue and key inserts nothing while the first job row exists.
-   * Without a key every enqueue creates a job. Defaults to none.
+   * Key that identifies the occurrence within its queue and its organization, such as
+   * `<reminder id>:<occurrence>`. A second enqueue with the same queue, organization and key
+   * inserts nothing while the first job row exists. Without a key every enqueue creates a job.
+   * Defaults to none.
    *
    * @type {string}
    * @readonly
@@ -197,6 +198,21 @@ export interface Job<TPayload = unknown> {
    * @readonly
    */
   readonly attempt: number;
+
+  /**
+   * Property signal
+   *
+   * @description
+   * Aborted when the attempt can no longer succeed: it ran longer than the queue's
+   * `expireInSeconds`, or the application shut down past `shutdownTimeoutMs`. The attempt is
+   * failed at that moment whatever the handler does next, and the job may already run elsewhere.
+   * Pass the signal to the calls that accept one and stop: a handler that never settles keeps its
+   * worker slot busy.
+   *
+   * @type {AbortSignal}
+   * @readonly
+   */
+  readonly signal: AbortSignal;
   // #endregion
 }
 
@@ -281,6 +297,27 @@ export interface JobScheduleOptions {
    * Distinguishes several schedules on one queue: letters, digits, underscores, hyphens, periods
    * and forward slashes. Registering the same queue and key again replaces the schedule. Defaults
    * to the empty key.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly key?: string;
+  // #endregion
+}
+
+/**
+ * Interface JobUnscheduleOptions
+ *
+ * @description
+ * Options that designate the schedule to remove.
+ */
+export interface JobUnscheduleOptions {
+  // #region Properties
+  /**
+   * Property key
+   *
+   * @description
+   * Key the schedule was registered with. Defaults to the empty key.
    *
    * @type {string}
    * @readonly

@@ -5,11 +5,18 @@ import {
   type BeforeApplicationShutdown,
   type OnModuleInit,
 } from '@nestjs/common';
-import { PgBoss, type JobWithMetadata, type QueueResult, type Warning } from 'pg-boss';
+import {
+  PgBoss,
+  type JobWithMetadata,
+  type QueueResult,
+  type Schedule,
+  type Warning,
+} from 'pg-boss';
 
 import { describeError, stackOf } from './describe-error.js';
 import { readJobEnvelope, toJobEnvelope, type JobEnvelope } from './job-envelope.js';
 import {
+  assertQueueName,
   deadLetterQueuesOf,
   type ResolvedDeadLetterQueue,
   type ResolvedJobQueue,
@@ -20,6 +27,7 @@ import type {
   JobEnqueueResult,
   JobHandler,
   JobScheduleOptions,
+  JobUnscheduleOptions,
   JobWorkOptions,
   JobsQueryResult,
   JobsTransaction,
@@ -28,11 +36,11 @@ import { JobsNotProvisionedError } from './jobs-not-provisioned.error.js';
 import {
   JOBS_MODULE_OPTIONS,
   resolveJobsModuleOptions,
-  toRuntimeBossOptions,
   type JobsModuleOptions,
   type ResolvedJobsModuleOptions,
 } from './jobs-options.js';
 import { assertOccurrenceKey, deriveOccurrenceJobId } from './occurrence-id.js';
+import { toRuntimeBossOptions } from './runtime-boss-options.js';
 import { assertTimeZone } from './time-zone.js';
 
 /**
@@ -75,6 +83,107 @@ const DEFAULT_POLLING_INTERVAL_SECONDS: number = 2;
  * @type {number}
  */
 const MIN_POLLING_INTERVAL_SECONDS: number = 0.5;
+
+/**
+ * Constant DEAD_LETTER_LAG_SECONDS
+ *
+ * @description
+ * How far behind the database clock the dead-letter watch counts, in seconds. A dead letter is
+ * stamped with the start time of the statement that inserts it and becomes visible when that
+ * statement commits; counting up to a few seconds ago keeps a row that commits late from falling
+ * between two checks.
+ *
+ * @type {number}
+ */
+const DEAD_LETTER_LAG_SECONDS: number = 5;
+
+/**
+ * Constant EXPIRY_LOG_MARGIN_MS
+ *
+ * @description
+ * Milliseconds the expiration log waits past `expireInSeconds`. pg-boss fails the attempt with a
+ * timer of its own at `expireInSeconds`; logging a moment later means that a handler still running
+ * then was really failed, and that one finishing right on time is not reported.
+ *
+ * @type {number}
+ */
+const EXPIRY_LOG_MARGIN_MS: number = 100;
+
+/**
+ * Interface RunningAttempt
+ *
+ * @description
+ * What the runtime remembers about an attempt whose handler has not settled yet, so it can say
+ * what happens to the job when the attempt is failed without the handler rejecting.
+ */
+interface RunningAttempt {
+  // #region Properties
+  /**
+   * Property queue
+   *
+   * @description
+   * Queue the job was fetched from.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly queue: string;
+
+  /**
+   * Property attempt
+   *
+   * @description
+   * One-based number of the running attempt.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly attempt: number;
+
+  /**
+   * Property attempts
+   *
+   * @description
+   * Number of attempts the job is allowed, `retryLimit + 1`.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly attempts: number;
+
+  /**
+   * Property deadLetter
+   *
+   * @description
+   * Dead-letter queue the job moves to once its last attempt failed.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly deadLetter: string;
+
+  /**
+   * Property expiry
+   *
+   * @description
+   * Timer that fires once the attempt has run for the queue's `expireInSeconds`.
+   *
+   * @type {NodeJS.Timeout}
+   * @readonly
+   */
+  readonly expiry: NodeJS.Timeout;
+
+  /**
+   * Property reported
+   *
+   * @description
+   * Whether the failure of the attempt was already logged, so one attempt gives one log line.
+   *
+   * @type {boolean}
+   */
+  reported: boolean;
+  // #endregion
+}
 
 /**
  * Function hasSqlState
@@ -156,6 +265,22 @@ function settingsThatDiffer(declared: ResolvedJobQueue, stored: QueueResult): re
 }
 
 /**
+ * Function fieldOf
+ *
+ * @description
+ * Reads one column of a row returned by the database handle of pg-boss, which types rows loosely.
+ *
+ * @param {unknown} row - Row of a query result.
+ * @param {string} column - Column name.
+ * @returns {unknown} The value of the column, or `undefined` when the row has none.
+ */
+function fieldOf(row: unknown, column: string): unknown {
+  return typeof row === 'object' && row !== null
+    ? (row as Record<string, unknown>)[column]
+    : undefined;
+}
+
+/**
  * Service JobsService
  *
  * @description
@@ -163,9 +288,10 @@ function settingsThatDiffer(declared: ResolvedJobQueue, stored: QueueResult): re
  * role.
  *
  * It starts with the module and fails the start-up of the application when the database was not
- * provisioned. It never runs DDL. Its pool holds two connections, apart from the application pool.
- * Delivery is at least once: a job can run again after a crash, a timeout or a shutdown, so every
- * handler must be idempotent.
+ * provisioned or when it is connected as a role that can run DDL in the pg-boss schema. It never
+ * runs DDL. Its pool holds two connections, apart from the application pool. Delivery is at least
+ * once: a job can run again after a crash, a timeout or a shutdown, so every handler must be
+ * idempotent.
  */
 @Injectable()
 export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
@@ -204,6 +330,39 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
   private readonly queues: ReadonlyMap<string, ResolvedJobQueue>;
 
   /**
+   * Property deadLetterQueues
+   *
+   * @description
+   * Names of the dead-letter queues of the declared queues, watched for arrivals.
+   *
+   * @type {readonly string[]}
+   * @readonly
+   */
+  private readonly deadLetterQueues: readonly string[];
+
+  /**
+   * Property workedQueues
+   *
+   * @description
+   * Queues that already have a worker in this process. A queue accepts one registration.
+   *
+   * @type {Set<string>}
+   * @readonly
+   */
+  private readonly workedQueues: Set<string> = new Set<string>();
+
+  /**
+   * Property running
+   *
+   * @description
+   * Attempts whose handler has not settled yet, by job id.
+   *
+   * @type {Map<string, RunningAttempt>}
+   * @readonly
+   */
+  private readonly running: Map<string, RunningAttempt> = new Map<string, RunningAttempt>();
+
+  /**
    * Property boss
    *
    * @description
@@ -212,6 +371,38 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * @type {PgBoss | null}
    */
   private boss: PgBoss | null = null;
+
+  /**
+   * Property deadLetterTimer
+   *
+   * @description
+   * Timer of the dead-letter watch, or `null` when the watch is off or stopped.
+   *
+   * @type {NodeJS.Timeout | null}
+   */
+  private deadLetterTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Property deadLetterCheck
+   *
+   * @description
+   * The dead-letter count in flight, or `null`, so two counts never overlap and shutdown can wait
+   * for the last one before the pool closes.
+   *
+   * @type {Promise<void> | null}
+   */
+  private deadLetterCheck: Promise<void> | null = null;
+
+  /**
+   * Property deadLetterWatermark
+   *
+   * @description
+   * Database time up to which dead-letter arrivals were counted, as the database rendered it, or
+   * `null` before the first count.
+   *
+   * @type {string | null}
+   */
+  private deadLetterWatermark: string | null = null;
   // #endregion
 
   // #region Constructor
@@ -233,6 +424,9 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
         queue,
       ]),
     );
+    this.deadLetterQueues = deadLetterQueuesOf(this.options.queues).map(
+      (deadLetter: ResolvedDeadLetterQueue): string => deadLetter.name,
+    );
   }
   // #endregion
 
@@ -241,12 +435,15 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * Method onModuleInit
    *
    * @description
-   * Starts pg-boss with the application role and checks that the schema and every declared queue
-   * were provisioned. The module is global, so this runs before the `onModuleInit` of the modules
-   * that register workers.
+   * Starts pg-boss with the application role, refuses a role that can create objects in the
+   * pg-boss schema, checks that the schema and every declared queue were provisioned, warns about
+   * stored schedules of queues that are no longer declared, and starts the dead-letter watch. The
+   * module is global, so this runs before the `onModuleInit` of the modules that register workers.
    *
    * @returns {Promise<void>} Resolves once jobs can be enqueued and workers registered.
    * @throws {JobsNotProvisionedError} When the schema, a grant or a declared queue is missing.
+   * @throws {Error} When the connected role can create objects in the schema and
+   * `allowPrivilegedRole` is not set.
    */
   public async onModuleInit(): Promise<void> {
     if (this.boss !== null) {
@@ -261,7 +458,10 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
     });
     try {
       await boss.start();
+      await this.assertUnprivilegedRole(boss);
       await this.assertProvisioned(boss);
+      await this.warnAboutOrphanSchedules(boss);
+      await this.countDeadLetters(boss);
     } catch (error) {
       try {
         await boss.stop({ graceful: false });
@@ -271,14 +471,16 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
       throw toStartupError(error, this.options.schema);
     }
     this.boss = boss;
+    this.startDeadLetterWatch(boss);
   }
 
   /**
    * Method beforeApplicationShutdown
    *
    * @description
-   * Stops fetching jobs, lets running handlers finish for `shutdownTimeoutMs`, fails the attempts
-   * still running after that so they are retried later, then closes the pool. It runs before the
+   * Stops the dead-letter watch, stops fetching jobs, lets running handlers finish for
+   * `shutdownTimeoutMs`, fails the attempts still running after that, logs each of them with its
+   * job id, then closes the pool. A failed attempt uses one retry of its job. It runs before the
    * `onApplicationShutdown` hooks, where an application usually closes its own resources.
    *
    * @returns {Promise<void>} Resolves once pg-boss is stopped.
@@ -288,7 +490,19 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
     if (boss === null) {
       return;
     }
+    if (this.deadLetterTimer !== null) {
+      clearInterval(this.deadLetterTimer);
+      this.deadLetterTimer = null;
+    }
+    await this.deadLetterCheck;
     await boss.stop({ graceful: true, timeout: this.options.shutdownTimeoutMs });
+    for (const [id, attempt] of this.running) {
+      this.reportFailedAttempt(
+        id,
+        attempt,
+        `it was still running when the shutdown timeout of ${String(this.options.shutdownTimeoutMs)} ms passed`,
+      );
+    }
     this.boss = null;
   }
 
@@ -299,10 +513,11 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * Inserts a job through the client of the caller's transaction: the job exists if and only if the
    * transaction commits.
    *
-   * With an occurrence key the job id is derived from the queue and the key, and a second enqueue
-   * of the same pair inserts nothing while the first job row exists, whatever its state. The row is
-   * deleted `deleteAfterSeconds` after the job finished, or `retentionSeconds` after it was last due
-   * if it never started, so the business table stays the source of truth beyond that.
+   * With an occurrence key the job id is derived from the queue, the organization of the
+   * transaction and the key, and a second enqueue of the same triple inserts nothing while the
+   * first job row exists, whatever its state. The row is deleted `deleteAfterSeconds` after the job
+   * finished, or `retentionSeconds` after it was last due if it never started, so the business
+   * table stays the source of truth beyond that.
    *
    * A failed insert aborts the caller's transaction, like any failed statement in it.
    *
@@ -327,7 +542,9 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
       assertOccurrenceKey(occurrenceKey);
     }
     const id: string | undefined =
-      occurrenceKey === undefined ? undefined : deriveOccurrenceJobId(declared.name, occurrenceKey);
+      occurrenceKey === undefined
+        ? undefined
+        : deriveOccurrenceJobId(declared.name, envelope.organizationId, occurrenceKey);
     const created: string | null = await boss.send(declared.name, envelope, {
       ...(id === undefined ? {} : { id }),
       db: {
@@ -348,20 +565,22 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * Method work
    *
    * @description
-   * Registers a handler for a declared queue. Jobs are handled one at a time per unit of
-   * `concurrency`, each call wrapped in `runInOrganization`.
+   * Registers the handler of a declared queue, once per queue and per process: raise `concurrency`
+   * for more parallel jobs. Jobs are handled one at a time per unit of `concurrency`, each call
+   * wrapped in `runInOrganization`.
    *
    * A handler that rejects, or runs longer than the queue's `expireInSeconds`, fails the attempt.
    * The job is retried after the queue's delay, with exponential backoff when enabled, up to
-   * `retryLimit` times; then it is copied to the dead-letter queue. A rejected attempt is logged as
-   * a warning, the last one as an error, with the job id and never the payload.
+   * `retryLimit` times; then it is copied to the dead-letter queue. A failed attempt is logged as a
+   * warning, the last one as an error, with the job id and never the payload. Only the name and
+   * the message of the error are stored with the job.
    *
    * @param {string} queue - Declared queue to consume.
    * @param {JobHandler<TPayload>} handler - Idempotent handler of one job.
    * @param {JobWorkOptions} [options] - Concurrency and polling interval.
    * @returns {Promise<void>} Resolves once the worker polls the queue.
-   * @throws {Error} When the runtime is not started, the queue is not declared or an option is out
-   * of bounds.
+   * @throws {Error} When the runtime is not started, the queue is not declared or already has a
+   * worker, or an option is out of bounds.
    */
   public async work<TPayload>(
     queue: string,
@@ -382,20 +601,31 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
     ) {
       throw new Error('pollingIntervalSeconds must be a number of at least 0.5.');
     }
-    await boss.work(
-      declared.name,
-      {
-        includeMetadata: true,
-        batchSize: 1,
-        localConcurrency: concurrency,
-        pollingIntervalSeconds,
-      },
-      async (jobs: JobWithMetadata<unknown>[]): Promise<void> => {
-        for (const job of jobs) {
-          await this.handle(declared, job, handler);
-        }
-      },
-    );
+    if (this.workedQueues.has(declared.name)) {
+      throw new Error(
+        `Queue "${declared.name}" already has a worker in this process: register one handler per queue and raise concurrency instead.`,
+      );
+    }
+    this.workedQueues.add(declared.name);
+    try {
+      await boss.work(
+        declared.name,
+        {
+          includeMetadata: true,
+          batchSize: 1,
+          localConcurrency: concurrency,
+          pollingIntervalSeconds,
+        },
+        async (jobs: JobWithMetadata<unknown>[]): Promise<void> => {
+          for (const job of jobs) {
+            await this.handle(declared, job, handler);
+          }
+        },
+      );
+    } catch (error) {
+      this.workedQueues.delete(declared.name);
+      throw error;
+    }
   }
 
   /**
@@ -431,17 +661,19 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    *
    * @description
    * Removes a stored schedule. A schedule stays in the database until it is removed: deleting the
-   * `schedule` call from the code does not stop it.
+   * `schedule` call from the code does not stop it. The queue does not have to be declared any
+   * more, so the schedule of a queue that left the declarations can still be removed.
    *
-   * @param {string} queue - Declared queue of the schedule.
-   * @param {string} [key] - Key of the schedule; the empty key when omitted.
+   * @param {string} queue - Queue of the schedule, declared or not.
+   * @param {JobUnscheduleOptions} [options] - Key of the schedule; the empty key when omitted.
    * @returns {Promise<void>} Resolves once the schedule is removed, or was not there.
-   * @throws {Error} When the runtime is not started or the queue is not declared.
+   * @throws {Error} When the runtime is not started or the queue name is not a valid name.
    */
-  public async unschedule(queue: string, key?: string): Promise<void> {
+  public async unschedule(queue: string, options: JobUnscheduleOptions = {}): Promise<void> {
     const boss: PgBoss = this.requireBoss();
-    const declared: ResolvedJobQueue = this.requireQueue(queue);
-    await boss.unschedule(declared.name, key ?? '');
+    const name: unknown = queue;
+    assertQueueName(name, 'Queue name');
+    await boss.unschedule(name, options.key ?? '');
   }
 
   /**
@@ -481,6 +713,35 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
   }
 
   /**
+   * Method assertUnprivilegedRole
+   *
+   * @description
+   * Refuses to run as a role that can create objects in the pg-boss schema: the migrator role, an
+   * owner or a superuser. A connection that picked up the wrong credentials would otherwise give a
+   * long-running service the DDL rights the two-role split exists to keep away from it.
+   *
+   * @param {PgBoss} boss - Started pg-boss instance.
+   * @returns {Promise<void>} Resolves when the role is acceptable.
+   * @throws {Error} When the role can create objects and `allowPrivilegedRole` is not set.
+   */
+  private async assertUnprivilegedRole(boss: PgBoss): Promise<void> {
+    if (this.options.allowPrivilegedRole) {
+      return;
+    }
+    const result: JobsQueryResult = await boss
+      .getDb()
+      .executeSql(
+        "SELECT pg_catalog.has_schema_privilege(current_user, $1, 'CREATE') AS privileged, current_user::text AS role",
+        [this.options.schema],
+      );
+    if (fieldOf(result.rows[0], 'privileged') === true) {
+      throw new Error(
+        `The runtime is connected as "${String(fieldOf(result.rows[0], 'role'))}", a role that can create objects in the pg-boss schema "${this.options.schema}". Connect as the application role, which provisionJobs() grants data access only, or set allowPrivilegedRole for a local stack with a single role.`,
+      );
+    }
+  }
+
+  /**
    * Method assertProvisioned
    *
    * @description
@@ -492,12 +753,7 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * @throws {JobsNotProvisionedError} When a queue is missing.
    */
   private async assertProvisioned(boss: PgBoss): Promise<void> {
-    const expected: string[] = [
-      ...this.queues.keys(),
-      ...deadLetterQueuesOf(this.options.queues).map(
-        (deadLetter: ResolvedDeadLetterQueue): string => deadLetter.name,
-      ),
-    ];
+    const expected: string[] = [...this.queues.keys(), ...this.deadLetterQueues];
     if (expected.length === 0) {
       return;
     }
@@ -524,14 +780,160 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
   }
 
   /**
+   * Method warnAboutOrphanSchedules
+   *
+   * @description
+   * Warns about each stored schedule whose queue is not declared. The provisioning leaves a queue
+   * that left the declarations in place, and its schedule keeps creating jobs nothing consumes.
+   *
+   * @param {PgBoss} boss - Started pg-boss instance.
+   * @returns {Promise<void>} Resolves once the stored schedules were read.
+   */
+  private async warnAboutOrphanSchedules(boss: PgBoss): Promise<void> {
+    const schedules: Schedule[] = await boss.getSchedules();
+    for (const schedule of schedules) {
+      if (!this.queues.has(schedule.name)) {
+        this.logger.warn(
+          `A schedule is stored for queue "${schedule.name}" (key "${schedule.key}"), which is not declared: it still creates jobs that nothing consumes. Remove it with unschedule(), or declare the queue.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Method startDeadLetterWatch
+   *
+   * @description
+   * Arms the timer of the dead-letter watch, unless the watch is disabled or there is no queue to
+   * watch. The timer does not keep the process alive.
+   *
+   * @param {PgBoss} boss - Started pg-boss instance.
+   */
+  private startDeadLetterWatch(boss: PgBoss): void {
+    const seconds: number = this.options.deadLetterCheckIntervalSeconds;
+    if (seconds === 0 || this.deadLetterQueues.length === 0) {
+      return;
+    }
+    this.deadLetterTimer = setInterval((): void => {
+      if (this.deadLetterCheck !== null) {
+        return;
+      }
+      this.deadLetterCheck = this.countDeadLetters(boss)
+        .catch((error: unknown): void => {
+          this.logger.warn(`The dead-letter check failed: ${describeError(error)}`);
+        })
+        .finally((): void => {
+          this.deadLetterCheck = null;
+        });
+    }, seconds * 1_000);
+    this.deadLetterTimer.unref();
+  }
+
+  /**
+   * Method countDeadLetters
+   *
+   * @description
+   * Counts the jobs that arrived in each declared dead-letter queue since the previous count and
+   * logs one error per queue that received some, with the count and never a payload.
+   *
+   * This is the log of the dead letters no handler can report: an attempt failed by pg-boss
+   * supervision after its process crashed. It also counts the dead letters a worker already
+   * logged, and every replica runs it, so one dead letter can be reported more than once.
+   *
+   * pg-boss has no call that counts arrivals without returning the payloads, so this is one
+   * read-only statement on the job table, run through the database handle of pg-boss. The first
+   * count only records where to start from.
+   *
+   * @param {PgBoss} boss - Started pg-boss instance.
+   * @returns {Promise<void>} Resolves once the arrivals were counted and logged.
+   */
+  private async countDeadLetters(boss: PgBoss): Promise<void> {
+    if (this.options.deadLetterCheckIntervalSeconds === 0 || this.deadLetterQueues.length === 0) {
+      return;
+    }
+    const result: JobsQueryResult = await boss.getDb().executeSql(
+      `WITH bounds AS (
+         SELECT pg_catalog.now() - interval '${String(DEAD_LETTER_LAG_SECONDS)} seconds' AS upto
+       )
+       SELECT bounds.upto::text AS upto, arrivals.name, arrivals.count
+       FROM bounds
+       LEFT JOIN LATERAL (
+         SELECT job.name, count(*)::int AS count
+         FROM "${this.options.schema}".job
+         WHERE job.name = ANY($1::text[])
+           AND job.created_on > COALESCE($2::timestamptz, bounds.upto)
+           AND job.created_on <= bounds.upto
+         GROUP BY job.name
+       ) arrivals ON true`,
+      [this.deadLetterQueues, this.deadLetterWatermark],
+    );
+    for (const row of result.rows) {
+      const name: unknown = fieldOf(row, 'name');
+      const count: unknown = fieldOf(row, 'count');
+      if (typeof name === 'string' && typeof count === 'number' && count > 0) {
+        this.logger.error(
+          `${String(count)} job(s) reached the dead-letter queue "${name}" since the previous check.`,
+        );
+      }
+    }
+    const upto: unknown = fieldOf(result.rows[0], 'upto');
+    if (typeof upto === 'string') {
+      this.deadLetterWatermark = upto;
+    }
+  }
+
+  /**
+   * Method reportFailedAttempt
+   *
+   * @description
+   * Logs that an attempt failed and what happens to its job: an error when it was the last attempt
+   * and the job moves to the dead-letter queue, a warning when it will be retried. An attempt is
+   * reported once, whichever of the handler, the expiration or the shutdown fails it first.
+   *
+   * @param {string} id - Job id.
+   * @param {RunningAttempt} attempt - The attempt that failed.
+   * @param {string} reason - Why it failed: the error of the handler, or what stopped it.
+   * @param {string} [stack] - Stack of the error, for the last attempt.
+   */
+  private reportFailedAttempt(
+    id: string,
+    attempt: RunningAttempt,
+    reason: string,
+    stack?: string,
+  ): void {
+    if (attempt.reported) {
+      return;
+    }
+    attempt.reported = true;
+    clearTimeout(attempt.expiry);
+    const progress: string = `${String(attempt.attempt)} of ${String(attempt.attempts)}`;
+    if (attempt.attempt >= attempt.attempts) {
+      this.logger.error(
+        `Job ${id} of queue "${attempt.queue}" failed its last attempt (${progress}) and moves to the dead-letter queue "${attempt.deadLetter}": ${reason}`,
+        stack,
+      );
+    } else {
+      this.logger.warn(
+        `Job ${id} of queue "${attempt.queue}" failed attempt ${progress} and will be retried: ${reason}`,
+      );
+    }
+  }
+
+  /**
    * Method handle
    *
    * @description
    * Runs one attempt of one job: reads its envelope, calls the handler inside `runInOrganization`
    * and, when the attempt fails, logs it and lets pg-boss apply the retry policy.
    *
+   * A timer logs the attempt at `expireInSeconds` when the handler is still running: pg-boss fails
+   * the attempt itself at that moment, without the handler rejecting. A handler that returns after
+   * its signal was aborted is logged the same way, since its attempt was failed before it returned.
+   *
    * The failure is rethrown on purpose: pg-boss then moves the job to `retry`, or to `failed` and
-   * the dead-letter queue when no retry is left.
+   * the dead-letter queue when no retry is left. What is rethrown is a plain error carrying the
+   * name and the message of the original one, because pg-boss stores the thrown error whole, with
+   * its properties and its causes, on the job row and on the dead letter.
    *
    * @param {ResolvedJobQueue} queue - Declaration of the queue being consumed.
    * @param {JobWithMetadata<unknown>} job - Job as pg-boss fetched it.
@@ -543,8 +945,25 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
     job: JobWithMetadata<unknown>,
     handler: JobHandler<TPayload>,
   ): Promise<void> {
-    const attempt: number = job.retryCount + 1;
-    const attempts: number = job.retryLimit + 1;
+    const expireInMs: number = job.expireInSeconds * 1_000;
+    const startedAt: number = Date.now();
+    const endedBecause: () => string = (): string =>
+      Date.now() - startedAt >= expireInMs - EXPIRY_LOG_MARGIN_MS
+        ? `it ran longer than the ${String(job.expireInSeconds)} seconds of expireInSeconds`
+        : 'the application shut down before it finished';
+    let failure: string | null = null;
+    const attempt: RunningAttempt = {
+      queue: queue.name,
+      attempt: job.retryCount + 1,
+      attempts: job.retryLimit + 1,
+      deadLetter: job.deadLetter,
+      expiry: setTimeout((): void => {
+        this.reportFailedAttempt(job.id, attempt, endedBecause());
+      }, expireInMs + EXPIRY_LOG_MARGIN_MS),
+      reported: false,
+    };
+    attempt.expiry.unref();
+    this.running.set(job.id, attempt);
     try {
       const envelope: JobEnvelope = readJobEnvelope(job.data);
       const context: Job<TPayload> = {
@@ -552,24 +971,33 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
         queue: queue.name,
         payload: envelope.payload as TPayload,
         organizationId: envelope.organizationId,
-        attempt,
+        attempt: attempt.attempt,
+        signal: job.signal,
       };
       await this.options.runInOrganization(envelope.organizationId, (): Promise<void> =>
         handler(context),
       );
-    } catch (error) {
-      const progress: string = `${String(attempt)} of ${String(attempts)}`;
-      if (attempt >= attempts) {
-        this.logger.error(
-          `Job ${job.id} of queue "${queue.name}" failed its last attempt (${progress}) and moves to the dead-letter queue "${job.deadLetter}": ${describeError(error)}`,
-          stackOf(error),
-        );
-      } else {
-        this.logger.warn(
-          `Job ${job.id} of queue "${queue.name}" failed attempt ${progress} and will be retried: ${describeError(error)}`,
-        );
+      if (job.signal.aborted) {
+        // pg-boss aborts the signal when it fails the attempt itself. A handler that stopped on
+        // the signal and returned did not complete the job: the attempt is already failed.
+        this.reportFailedAttempt(job.id, attempt, endedBecause());
       }
-      throw error;
+    } catch (error) {
+      this.reportFailedAttempt(
+        job.id,
+        attempt,
+        job.signal.aborted ? `${endedBecause()} (${describeError(error)})` : describeError(error),
+        stackOf(error),
+      );
+      failure = describeError(error);
+    } finally {
+      clearTimeout(attempt.expiry);
+      this.running.delete(job.id);
+    }
+    if (failure !== null) {
+      // Thrown outside the catch, and without the original error as its cause, on purpose: pg-boss
+      // would store the cause chain with the job.
+      throw new Error(failure);
     }
   }
   // #endregion
