@@ -5,8 +5,15 @@
     "outDir": "./dist",
     // Kept inside dist so that deleting dist also discards the incremental state: left next to
     // the sources, it would make `tsc -b` skip the package and never emit it again.
-    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo",
+    // Members marked `@internal`, such as the NATS clients held by `MessagingConnection`, are left
+    // out of the published declarations: the NATS client types are not part of the public API.
+    "stripInternal": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts"]
+  // src/testing holds helpers shared by the specs; they import development dependencies and are
+  // not shipped.
+  "exclude": ["src/**/*.spec.ts", "src/**/*.int-spec.ts", "src/testing/**"],
+  // The package imports `@cadenway/nest-common`: `tsc -b` builds it first.
+  "references": [{ "path": "../nest-common/tsconfig.build.json" }]
 }
