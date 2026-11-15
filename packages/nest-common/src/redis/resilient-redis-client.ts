@@ -305,8 +305,11 @@ export class ResilientRedisClient extends Redis {
    * @description
    * Closes the connection when the application stops. A ready connection is closed with `QUIT`,
    * which lets the commands already sent complete; any other state, or a failed `QUIT`, closes the
-   * socket at once, rejects the commands still queued (silently) and stops the reconnection
-   * attempts.
+   * socket at once and stops the reconnection attempts. Queued commands are rejected silently when
+   * a socket was still open; when the client was waiting between two reconnection attempts,
+   * ioredis 6 cancels the attempt without moving the client to `end`, and the commands queued
+   * meanwhile never settle. Either way nothing connects again and nothing is left to reject the
+   * process.
    *
    * @returns {Promise<void>} Resolves once the connection is closed.
    */

@@ -250,12 +250,25 @@ describe('ResilientRedisClient on a real Redis', () => {
     void clients.subscriber.punsubscribe('room:*');
     await clients.shutDown();
     await main.shutDown();
+    let reconnected: number = 0;
+    for (const client of [main, clients.publisher, clients.subscriber]) {
+      client.on('ready', () => {
+        reconnected += 1;
+      });
+    }
     await delay(200);
     await startRedis();
+    // Longer than several attempts of the 100 ms retry strategy: a client still trying would be
+    // ready again by now.
+    await delay(1_000);
 
     expect(unhandled).toEqual([]);
     expect(lines.filter((line) => line.message === 'redis command failed')).toEqual([]);
-    expect(clients.publisher.status).toBe('end');
-    expect(main.status).toBe('end');
+    // ioredis ends a client stopped while it waits to reconnect without moving it to `end`: the
+    // property that matters is that none of them connects again.
+    expect(reconnected).toBe(0);
+    for (const client of [main, clients.publisher, clients.subscriber]) {
+      expect(client.status).not.toBe('ready');
+    }
   });
 });
