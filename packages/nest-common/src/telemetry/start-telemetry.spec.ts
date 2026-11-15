@@ -1,94 +1,13 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
-
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import { context, ROOT_CONTEXT, trace, type Span } from '@opentelemetry/api';
 import { RPCType, setRPCMetadata, type RPCMetadata } from '@opentelemetry/core';
 import { of } from 'rxjs';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { startCollector, type Collector } from '../testing/otlp-collector.js';
 import { RouteNameInterceptor } from './route-name.interceptor.js';
 import { startTelemetry, type TelemetryHandle } from './start-telemetry.js';
 import { shutdownTelemetry } from './telemetry-handle.js';
-
-/**
- * Interface Collector
- *
- * @description
- * Local HTTP server standing in for an OTLP collector.
- */
-interface Collector {
-  // #region Properties
-  /**
-   * Property url
-   *
-   * @description
-   * Base URL to put in `OTEL_EXPORTER_OTLP_ENDPOINT`.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly url: string;
-
-  /**
-   * Property received
-   *
-   * @description
-   * Bodies received so far, by request path.
-   *
-   * @type {Map<string, string[]>}
-   * @readonly
-   */
-  readonly received: Map<string, string[]>;
-  // #endregion
-
-  // #region Methods
-  /**
-   * Method close
-   *
-   * @description
-   * Stops the server.
-   *
-   * @returns {Promise<void>} Resolves once the server is closed.
-   */
-  close(): Promise<void>;
-  // #endregion
-}
-
-/**
- * Function startCollector
- *
- * @description
- * Starts a local server that records every OTLP request and answers 200.
- *
- * @returns {Promise<Collector>} The running collector.
- */
-async function startCollector(): Promise<Collector> {
-  const received: Map<string, string[]> = new Map<string, string[]>();
-  const server: Server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    const chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => chunks.push(chunk));
-    request.on('end', () => {
-      const path: string = request.url ?? '';
-      received.set(path, [...(received.get(path) ?? []), Buffer.concat(chunks).toString('utf8')]);
-      response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const port: number = (server.address() as AddressInfo).port;
-  return {
-    url: `http://127.0.0.1:${String(port)}`,
-    received,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => {
-          resolve();
-        });
-      }),
-  };
-}
 
 /**
  * Function httpExecutionContext
