@@ -14,6 +14,7 @@ export {
   DatabaseModule,
   DEFAULT_POOL_SIZE,
   type DatabaseConfig,
+  type DatabaseModuleAsyncOptions,
   type DatabaseModuleOptions,
 } from './database.module.js';
 export {

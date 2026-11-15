@@ -214,6 +214,55 @@ describe('createApplication', () => {
     await request(app.getHttpServer()).get('/health/ready').expect(200);
   });
 
+  it('does not announce Express', async () => {
+    const response: Response = await request(app.getHttpServer()).get('/health/live').expect(200);
+
+    expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+
+  it('accepts the application module as a dynamic module', async () => {
+    const other: NestExpressApplication = await createApplication(
+      { module: SampleModule },
+      {
+        service: 'sample-service',
+        config: { LOG_LEVEL: 'silent' },
+        internalTokenVerification: 'off',
+      },
+    );
+    await other.init();
+
+    await request(other.getHttpServer()).get('/internal/v1/samples').expect(200);
+    await other.close();
+  });
+
+  it('rejects with the error of a failing provider instead of aborting the process', async () => {
+    /**
+     * Class FailingModule
+     *
+     * @description
+     * Module whose provider fails while the application is created.
+     */
+    @Module({
+      providers: [
+        {
+          provide: 'broken',
+          useFactory: (): never => {
+            throw new Error('the broken provider failed');
+          },
+        },
+      ],
+    })
+    class FailingModule {}
+
+    await expect(
+      createApplication(FailingModule, {
+        service: 'sample-service',
+        config: { LOG_LEVEL: 'silent' },
+        internalTokenVerification: 'off',
+      }),
+    ).rejects.toThrow('the broken provider failed');
+  });
+
   it('flushes telemetry when the application shuts down', async () => {
     let flushed: number = 0;
     registerTelemetryShutdown(() => {

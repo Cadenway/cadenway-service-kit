@@ -1,4 +1,4 @@
-import { Inject, Injectable, Module } from '@nestjs/common';
+import { Inject, Injectable, Module, type DynamicModule } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -106,6 +106,22 @@ describe('loadConfig', () => {
     }
   });
 
+  it('says a variable without default is not set, and keeps the reason of zod for one that is set', () => {
+    try {
+      loadConfig(schema, { PORT: '70000', LOG_LEVEL: 'loud', API_SECRET: '' });
+      expect.unreachable('the environment must be refused');
+    } catch (error) {
+      const issues: readonly string[] = (error as ConfigError).issues;
+      expect(issues).toContain('API_SECRET: required, not set');
+      expect(issues.find((issue) => issue.startsWith('PORT:'))).not.toContain('not set');
+      expect(issues.find((issue) => issue.startsWith('LOG_LEVEL:'))).toMatch(
+        /^LOG_LEVEL: Invalid option/u,
+      );
+      expect((error as Error).message).not.toContain('loud');
+      expect((error as Error).message).not.toContain('70000');
+    }
+  });
+
   it('never echoes a value in the error', () => {
     const secret: string = 'too-short-secret';
     try {
@@ -142,5 +158,46 @@ describe('ConfigModule', () => {
 
   it('throws while the module is declared when the environment is invalid', () => {
     expect(() => ConfigModule.forRoot({ schema, env: {} })).toThrow(ConfigError);
+  });
+
+  it('validates nothing while the module is declared with eager: false, and fails the creation instead', async () => {
+    const environment: Record<string, string | undefined> = {};
+    const declared: () => unknown = () =>
+      ConfigModule.forRoot({ schema, env: environment, eager: false });
+
+    expect(declared).not.toThrow();
+    await expect(
+      Test.createTestingModule({
+        imports: [ConfigModule.forRoot({ schema, env: environment, eager: false })],
+      }).compile(),
+    ).rejects.toBeInstanceOf(ConfigError);
+  });
+
+  it('reads the environment when the application is created with eager: false', async () => {
+    const environment: Record<string, string | undefined> = {};
+    const declaration: DynamicModule = ConfigModule.forRoot({
+      schema,
+      env: environment,
+      eager: false,
+    });
+    environment.PORT = '8081';
+    environment.API_SECRET = 'z'.repeat(32);
+
+    /**
+     * Class FeatureModule
+     *
+     * @description
+     * Module that reads the configuration through the global token.
+     */
+    @Module({ providers: [ConfigReader], exports: [ConfigReader] })
+    class FeatureModule {}
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      imports: [declaration, FeatureModule],
+    }).compile();
+
+    expect(moduleRef.get(ConfigReader).config.PORT).toBe(8081);
+    expect(Object.isFrozen(moduleRef.get(ConfigReader).config)).toBe(true);
+    await moduleRef.close();
   });
 });

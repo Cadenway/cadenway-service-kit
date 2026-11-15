@@ -8,7 +8,7 @@ import { LoggerModule, type Params } from 'nestjs-pino';
 import pino from 'pino';
 import type { Options } from 'pino-http';
 
-import { principalOf } from '../auth/internal-token.guard.js';
+import { requestOrganizationContextOf } from '../auth/internal-token.guard.js';
 import { getOrganizationContext, type OrganizationContext } from '../auth/organization-context.js';
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
 import { readPackageVersion } from '../bootstrap/package-version.js';
@@ -177,7 +177,7 @@ function completionFields(
     route: routePatternOf(request),
     status: response.statusCode,
     durationMs,
-    ...identityFields(principalOf(request)),
+    ...identityFields(requestOrganizationContextOf(request)),
   };
 }
 

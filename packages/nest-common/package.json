@@ -18,15 +18,21 @@
       "types": "./dist/database/index.d.ts",
       "default": "./dist/database/index.js"
     },
+    "./redis": {
+      "types": "./dist/redis/index.d.ts",
+      "default": "./dist/redis/index.js"
+    },
     "./telemetry": {
       "types": "./dist/telemetry/index.d.ts",
       "default": "./dist/telemetry/index.js"
     },
-    "./hook.mjs": "./hook.mjs"
+    "./hook.mjs": "./hook.mjs",
+    "./register": "./register.mjs"
   },
   "files": [
     "dist",
     "hook.mjs",
+    "register.mjs",
     "!dist/**/*.tsbuildinfo"
   ],
   "publishConfig": {
@@ -60,6 +66,7 @@
     "@nestjs/platform-express": "catalog:",
     "@opentelemetry/api": "catalog:",
     "drizzle-orm": "catalog:",
+    "ioredis": "^6.0.0",
     "pg": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:",
@@ -67,6 +74,9 @@
   },
   "peerDependenciesMeta": {
     "drizzle-orm": {
+      "optional": true
+    },
+    "ioredis": {
       "optional": true
     },
     "pg": {

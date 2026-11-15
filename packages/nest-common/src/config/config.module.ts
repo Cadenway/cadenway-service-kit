@@ -1,4 +1,4 @@
-import { Module, type DynamicModule } from '@nestjs/common';
+import { Module, type DynamicModule, type Provider } from '@nestjs/common';
 import type { z } from 'zod';
 
 import { loadConfig, type ConfigEnvironment } from './load-config.js';
@@ -37,12 +37,28 @@ export interface ConfigModuleOptions<TConfig> {
    * Property env
    *
    * @description
-   * Environment to validate. Defaults to `process.env`.
+   * Environment to validate. Defaults to `process.env`, read when the validation runs.
    *
    * @type {ConfigEnvironment | undefined}
    * @readonly
    */
   readonly env?: ConfigEnvironment;
+
+  /**
+   * Property eager
+   *
+   * @description
+   * When the environment is read and validated. Defaults to `true`: inside `forRoot`, while the
+   * application module is declared, so merely importing that module throws on an invalid
+   * environment. With `false`, in the factory of the `CONFIG` provider, when the application is
+   * created: importing the module validates nothing, and `createApplication` (or the testing
+   * module) rejects with the `ConfigError`. Either way the process never listens with a partial
+   * configuration.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly eager?: boolean;
   // #endregion
 }
 
@@ -52,9 +68,10 @@ export interface ConfigModuleOptions<TConfig> {
  * @description
  * Validates the environment once and provides the result under the `CONFIG` token, globally.
  *
- * Validation runs inside `forRoot`, while the application module is being declared: an invalid
- * environment throws a `ConfigError` before NestJS creates anything, so the process never listens
- * with a partial configuration.
+ * By default validation runs inside `forRoot`, while the application module is being declared:
+ * an invalid environment throws a `ConfigError` before NestJS creates anything. With
+ * `eager: false` it runs when NestJS creates the `CONFIG` provider, so a test can import the
+ * application module statically and choose its environment before creating the application.
  */
 @Module({})
 export class ConfigModule {
@@ -63,18 +80,26 @@ export class ConfigModule {
    * Method forRoot
    *
    * @description
-   * Validates the environment against the schema and registers the frozen result globally.
+   * Validates the environment against the schema, now or when the application is created
+   * (`eager`), and registers the frozen result globally.
    *
-   * @param {ConfigModuleOptions<TConfig>} options - Schema and, optionally, the environment to read.
+   * @param {ConfigModuleOptions<TConfig>} options - Schema and, optionally, the environment to read and when to validate it.
    * @returns {DynamicModule} The global module providing `CONFIG`.
-   * @throws {ConfigError} When a variable is missing or invalid.
+   * @throws {ConfigError} When `eager` is not `false` and a variable is missing or invalid.
    */
   public static forRoot<TConfig>(options: ConfigModuleOptions<TConfig>): DynamicModule {
-    const config: Readonly<TConfig> = loadConfig(options.schema, options.env);
+    const provider: Provider =
+      options.eager === false
+        ? {
+            provide: CONFIG,
+            useFactory: (): Readonly<TConfig> =>
+              loadConfig(options.schema, options.env ?? process.env),
+          }
+        : { provide: CONFIG, useValue: loadConfig(options.schema, options.env) };
     return {
       module: ConfigModule,
       global: true,
-      providers: [{ provide: CONFIG, useValue: config }],
+      providers: [provider],
       exports: [CONFIG],
     };
   }

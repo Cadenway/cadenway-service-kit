@@ -4,59 +4,76 @@ Plumbing shared by the Cadenway NestJS services and gateways. Implemented today:
 configuration, structured logs, OpenTelemetry start-up, the HTTP formats (errors, validation,
 pagination, entity tags, body limit), the internal token with the organization context, the
 transaction runners with `Idempotency-Key`, the internal HTTP client, the health routes with
-dependency indicators, and one bootstrap helper that applies all of it. The rest of what the
-[repository instructions](../../AGENTS.md) list for this package is not implemented yet.
+dependency indicators, a Redis client that cannot crash the process, and one bootstrap helper
+that applies all of it. The rest of what the [repository instructions](../../AGENTS.md) list for
+this package is not implemented yet.
 
 `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@opentelemetry/api`,
 `reflect-metadata`, `rxjs` and `zod` are peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers, needed
-only by the `/database` entry point.
+only by the `/database` entry point; `ioredis` is an optional peer, needed only by the `/redis`
+entry point.
 
 | Entry point                       | Holds                                                                                                                     |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `@cadenway/nest-common`           | Bootstrap, configuration, logs, HTTP formats, internal token, internal HTTP client, route-name interceptor, health module |
 | `@cadenway/nest-common/database`  | PostgreSQL pool, tenant and system transaction runners, `Idempotency-Key`                                                 |
+| `@cadenway/nest-common/redis`     | `ResilientRedisClient`, the pub/sub connections of an adapter, `redisConfigShape`                                         |
 | `@cadenway/nest-common/telemetry` | `startTelemetry`, for the preloaded `telemetry.js`                                                                        |
-| `@cadenway/nest-common/hook.mjs`  | Module loader of the OpenTelemetry instrumentations, for Node                                                             |
+| `@cadenway/nest-common/register`  | Registers the module hooks of the OpenTelemetry instrumentations, for `node --import`                                     |
+| `@cadenway/nest-common/hook.mjs`  | The same hooks as a loader, for `node --experimental-loader`; kept for compatibility                                      |
 
 ## Bootstrap
 
-`createApplication` creates the NestJS application with every shared format applied, so the
-`main.ts` of a service stays a few lines:
+`createApplication` creates the NestJS application with every shared format applied, and
+`runApplication` reports a failed start-up as a log line, so the `main.ts` of a service stays a
+few lines:
 
 ```ts
-import { createApplication, loadConfig } from '@cadenway/nest-common';
+import { createApplication, loadConfig, runApplication } from '@cadenway/nest-common';
 
 import { AppModule } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 
-const config = loadConfig(appConfigSchema);
-const app = await createApplication(AppModule, {
-  service: 'task-service',
-  config,
-  internalToken: {
-    verifier: {
-      audience: config.INTERNAL_TOKEN_AUDIENCE,
-      trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+await runApplication({ service: 'task-service' }, async () => {
+  const config = loadConfig(appConfigSchema);
+  const app = await createApplication(AppModule, {
+    service: 'task-service',
+    config,
+    internalToken: {
+      verifier: {
+        audience: config.INTERNAL_TOKEN_AUDIENCE,
+        trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+      },
     },
-  },
+  });
+  await app.listen(config.PORT);
 });
-await app.listen(config.PORT);
 ```
 
-| Installed                                                                                                                                   | From                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Structured logs, NestJS logger routed to them                                                                                               | [Logs](#logs)                                                |
-| `ProblemFilter` for every error                                                                                                             | [Errors](#errors)                                            |
-| `ZodValidationPipe` for `zodDto` parameters                                                                                                 | [Validation](#validation)                                    |
-| `RouteNameInterceptor`                                                                                                                      | [Telemetry](#telemetry)                                      |
-| `EtagInterceptor`                                                                                                                           | [Entity tags](#entity-tags)                                  |
-| Internal token guard and organization context                                                                                               | [Internal token](#internal-token), only with `internalToken` |
-| JSON body limit of 1 MB                                                                                                                     | [Body limit](#body-limit)                                    |
-| Request deadline of 10 seconds                                                                                                              | [Request deadline](#request-deadline)                        |
-| Shutdown hooks; telemetry flushed after the application closed its own resources, within 3 seconds, a failed flush being logged and ignored | `shutdownTelemetry`                                          |
+`createApplication(applicationModule, options)` takes the module of the application as a class or
+as a dynamic module.
+
+| Installed                                                                                                                                   | From                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Structured logs, NestJS logger routed to them                                                                                               | [Logs](#logs)                                                           |
+| `ProblemFilter` for every error                                                                                                             | [Errors](#errors)                                                       |
+| `ZodValidationPipe` for `zodDto` parameters                                                                                                 | [Validation](#validation)                                               |
+| `RouteNameInterceptor`                                                                                                                      | [Telemetry](#telemetry)                                                 |
+| `EtagInterceptor`                                                                                                                           | [Entity tags](#entity-tags)                                             |
+| Internal token guard                                                                                                                        | [Internal token](#internal-token), only with `internalToken.verifier`   |
+| `OrganizationContextInterceptor`, in every case                                                                                             | [Organization context](#organization-context), a no-op without identity |
+| JSON body limit of 1 MB                                                                                                                     | [Body limit](#body-limit)                                               |
+| Request deadline of 10 seconds                                                                                                              | [Request deadline](#request-deadline)                                   |
+| No `X-Powered-By` header                                                                                                                    | Express sends `X-Powered-By: Express` by default                        |
+| Shutdown hooks; telemetry flushed after the application closed its own resources, within 3 seconds, a failed flush being logged and ignored | `shutdownTelemetry`                                                     |
 
 It does not listen, and it imports neither `HealthModule` nor `DatabaseModule`: the module of the
 application declares what it depends on.
+
+An error while the application is created (a `ConfigError` of a `ConfigModule` with
+`eager: false`, a provider factory that throws) rejects the promise of `createApplication`. NestJS
+neither prints it with its console logger nor aborts the process (`abortOnError: false`), and the
+lines it buffered during the creation are dropped, so `runApplication` writes the only line.
 
 | Option                         | Default                          | Effect                                                                                                                                                                                             |
 | ------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -73,7 +90,40 @@ application declares what it depends on.
 
 A service sets `internalToken.verifier`. A public gateway, which authenticates sessions, sets
 `internalToken.signer` only, `internalTokenVerification: 'off'`, and `false` for both
-`acceptIncomingRequestId` and `acceptIncomingRequestTimeout`.
+`acceptIncomingRequestId` and `acceptIncomingRequestTimeout`; its guard gives each verified request
+its identity with [`setRequestOrganizationContext`](#organization-context).
+
+### Start-up failures
+
+`runApplication(options, main)` runs `main`. When it rejects, before or after a logger exists, it
+writes one JSON line on the standard error, in the shape of the logs, sets `process.exitCode` to 1
+and ends the process once the line is flushed:
+
+```json
+{
+  "level": "fatal",
+  "time": "2026-11-15T09:12:03.418Z",
+  "service": "task-service",
+  "version": "1.4.0",
+  "msg": "start-up failed",
+  "err": {
+    "type": "ConfigError",
+    "message": "Invalid configuration:\n- DATABASE_URL: required, not set",
+    "stack": "ConfigError: Invalid configuration: ...",
+    "issues": ["DATABASE_URL: required, not set"]
+  }
+}
+```
+
+`err` is sanitized as in the logs: redacted keys, e-mail addresses and SQL values are masked. A
+`ConfigError` keeps its `issues`, which name variables and never values.
+
+| Option    | Default                | Effect                                            |
+| --------- | ---------------------- | ------------------------------------------------- |
+| `service` | Required               | `service` field                                   |
+| `version` | `readPackageVersion()` | `version` field                                   |
+| `stderr`  | `process.stderr`       | Stream that receives the line, for tests          |
+| `exit`    | `process.exit`         | Called with 1 once the line is flushed, for tests |
 
 The telemetry of the same service is one more file, preloaded before `main.js`:
 
@@ -86,10 +136,12 @@ startTelemetry({ service: 'task-service', version: readPackageVersion() });
 ## Configuration
 
 The environment is validated once, at start-up, against a zod schema. A missing or invalid variable
-throws a `ConfigError` that names every faulty variable and never prints a value.
+throws a `ConfigError` that names every faulty variable and never prints a value: a variable that
+is not set and has no default reads `<NAME>: required, not set`; one that is set but invalid keeps
+the reason of zod (`PORT: Too big: expected number to be <=65535`).
 
 ```ts
-import { baseConfigShape, loadConfig, type BaseConfig } from '@cadenway/nest-common';
+import { baseConfigShape, type BaseConfig } from '@cadenway/nest-common';
 import { z } from 'zod';
 
 export interface AppConfig extends BaseConfig {
@@ -100,14 +152,36 @@ export const appConfigSchema: z.ZodType<AppConfig> = z.object({
   ...baseConfigShape,
   DATABASE_URL: z.url(),
 });
-
-export const config: Readonly<AppConfig> = loadConfig(appConfigSchema);
 ```
 
 - `loadConfig(schema, env = process.env)` returns the frozen, typed configuration. A variable set
-  to an empty string counts as unset.
-- `ConfigModule.forRoot({ schema, env })` validates while the application module is declared and
-  provides the result globally under the `CONFIG` token (`@Inject(CONFIG)`).
+  to an empty string counts as unset. Call it inside the `main` of `runApplication`, not when a
+  module is imported, so a `ConfigError` is reported as a log line.
+- `ConfigModule.forRoot({ schema, env, eager })` provides the result globally under the `CONFIG`
+  token (`@Inject(CONFIG)`).
+
+| Option   | Default       | Effect                                                                                                                                                                                                              |
+| -------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema` | Required      | Zod schema of the variables                                                                                                                                                                                         |
+| `env`    | `process.env` | Environment to validate, read when the validation runs                                                                                                                                                              |
+| `eager`  | `true`        | `true`: validated inside `forRoot`, so importing the application module throws on an invalid environment. `false`: validated when the application is created, so `createApplication` rejects with the `ConfigError` |
+
+With `eager: false` the application module can be imported statically, by `main.ts` and by its
+tests, whatever the environment; build the modules that need the configuration with their async
+form, which injects `CONFIG`:
+
+```ts
+@Module({
+  imports: [
+    ConfigModule.forRoot({ schema: appConfigSchema, eager: false }),
+    DatabaseModule.forRootAsync({
+      inject: [CONFIG],
+      useFactory: (config: AppConfig) => ({ connectionString: config.DATABASE_URL }),
+    }),
+  ],
+})
+export class AppModule {}
+```
 
 Variables of `baseConfigShape`:
 
@@ -189,13 +263,22 @@ startTelemetry({ service: 'task-service', version: '1.4.0' });
 and starts with:
 
 ```bash
-node --experimental-loader=@cadenway/nest-common/hook.mjs --import ./dist/telemetry.js dist/main.js
+NODE_OPTIONS="--max-old-space-size=160" \
+  node --import @cadenway/nest-common/register --import ./dist/telemetry.js dist/main.js
 ```
 
-`@cadenway/nest-common/hook.mjs` re-exports `@opentelemetry/instrumentation/hook.mjs`. The
-application cannot name the OpenTelemetry file directly: it is a dependency of this package, not of
-the application, and pnpm's strict `node_modules` does not expose it
-(`ERR_MODULE_NOT_FOUND`, checked from a packed install).
+`@cadenway/nest-common/register` calls `module.register()` with
+`@opentelemetry/instrumentation/hook.mjs`, resolved from this package. The application cannot name
+the OpenTelemetry file directly: it is a dependency of this package, not of the application, and
+pnpm's strict `node_modules` does not expose it (`ERR_MODULE_NOT_FOUND`, checked from a packed
+install). The hooks must be registered before `telemetry.js` loads the instrumentations, hence the
+order of the two `--import`. Checked from a packed install on Node 24.18: nothing is written on the
+standard error, and the server span `GET /hello/:id` with `http.route` and the Express spans are
+exported, as with the loader; without either, only the HTTP span is.
+
+`@cadenway/nest-common/hook.mjs` still works with
+`node --experimental-loader=@cadenway/nest-common/hook.mjs`, at the cost of an
+`ExperimentalWarning` printed at every start.
 
 | Concern          | Behavior                                                                                                                                            |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -215,6 +298,22 @@ the application, and pnpm's strict `node_modules` does not expose it
 Not installed, on purpose: `@opentelemetry/instrumentation-nestjs-core` (its supported range stops
 before NestJS 12) and `@opentelemetry/instrumentation-router` (it duplicates the spans of
 Express 5).
+
+### Memory
+
+`--max-old-space-size` in the start command caps the old generation of the V8 heap, in MiB. Set it
+to about 60 % of the memory limit of the container: 160 for the 256M of a Cadenway backend,
+through `NODE_OPTIONS` (in the environment of the container, or as in the start command above) or
+directly on the command line. The limit of the container applies to the resident memory of the
+whole process, and the old generation is only part of it: the young generation, compiled code,
+`Buffer`s, sockets, TLS and the native memory of drivers count too. The other 40 % are left to
+them (the first service wired measured about 165 MiB idle), and the cap makes the garbage
+collector reclaim the heap before the container reaches its limit instead of after.
+
+On Node 24.18, with `--max-old-space-size=160` alone, `v8.getHeapStatistics().heap_size_limit`
+reads 352 MiB, because the young generation is sized apart; adding `--max-semi-space-size=16`
+brings it to 208 MiB. Measure the resident memory under load (`docker stats`) before lowering the
+limit of a container.
 
 ## Errors
 
@@ -264,6 +363,13 @@ Codes produced by this package: `http.bad-request`, `http.unauthorized`, `http.f
   look retryable the way a 503 does.
 - A 401 carries `WWW-Authenticate: Bearer`.
 - The error reference shown by the web application is the `X-Request-Id` response header.
+
+Registered on a WebSocket gateway, the filter answers the failure of a `@SubscribeMessage`
+handler with the same problem, built and sanitized as for HTTP, emitted to the client socket as
+the event `exception` (`WS_EXCEPTION_EVENT`), the NestJS WebSocket convention. An unexpected error
+is logged at `error` (`websocket message failed`), since no request logger carries it. The filter
+needs nothing of `@nestjs/websockets`: the client only has to have an `emit` method. For any other
+transport, such as RPC, it throws the error again untouched.
 
 ## Validation
 
@@ -445,15 +551,53 @@ the system clock by default, a test seam otherwise.
 
 ### Organization context
 
-The organization and the actor of a request come from the verified token only: never from a path,
-a query string or a body. The interceptor carries them in an `AsyncLocalStorage`:
+The organization and the actor of a request come from a verified identity only: never from a
+path, a query string, a body or a header. `OrganizationContextInterceptor`, which
+`createApplication` registers in every case, carries them in an `AsyncLocalStorage` around the
+handler and the other interceptors, `Idempotency-Key` included:
 
-| Function                                  | Returns                                                                       |
-| ----------------------------------------- | ----------------------------------------------------------------------------- |
-| `getOrganizationContext()`                | `{ organizationId, actor, role, scopes }`, or `undefined` outside any context |
-| `requireOrganizationId()`                 | The organization id; throws when there is none (a programming error)          |
-| `principalOf(request)`                    | The verified principal of a request, with `issuer`, `audience` and `traceId`  |
-| `runWithOrganizationContext(context, fn)` | Runs work inside a context                                                    |
+| Function                                      | Returns                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `getOrganizationContext()`                    | `{ organizationId, actor, role, scopes }`, or `undefined` outside any context      |
+| `requireOrganizationId()`                     | The organization id; throws when there is none (a programming error)               |
+| `principalOf(request)`                        | The verified principal of a request, with `issuer`, `audience` and `traceId`       |
+| `setRequestOrganizationContext(request, ctx)` | Nothing: gives a request verified by the application itself its context, see below |
+| `runWithOrganizationContext(context, fn)`     | Runs work inside a context                                                         |
+
+A request has one source of identity: the internal token verified by `InternalTokenGuard`, or,
+in an application that verifies its callers itself (a public gateway, with
+`internalTokenVerification: 'off'`), the context its guard attaches once it has verified the
+caller:
+
+```ts
+@Injectable()
+export class SessionGuard implements CanActivate {
+  public async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request: Request = context.switchToHttp().getRequest();
+    const session: VerifiedSession = await this.sessions.introspect(request); // throws 401
+    setRequestOrganizationContext(request, {
+      organizationId: session.organizationId,
+      actor: { type: 'user', id: session.userId },
+      role: session.role,
+      scopes: session.scopes,
+    });
+    return true;
+  }
+}
+```
+
+The handler then sees the context through `getOrganizationContext()`, `InternalHttpClient` signs
+its calls from it, the transaction runners use it, and the lines of the request, its completion
+line included, carry `organizationId` and `userId`.
+
+- Only the code that verified the caller calls it, and only with what the verification returned
+  (the answer of a session introspection, the record of an API token): never with a value read
+  from the request.
+- Besides the internal token, it is the only sanctioned way to give an HTTP request an identity.
+- It throws when the request already carries a context or a verified internal token, and for a
+  context an internal token could not carry (an organization id that is not a UUID, an anonymous
+  actor with an id or an organization, an identified actor without an id).
+- It attaches a frozen copy; a request without either source runs without a context.
 
 `runWithOrganizationContext` is for trusted entry points other than HTTP: the handler of an event
 whose envelope was validated against its contract, or of a job the service itself enqueued. An
@@ -559,6 +703,31 @@ DatabaseModule.forRoot({
 
 The module is global. It provides `TenantTransactionRunner`, `SystemTransactionRunner` and the
 pool (`DATABASE_POOL`), and closes the pool when the application shuts down.
+
+`DatabaseModule.forRootAsync({ imports, inject, useFactory })` builds the same options when the
+application is created, from injected providers, so importing the module reads no configuration:
+
+```ts
+DatabaseModule.forRootAsync({
+  inject: [CONFIG],
+  useFactory: (config: AppConfig) => ({
+    connectionString: config.DATABASE_URL,
+    schema,
+    applicationName: 'task-service',
+    idempotency: true,
+  }),
+});
+```
+
+| Option       | Default  | Effect                                                                   |
+| ------------ | -------- | ------------------------------------------------------------------------ |
+| `useFactory` | Required | Returns the options of the table above, or a promise of them             |
+| `inject`     | `[]`     | Tokens of the providers handed to `useFactory`, in order                 |
+| `imports`    | `[]`     | Modules exporting those providers when they are not global (`CONFIG` is) |
+
+Its providers are those of `forRoot`, the interceptor included when the resolved options set
+`idempotency: true`: the global interceptor is declared in every case and its factory resolves to
+`null` when idempotency is off, which NestJS 12 skips when it applies the global interceptors.
 
 ### Transaction runners
 
@@ -671,15 +840,84 @@ migration. When a later version of the kit changes a table, upgrading the packag
 again produces the migration of the change; the changeset of that version says so for every
 service.
 
+## Redis
+
+Everything below comes from `@cadenway/nest-common/redis`. An application without Redis never
+imports it, and needs no `ioredis`.
+
+Some libraries, `@socket.io/redis-adapter` first, send Redis commands and drop their promises. A
+command that fails (sent while Redis is unreachable with the offline queue off, still queued when
+the retries run out, rejected by the shutdown while Redis is down) is then an unhandled rejection,
+and Node stops. `ResilientRedisClient` is an ioredis client that attaches a handler to the promise
+of every command it sends; the caller still receives the same promise and may await it.
+
+```ts
+import { createPubSubClients, ResilientRedisClient } from '@cadenway/nest-common/redis';
+
+const redis = new ResilientRedisClient(config.REDIS_URL, {
+  connectionName: 'realtime-gateway',
+  enableOfflineQueue: false,
+});
+const adapterClients = createPubSubClients(redis);
+server.adapter(createAdapter(adapterClients.publisher, adapterClients.subscriber));
+
+// When the application stops: the adapter connections first, then the main one.
+await adapterClients.shutDown();
+await redis.shutDown();
+```
+
+| Situation                                                                      | What the client does                                                         |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| A command fails while the connection is up                                     | `warn` `redis command failed` with `connection`, `command` and an error code |
+| A command fails while the connection is down                                   | Nothing more: the outage line of the main connection covers it               |
+| A command fails because the client closes (`shutDown`, `quit`, `disconnect()`) | Nothing                                                                      |
+| The connection is lost or refused                                              | One `warn` `redis unreachable` with an error code, until it is ready again   |
+| The connection is ready again                                                  | One `info` `redis reachable again`                                           |
+
+A line names the connection, the command and an error code (`ECONNREFUSED`) or error name
+(`ReplyError`); never an address, a key, an argument, a value or an error message. Checked on a
+real Redis stopped and started again: no unhandled rejection, a queued command sent once it is
+back.
+
+`new ResilientRedisClient(url, options)` or `new ResilientRedisClient(options)` takes the options
+of ioredis, with its defaults, plus:
+
+| Option          | Default  | Effect                                                                               |
+| --------------- | -------- | ------------------------------------------------------------------------------------ |
+| `reportOutages` | `true`   | Logs the outages of the connection; `false` for connections the main one reports for |
+| `loggerContext` | `Redis`  | Context of the NestJS logger                                                         |
+| `replyMapping`  | `legacy` | Only `legacy`, the ioredis default, is accepted                                      |
+
+`shutDown()` closes a ready connection with `QUIT`, which lets the commands already sent complete;
+in any other state it closes the socket at once and stops the reconnection attempts.
+
+`createPubSubClients(main)` opens the publisher and the subscriber of an adapter from
+`main.options`, as `duplicate()` does; `pubSubClientOptions(options, role)` returns the options it
+uses. Everything is the main connection's (address, credentials, TLS, database, retry strategy)
+except:
+
+| Option                 | Value                | Why                                                                                                 |
+| ---------------------- | -------------------- | --------------------------------------------------------------------------------------------------- |
+| `enableOfflineQueue`   | `true`               | The adapter subscribes as soon as it is created, usually before Redis answers: its commands wait    |
+| `maxRetriesPerRequest` | `null`               | A queued command waits for the connection without limit instead of failing during an outage         |
+| `replyMapping`         | `legacy`             | The replies the adapter reads                                                                       |
+| `connectionName`       | `<main name>-<role>` | `CLIENT LIST` tells the connections apart (`realtime-gateway-publisher`); unset without a main name |
+| `reportOutages`        | `false`              | The main connection reports the outages of all of them                                              |
+
+`redisConfigShape` validates `REDIS_URL`, a `redis://` or `rediss://` URL, without a default; a
+URL that carries a password is a secret. Spread it into the application schema, as
+`databaseConfigShape`. `redisIndicator(client)` of the main entry point probes the main
+connection for readiness.
+
 ## Health module
 
 `HealthModule` adds two routes, built on `@nestjs/terminus`. They are exempt from the internal
 token.
 
-| Route               | Purpose                                             | Answer                                |
-| ------------------- | --------------------------------------------------- | ------------------------------------- |
-| `GET /health/live`  | The process is running. Checks nothing, on purpose. | 200 and the Terminus body             |
-| `GET /health/ready` | The application accepts requests.                   | 200, or 503 when a dependency is down |
+| Route               | Purpose                                             | Answer                                                         |
+| ------------------- | --------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /health/live`  | The process is running. Checks nothing, on purpose. | 200 and the Terminus body, until the listener closes           |
+| `GET /health/ready` | The application accepts requests.                   | 200, or 503 when a dependency is down or the application stops |
 
 Imported as the bare class, the module takes no option and readiness answers 200 as soon as the
 application listens: `{ "status": "ok", "info": {}, "error": {}, "details": {} }`.
@@ -690,13 +928,19 @@ export class AppModule {}
 ```
 
 `HealthModule.forRoot({ indicators })` makes readiness check the dependencies of the application.
-`forRootAsync` builds the indicators from injected providers, which must be visible globally, as
-those of `DatabaseModule` are:
+`forRootAsync` builds the options from injected providers: global ones, as those of
+`DatabaseModule` are, or those exported by the modules listed in `imports`:
 
 ```ts
 HealthModule.forRootAsync({
   inject: [DATABASE_POOL],
-  useFactory: (pool: Pool) => ({ indicators: [postgresIndicator(pool)] }),
+  useFactory: (pool: Pool) => ({ indicators: [postgresIndicator(pool)], shutdownDelayMs: 5000 }),
+});
+
+HealthModule.forRootAsync({
+  imports: [CacheModule],
+  inject: [CACHE_CLIENT],
+  useFactory: (client: Redis) => ({ indicators: [redisIndicator(client)] }),
 });
 ```
 
@@ -710,10 +954,13 @@ HealthModule.forRootAsync({
 The indicators take structural types, so this package depends on no driver. The NATS connection
 is handed over by `@cadenway/nest-messaging`, which owns it.
 
-| Option       | Default | Effect                                                       |
-| ------------ | ------- | ------------------------------------------------------------ |
-| `indicators` | `[]`    | Dependencies readiness checks                                |
-| `timeoutMs`  | 1000    | Time one check may take before the dependency counts as down |
+| Option            | Default | Effect                                                                                |
+| ----------------- | ------- | ------------------------------------------------------------------------------------- |
+| `indicators`      | `[]`    | Dependencies readiness checks                                                         |
+| `timeoutMs`       | 1000    | Time one check may take before the dependency counts as down                          |
+| `shutdownDelayMs` | 0       | Time the stop waits, readiness at 503, before the listener closes; 0 does not slow it |
+
+`forRootAsync` also takes `imports` (default `[]`) and `inject` (default `[]`).
 
 When a dependency is down, readiness answers 503 with the Terminus body, not a problem, because
 orchestrators and dashboards read it:
@@ -733,3 +980,30 @@ orchestrators and dashboards read it:
 `message` is `unreachable` or `timeout`: the body names dependencies and their state, never an
 address or an error text. Liveness never runs an indicator: a dependency that is down must not get
 a healthy process restarted.
+
+Readiness writes one line per change of state, not one per probe (the per-probe error line of
+Terminus is turned off): a `warn` `readiness down` with `dependencies`, such as
+`{ "redis": "unreachable" }`, when it goes down or when the set of failing dependencies changes,
+and an `info` `readiness recovered` when it is back up. Repeated identical results write nothing.
+
+### Graceful stop
+
+Once the application starts shutting down (`app.close()`, or `SIGTERM` through the shutdown hooks
+of `createApplication`), readiness answers 503 without running the indicators, in every form of
+the module, while liveness keeps answering 200:
+
+```json
+{
+  "status": "error",
+  "info": {},
+  "error": { "shutdown": { "status": "down", "message": "shutting down" } },
+  "details": { "shutdown": { "status": "down", "message": "shutting down" } }
+}
+```
+
+NestJS 12 closes in this order: the `onModuleDestroy` hooks, the `beforeApplicationShutdown`
+hooks, the listener, then the `onApplicationShutdown` hooks (where the database pool and telemetry
+close). Readiness turns down in `onModuleDestroy`, the first of them, and waits `shutdownDelayMs`
+there: set it a little above the interval at which the proxy probes readiness, so the proxy stops
+routing to the instance while it still serves, and keep it under the stop grace period of the
+container (10 seconds by default for Docker).

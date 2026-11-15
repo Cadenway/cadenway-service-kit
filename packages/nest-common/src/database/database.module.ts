@@ -4,10 +4,12 @@ import {
   Logger,
   Module,
   type DynamicModule,
+  type FactoryProvider,
+  type ModuleMetadata,
   type OnApplicationShutdown,
   type Provider,
 } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_INTERCEPTOR, Reflector } from '@nestjs/core';
 import pg from 'pg';
 import { z } from 'zod';
 
@@ -78,7 +80,8 @@ export const databaseConfigShape: ConfigShape<DatabaseConfig> = {
  * Interface DatabaseModuleOptions
  *
  * @description
- * Options of `DatabaseModule.forRoot`.
+ * Options of `DatabaseModule.forRoot`, or what the factory of `DatabaseModule.forRootAsync`
+ * returns.
  */
 export interface DatabaseModuleOptions<TSchema extends DatabaseSchema = Record<string, never>> {
   // #region Properties
@@ -152,6 +155,86 @@ export interface DatabaseModuleOptions<TSchema extends DatabaseSchema = Record<s
 }
 
 /**
+ * Interface DatabaseModuleAsyncOptions
+ *
+ * @description
+ * Options of `DatabaseModule.forRootAsync`, for options built from injected providers such as
+ * the validated configuration.
+ */
+export interface DatabaseModuleAsyncOptions<
+  TSchema extends DatabaseSchema = Record<string, never>,
+> {
+  // #region Properties
+  /**
+   * Property imports
+   *
+   * @description
+   * Modules exporting the providers named in `inject`, when they are not global.
+   *
+   * @type {ModuleMetadata['imports']}
+   * @readonly
+   */
+  readonly imports?: ModuleMetadata['imports'];
+
+  /**
+   * Property inject
+   *
+   * @description
+   * Tokens of the providers handed to `useFactory`, in order, such as `CONFIG`.
+   *
+   * @type {FactoryProvider['inject']}
+   * @readonly
+   */
+  readonly inject?: FactoryProvider['inject'];
+
+  /**
+   * Property useFactory
+   *
+   * @description
+   * Builds the options of the module from the injected providers, when the application is
+   * created.
+   *
+   * @type {(...dependencies: never[]) => DatabaseModuleOptions<TSchema> | Promise<DatabaseModuleOptions<TSchema>>}
+   * @readonly
+   */
+  readonly useFactory: (
+    ...dependencies: never[]
+  ) => DatabaseModuleOptions<TSchema> | Promise<DatabaseModuleOptions<TSchema>>;
+  // #endregion
+}
+
+/**
+ * Constant DATABASE_OPTIONS
+ *
+ * @description
+ * Injection token of the resolved options of the module, internal to it.
+ *
+ * @type {symbol}
+ */
+const DATABASE_OPTIONS: unique symbol = Symbol('cadenway.database.options');
+
+/**
+ * Function createPool
+ *
+ * @description
+ * Creates the pool described by the options. No connection is opened before the first
+ * transaction.
+ *
+ * @param {DatabaseModuleOptions<DatabaseSchema>} options - Resolved options of the module.
+ * @returns {pg.Pool} The pool of the service.
+ */
+function createPool(options: DatabaseModuleOptions<DatabaseSchema>): pg.Pool {
+  return new pg.Pool({
+    connectionString: options.connectionString,
+    max: options.poolSize ?? DEFAULT_POOL_SIZE,
+    connectionTimeoutMillis: options.connectionTimeoutMs ?? 5000,
+    // Lets the operating system notice a peer that vanished without closing.
+    keepAlive: true,
+    ...(options.applicationName === undefined ? {} : { application_name: options.applicationName }),
+  });
+}
+
+/**
  * Class DatabasePoolLifecycle
  *
  * @description
@@ -206,6 +289,40 @@ class DatabasePoolLifecycle implements OnApplicationShutdown {
 }
 
 /**
+ * Function databaseProviders
+ *
+ * @description
+ * Builds the providers shared by `forRoot` and `forRootAsync`, all reading the options from
+ * `DATABASE_OPTIONS`: the pool, the two runners and the pool lifecycle.
+ *
+ * @returns {Provider[]} The providers, without the options and without the interceptor.
+ */
+function databaseProviders(): Provider[] {
+  return [
+    { provide: DATABASE_POOL, useFactory: createPool, inject: [DATABASE_OPTIONS] },
+    {
+      provide: TenantTransactionRunner,
+      useFactory: (
+        pool: pg.Pool,
+        options: DatabaseModuleOptions<DatabaseSchema>,
+      ): TenantTransactionRunner<DatabaseSchema> =>
+        new TenantTransactionRunner<DatabaseSchema>(pool, options.schema),
+      inject: [DATABASE_POOL, DATABASE_OPTIONS],
+    },
+    {
+      provide: SystemTransactionRunner,
+      useFactory: (
+        pool: pg.Pool,
+        options: DatabaseModuleOptions<DatabaseSchema>,
+      ): SystemTransactionRunner<DatabaseSchema> =>
+        new SystemTransactionRunner<DatabaseSchema>(pool, options.schema),
+      inject: [DATABASE_POOL, DATABASE_OPTIONS],
+    },
+    DatabasePoolLifecycle,
+  ];
+}
+
+/**
  * Class DatabaseModule
  *
  * @description
@@ -232,33 +349,8 @@ export class DatabaseModule {
     options: DatabaseModuleOptions<TSchema>,
   ): DynamicModule {
     const providers: Provider[] = [
-      {
-        provide: DATABASE_POOL,
-        useFactory: (): pg.Pool =>
-          new pg.Pool({
-            connectionString: options.connectionString,
-            max: options.poolSize ?? DEFAULT_POOL_SIZE,
-            connectionTimeoutMillis: options.connectionTimeoutMs ?? 5000,
-            // Lets the operating system notice a peer that vanished without closing.
-            keepAlive: true,
-            ...(options.applicationName === undefined
-              ? {}
-              : { application_name: options.applicationName }),
-          }),
-      },
-      {
-        provide: TenantTransactionRunner,
-        useFactory: (pool: pg.Pool): TenantTransactionRunner<TSchema> =>
-          new TenantTransactionRunner<TSchema>(pool, options.schema),
-        inject: [DATABASE_POOL],
-      },
-      {
-        provide: SystemTransactionRunner,
-        useFactory: (pool: pg.Pool): SystemTransactionRunner<TSchema> =>
-          new SystemTransactionRunner<TSchema>(pool, options.schema),
-        inject: [DATABASE_POOL],
-      },
-      DatabasePoolLifecycle,
+      { provide: DATABASE_OPTIONS, useValue: options },
+      ...databaseProviders(),
     ];
     if (options.idempotency === true) {
       providers.push({ provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor });
@@ -267,6 +359,50 @@ export class DatabaseModule {
       module: DatabaseModule,
       global: true,
       providers,
+      exports: [DATABASE_POOL, TenantTransactionRunner, SystemTransactionRunner],
+    };
+  }
+
+  /**
+   * Method forRootAsync
+   *
+   * @description
+   * Same as `forRoot`, with the options built when the application is created, from injected
+   * providers: `DatabaseModule.forRootAsync({ inject: [CONFIG], useFactory: (config) => ({ connectionString: config.DATABASE_URL }) })`.
+   * Importing the module therefore reads no configuration.
+   *
+   * The `Idempotency-Key` interceptor is registered when the resolved options set
+   * `idempotency: true`, exactly as with `forRoot`: the global interceptor provider is always
+   * declared, and its factory returns `null` when idempotency is off, which NestJS skips when it
+   * applies the global interceptors.
+   *
+   * @param {DatabaseModuleAsyncOptions<TSchema>} options - Imports, injection tokens and the factory of the options.
+   * @returns {DynamicModule} The global module.
+   */
+  public static forRootAsync<TSchema extends DatabaseSchema = Record<string, never>>(
+    options: DatabaseModuleAsyncOptions<TSchema>,
+  ): DynamicModule {
+    return {
+      module: DatabaseModule,
+      global: true,
+      imports: options.imports ?? [],
+      providers: [
+        { provide: DATABASE_OPTIONS, useFactory: options.useFactory, inject: options.inject ?? [] },
+        ...databaseProviders(),
+        {
+          provide: APP_INTERCEPTOR,
+          useFactory: (
+            resolved: DatabaseModuleOptions<DatabaseSchema>,
+            tenant: TenantTransactionRunner<DatabaseSchema>,
+            system: SystemTransactionRunner<DatabaseSchema>,
+            reflector: Reflector,
+          ): IdempotencyInterceptor | null =>
+            resolved.idempotency === true
+              ? new IdempotencyInterceptor(tenant, system, reflector)
+              : null,
+          inject: [DATABASE_OPTIONS, TenantTransactionRunner, SystemTransactionRunner, Reflector],
+        },
+      ],
       exports: [DATABASE_POOL, TenantTransactionRunner, SystemTransactionRunner],
     };
   }

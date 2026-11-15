@@ -6,14 +6,16 @@ import {
   Param,
   Patch,
   Post,
+  Logger,
   Query,
+  type ArgumentsHost,
   type INestApplication,
 } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, type TestingModule } from '@nestjs/testing';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -25,7 +27,7 @@ import {
 import { applyJsonBodyLimit } from '../http/body-limit.js';
 import { pageQueryShape, type PageQuery } from '../pagination/cursor.js';
 import { zodDto, ZodValidationPipe } from '../validation/zod-validation.pipe.js';
-import { ProblemFilter } from './problem.filter.js';
+import { ProblemFilter, WS_EXCEPTION_EVENT } from './problem.filter.js';
 import { ProblemException, type Problem } from './problem.js';
 
 /**
@@ -374,5 +376,119 @@ describe('HTTP formats', () => {
       expect((malformed.body as Problem).code).toBe('request.if-match-invalid');
       expect((missing.body as Problem).code).toBe('request.if-match-required');
     });
+  });
+});
+
+/**
+ * Function hostOf
+ *
+ * @description
+ * Builds the arguments host of a message in another transport than HTTP, as NestJS hands it to
+ * an exception filter.
+ *
+ * @param {'ws' | 'rpc'} type - Transport of the message.
+ * @param {unknown} client - Client of the message, such as a Socket.IO socket.
+ * @returns {ArgumentsHost} The host.
+ */
+function hostOf(type: 'ws' | 'rpc', client: unknown): ArgumentsHost {
+  return {
+    getType: () => type,
+    getArgs: () => [client, {}],
+    getArgByIndex: (index: number) => [client, {}][index],
+    switchToHttp: () => {
+      throw new Error('not an HTTP request');
+    },
+    switchToRpc: () => ({ getData: () => ({}), getContext: () => client }),
+    switchToWs: () => ({
+      getClient: () => client,
+      getData: () => ({}),
+      getPattern: () => 'tasks:watch',
+    }),
+  } as unknown as ArgumentsHost;
+}
+
+describe('ProblemFilter outside HTTP', () => {
+  const filter: ProblemFilter = new ProblemFilter();
+
+  it('emits the problem of a WebSocket message to its client as the event exception', () => {
+    const emitted: [string, unknown][] = [];
+    const socket: { emit(event: string, payload: unknown): boolean } = {
+      emit: (event: string, payload: unknown): boolean => {
+        emitted.push([event, payload]);
+        return true;
+      },
+    };
+
+    filter.catch(
+      new ProblemException({ status: 403, code: 'room.join-forbidden', detail: 'Not a member.' }),
+      hostOf('ws', socket),
+    );
+    filter.catch(new HttpException('Too many messages', 429), hostOf('ws', socket));
+
+    expect(emitted).toEqual([
+      [
+        WS_EXCEPTION_EVENT,
+        {
+          type: 'about:blank',
+          title: 'Forbidden',
+          status: 403,
+          code: 'room.join-forbidden',
+          detail: 'Not a member.',
+        },
+      ],
+      [
+        'exception',
+        {
+          type: 'about:blank',
+          title: 'Too Many Requests',
+          status: 429,
+          code: 'http.too-many-requests',
+          detail: 'Too many messages',
+        },
+      ],
+    ]);
+  });
+
+  it('emits no internal text and no stack for an unexpected error of a WebSocket message', () => {
+    const emitted: unknown[] = [];
+    const socket: { emit(event: string, payload: unknown): void } = {
+      emit: (_event: string, payload: unknown): void => {
+        emitted.push(payload);
+      },
+    };
+
+    const logged: MockInstance<Logger['error']> = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const failure: Error = new Error('password hunter2 rejected by 10.0.0.12');
+
+    filter.catch(failure, hostOf('ws', socket));
+    const calls: unknown[][] = [...logged.mock.calls];
+    logged.mockRestore();
+
+    expect(emitted).toEqual([
+      {
+        type: 'about:blank',
+        title: 'Internal Server Error',
+        status: 500,
+        code: 'internal.unexpected',
+      },
+    ]);
+    expect(JSON.stringify(emitted)).not.toContain('hunter2');
+    expect(calls).toEqual([[{ err: failure }, 'websocket message failed']]);
+  });
+
+  it('ignores a WebSocket client that cannot receive events', () => {
+    expect(() => {
+      filter.catch(new ProblemException({ status: 404, code: 'task.not-found' }), hostOf('ws', {}));
+    }).not.toThrow();
+  });
+
+  it('throws the error of an RPC message again, untouched', () => {
+    const error: Error = new Error('handled by the transport');
+
+    expect(() => {
+      filter.catch(error, hostOf('rpc', {}));
+    }).toThrow(error);
   });
 });

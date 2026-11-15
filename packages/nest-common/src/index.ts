@@ -18,6 +18,7 @@ export {
   InternalTokenGuard,
   OrganizationContextInterceptor,
   principalOf,
+  setRequestOrganizationContext,
   SkipInternalToken,
   type InternalAccessOptions,
 } from './auth/internal-token.guard.js';
@@ -58,6 +59,11 @@ export {
   type CreateApplicationOptions,
 } from './bootstrap/create-application.js';
 export { readPackageVersion } from './bootstrap/package-version.js';
+export {
+  runApplication,
+  type RunApplicationOptions,
+  type StartupErrorStream,
+} from './bootstrap/run-application.js';
 export {
   assertVersionMatch,
   EtagInterceptor,
@@ -114,7 +120,7 @@ export {
   type Page,
   type PageQuery,
 } from './pagination/cursor.js';
-export { ProblemFilter, toProblem } from './problem/problem.filter.js';
+export { ProblemFilter, toProblem, WS_EXCEPTION_EVENT } from './problem/problem.filter.js';
 export {
   PROBLEM_CONTENT_TYPE,
   ProblemException,
