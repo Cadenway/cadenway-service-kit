@@ -131,7 +131,7 @@ oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two min
 | Stream              | Subjects       | Kept                   | Byte cap             |
 | ------------------- | -------------- | ---------------------- | -------------------- |
 | `EVENTS`            | `evt.>`        | Seven days             | `eventsMaxBytes`     |
-| `EVENTS_RESTRICTED` | `restricted.>` | Seven days             | `restrictedMaxBytes` |
+| `EVENTS_RESTRICTED` | `restricted.>` | One hour               | `restrictedMaxBytes` |
 | `EVENTS_DLQ`        | `dlq.>`        | `deadLetterMaxAgeDays` | `deadLetterMaxBytes` |
 
 With `manageStreams` off, the application refuses to start when a stream it uses is missing, and

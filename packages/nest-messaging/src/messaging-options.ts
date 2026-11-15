@@ -88,12 +88,24 @@ export const DEFAULT_REBUILD_SUBJECT_PREFIX: string = 'rebuild';
  * Constant EVENTS_MAX_AGE_DAYS
  *
  * @description
- * How long the events stream and the restricted stream keep a message, in days, when the module
- * manages the streams.
+ * How long the events stream keeps a message, in days, when the module manages the streams: seven,
+ * as cadenway-ops.
  *
  * @type {number}
  */
 export const EVENTS_MAX_AGE_DAYS: number = 7;
+
+/**
+ * Constant RESTRICTED_MAX_AGE_MS
+ *
+ * @description
+ * How long the restricted stream keeps a message, in milliseconds, when the module manages the
+ * streams: one hour, as cadenway-ops (`compose/nats/ensure-streams.sh`). Its messages carry a
+ * single-use code or link, which should not stay stored longer than it is useful.
+ *
+ * @type {number}
+ */
+export const RESTRICTED_MAX_AGE_MS: number = 3_600_000;
 
 /**
  * Constant DUPLICATE_WINDOW_MS

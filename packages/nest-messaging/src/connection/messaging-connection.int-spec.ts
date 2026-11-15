@@ -35,6 +35,16 @@ const taskItemSchema: z.ZodType<{ taskId: string }> = z.object({ taskId: z.strin
  */
 const DAY_NS: number = 86_400_000_000_000;
 
+/**
+ * Constant HOUR_NS
+ *
+ * @description
+ * Nanoseconds in an hour, the maximum age of the restricted stream.
+ *
+ * @type {number}
+ */
+const HOUR_NS: number = 3_600_000_000_000;
+
 describe('messaging connection on a real NATS server', () => {
   let nats: TestNats;
   let client: NatsConnection;
@@ -75,7 +85,7 @@ describe('messaging connection on a real NATS server', () => {
     expect(restricted.config).toMatchObject({
       ...common,
       subjects: ['restricted.>'],
-      max_age: 7 * DAY_NS,
+      max_age: HOUR_NS,
       max_bytes: 67_108_864,
     });
     expect(deadLetters.config).toMatchObject({
