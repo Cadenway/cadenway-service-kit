@@ -15,14 +15,12 @@ export {
   requeueOutboxEvents,
 } from './outbox-maintenance.js';
 export {
-  OUTBOX_OPTIONS,
-  OUTBOX_RETENTION_DAYS,
-  PROCESSED_EVENTS_RETENTION_DAYS,
+  DEFAULT_OUTBOX_RETENTION_DAYS,
+  DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
   type OutboxModuleOptions,
-  type ResolvedOutboxOptions,
 } from './outbox-options.js';
 export { OutboxRelay, type RelayPass } from './outbox-relay.js';
 export { OutboxWriter, type AppendedEvent } from './outbox-writer.js';
-export { OutboxModule } from './outbox.module.js';
+export { OutboxModule, type OutboxModuleAsyncOptions } from './outbox.module.js';
 export { PostgresEventDeduplicator } from './postgres-event-deduplicator.js';
 export { default as processedEvents } from './processed-events.schema.js';

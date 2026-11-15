@@ -15,6 +15,7 @@ import { MessagingModule } from '../messaging.module.js';
 import {
   DEAD_LETTER_CONSUMER_HEADER,
   DEAD_LETTER_DELIVERIES_HEADER,
+  DEAD_LETTER_PAYLOAD_HEADER,
   DEAD_LETTER_REASON_HEADER,
   DEAD_LETTER_SEQUENCE_HEADER,
   EVENT_NAME_HEADER,
@@ -154,16 +155,14 @@ describe('dead-letter worker on a real NATS server', () => {
 
   it('copies an event whose handler always fails after five deliveries', async () => {
     const names: ReturnType<typeof isolatedNames> = isolatedNames('five');
-    const application: TestingModule = await startApplication([
-      MessagingModule.forRoot(
-        messagingOptions(nats, {
-          ...names,
-          service: 'search-service',
-          deadLetterWorker: true,
-          retryDelaysMs: [50, 50, 50, 50],
-        }),
-      ),
-    ]);
+    const application: TestingModule = await startApplication(
+      [
+        MessagingModule.forRoot(
+          messagingOptions(nats, { ...names, service: 'search-service', deadLetterWorker: true }),
+        ),
+      ],
+      { tuning: { retryDelaysMs: [50, 50, 50, 50] } },
+    );
     const attempts: number[] = [];
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
@@ -197,44 +196,93 @@ describe('dead-letter worker on a real NATS server', () => {
     expect(deadLetter.header.get(EVENT_NAME_HEADER)).toBe('task.updated.v1');
   });
 
-  it('copies a restricted event from the restricted stream as well', async () => {
-    const names: ReturnType<typeof isolatedNames> = isolatedNames('restr');
+  it.each([
+    ['drop', undefined, 'restr'],
+    ['copy', 'copy', 'restrcopy'],
+  ] as const)(
+    'copies a restricted event from the restricted stream, its body %s',
+    async (
+      mode: 'drop' | 'copy',
+      restrictedDeadLetterPayload: 'copy' | undefined,
+      suffix: string,
+    ) => {
+      const names: ReturnType<typeof isolatedNames> = isolatedNames(suffix);
+      const application: TestingModule = await startApplication(
+        [
+          MessagingModule.forRoot(
+            messagingOptions(nats, {
+              ...names,
+              service: 'notification-service',
+              deadLetterWorker: true,
+              restrictedEvents: ['task.updated.v1'],
+              ...(restrictedDeadLetterPayload === undefined ? {} : { restrictedDeadLetterPayload }),
+            }),
+          ),
+        ],
+        { tuning: { retryDelaysMs: [50] } },
+      );
+      await application.get(EventConsumers).subscribe({
+        handler: 'send-code',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.reject(new Error('mail server unavailable')),
+      });
+
+      const published: PublishedEvent = await application
+        .get(EventPublisher)
+        .publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await waitFor(async () => (await deadLetters(`EVENTS_DLQ_${suffix}`)) === 1);
+      const deadLetter: StoredMsg = await lastDeadLetter(
+        `EVENTS_DLQ_${suffix}`,
+        `dlq-${suffix}.notification-service__send-code.restricted-${suffix}.task.updated.v1`,
+      );
+      await application.close();
+
+      expect(published.stream).toBe(`EVENTS_RESTRICTED_${suffix}`);
+      expect((await manager.streams.info(`EVENTS_${suffix}`)).state.messages).toBe(0);
+      expect(deadLetter.header.get(DEAD_LETTER_REASON_HEADER)).toBe('max-deliveries');
+      expect(deadLetter.header.get(DEAD_LETTER_DELIVERIES_HEADER)).toBe('2');
+      expect(deadLetter.header.get(EVENT_NAME_HEADER)).toBe('task.updated.v1');
+      expect(deadLetter.header.get('Nats-Msg-Id')).toBe(
+        `EVENTS_RESTRICTED_${suffix}.notification-service__send-code.${String(published.streamSequence)}`,
+      );
+      if (mode === 'drop') {
+        expect(deadLetter.data).toHaveLength(0);
+        expect(deadLetter.header.get(DEAD_LETTER_PAYLOAD_HEADER)).toBe('dropped');
+      } else {
+        expect(deadLetter.json<TaskUpdatedV1>()).toMatchObject({ id: published.id });
+        expect(deadLetter.header.has(DEAD_LETTER_PAYLOAD_HEADER)).toBe(false);
+      }
+    },
+  );
+
+  it('keeps trying to store a dead letter while the dead-letter stream is briefly missing', async () => {
+    const names: ReturnType<typeof isolatedNames> = isolatedNames('dlqgone');
     const application: TestingModule = await startApplication([
       MessagingModule.forRoot(
-        messagingOptions(nats, {
-          ...names,
-          service: 'notification-service',
-          deadLetterWorker: true,
-          restrictedEvents: ['task.updated.v1'],
-          retryDelaysMs: [50],
-        }),
+        messagingOptions(nats, { ...names, service: 'search-service', deadLetterWorker: true }),
       ),
     ]);
     await application.get(EventConsumers).subscribe({
-      handler: 'send-code',
+      handler: 'index-task',
       schemas: eventSchemas,
       event: 'task.updated.v1',
-      handle: (): Promise<void> => Promise.reject(new Error('mail server unavailable')),
+      handle: (): Promise<void> => Promise.resolve(),
     });
+    const dlq: StreamInfo = await manager.streams.info('EVENTS_DLQ_dlqgone');
+    await manager.streams.delete('EVENTS_DLQ_dlqgone');
 
-    const published: PublishedEvent = await application
-      .get(EventPublisher)
-      .publish(eventSchemas, 'task.updated.v1', taskUpdated());
-    await waitFor(async () => (await deadLetters('EVENTS_DLQ_restr')) === 1);
+    const poisoned: PubAck = await jetstream(client).publish('evt-dlqgone.task.updated.v1', '{}');
+    await delay(600);
+    await manager.streams.add(dlq.config);
+    await waitFor(async () => (await deadLetters('EVENTS_DLQ_dlqgone')) === 1, 10_000);
     const deadLetter: StoredMsg = await lastDeadLetter(
-      'EVENTS_DLQ_restr',
-      'dlq-restr.notification-service__send-code.restricted-restr.task.updated.v1',
+      'EVENTS_DLQ_dlqgone',
+      'dlq-dlqgone.search-service__index-task.evt-dlqgone.task.updated.v1',
     );
     await application.close();
 
-    expect(published.stream).toBe('EVENTS_RESTRICTED_restr');
-    expect((await manager.streams.info('EVENTS_restr')).state.messages).toBe(0);
-    expect(deadLetter.json<TaskUpdatedV1>()).toMatchObject({ id: published.id });
-    expect(deadLetter.header.get(DEAD_LETTER_REASON_HEADER)).toBe('max-deliveries');
-    expect(deadLetter.header.get(DEAD_LETTER_DELIVERIES_HEADER)).toBe('2');
-    expect(deadLetter.header.get('Nats-Msg-Id')).toBe(
-      `EVENTS_RESTRICTED_restr.notification-service__send-code.${String(published.streamSequence)}`,
-    );
+    expect(deadLetter.header.get(DEAD_LETTER_SEQUENCE_HEADER)).toBe(String(poisoned.seq));
   });
 
   it('stores a dead letter once when two workers run and the advisory is repeated', async () => {

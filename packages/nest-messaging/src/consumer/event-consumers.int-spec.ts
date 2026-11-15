@@ -1,16 +1,34 @@
-import { getOrganizationContext, type OrganizationContext } from '@cadenway/nest-common';
+import {
+  getOrganizationContext,
+  type HealthIndicator,
+  type OrganizationContext,
+} from '@cadenway/nest-common';
 import {
   AckPolicy,
   jetstream,
   jetstreamManager,
+  type ConsumerConfig,
   type ConsumerInfo,
+  type JetStreamClient,
   type JetStreamManager,
 } from '@nats-io/jetstream';
 import { nanos, type NatsConnection } from '@nats-io/transport-node';
+import { Logger } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
-import { context, ROOT_CONTEXT, trace, TraceFlags } from '@opentelemetry/api';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { context, ROOT_CONTEXT, SpanStatusCode, trace, TraceFlags } from '@opentelemetry/api';
+import {
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  TracerProvider,
+  type ReadableSpan,
+} from '@opentelemetry/sdk-trace';
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { z } from 'zod';
 
+import {
+  MessagingConnection,
+  messagingHealthIndicator,
+} from '../connection/messaging-connection.js';
 import { MessagingModule } from '../messaging.module.js';
 import { EventPublisher, type PublishedEvent } from '../publisher/event-publisher.js';
 import {
@@ -29,9 +47,32 @@ import {
   type TaskUpdatedV1,
   type UserSignedUpV1,
 } from '../testing/events.js';
+import { taskUpdatedV1Schema } from '../testing/contracts/events/task-service.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
 import { delay, waitFor } from '../testing/wait.js';
 import { EventConsumers, type EventContext } from './event-consumers.js';
+
+/**
+ * Constant nextEventSchemas
+ *
+ * @description
+ * The event `task.updated.v1` as a later minor of the contracts could generate it, with one more
+ * kind of actor.
+ *
+ * @type {{ readonly 'task.updated.v1': z.ZodType<Omit<TaskUpdatedV1, 'actor'> & { actor: { type: string; id: string } }> }}
+ */
+const nextEventSchemas: {
+  readonly 'task.updated.v1': z.ZodType<
+    Omit<TaskUpdatedV1, 'actor'> & { actor: { type: string; id: string } }
+  >;
+} = {
+  'task.updated.v1': taskUpdatedV1Schema.extend({
+    actor: z.object({
+      type: z.enum(['user', 'automation', 'git', 'system', 'service-account']),
+      id: z.string(),
+    }),
+  }),
+};
 
 /**
  * Interface Delivery
@@ -273,15 +314,14 @@ describe('event consumers on a real NATS server, without a database', () => {
   });
 
   it('redelivers after a handler failure, following the retry delays, until the handler succeeds', async () => {
-    const application: TestingModule = await startApplication([
-      MessagingModule.forRoot(
-        messagingOptions(nats, {
-          ...isolatedNames('retry'),
-          service: 'search-service',
-          retryDelaysMs: [300, 600, 50, 50],
-        }),
-      ),
-    ]);
+    const application: TestingModule = await startApplication(
+      [
+        MessagingModule.forRoot(
+          messagingOptions(nats, { ...isolatedNames('retry'), service: 'search-service' }),
+        ),
+      ],
+      { tuning: { retryDelaysMs: [300, 600, 50, 50] } },
+    );
     const deliveries: Delivery[] = [];
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
@@ -450,5 +490,201 @@ describe('event consumers on a real NATS server, without a database', () => {
 
     expect(steps).toEqual(['started', 'finished', 'closed']);
     expect(consumer.num_ack_pending).toBe(0);
+  });
+
+  it('opens the context as the system for an actor kind the kit does not know, and warns once', async () => {
+    const warn: MockInstance = vi.spyOn(Logger.prototype, 'warn');
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(nats, { ...isolatedNames('actor'), service: 'search-service' }),
+      ),
+    ]);
+    const seen: (OrganizationContext | undefined)[] = [];
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: nextEventSchemas,
+      event: 'task.updated.v1',
+      handle: (): Promise<void> => {
+        seen.push(getOrganizationContext());
+        return Promise.resolve();
+      },
+    });
+    const raw: JetStreamClient = jetstream(client);
+    for (const id of [
+      '0193a1f0-0000-7000-8000-0000000000d1',
+      '0193a1f0-0000-7000-8000-0000000000d2',
+    ]) {
+      await raw.publish(
+        'evt-actor.task.updated.v1',
+        JSON.stringify({
+          ...taskUpdated(),
+          id,
+          occurredAt: '2026-11-14T09:30:00.000Z',
+          actor: { type: 'service-account', id: 'robot-1' },
+        }),
+      );
+    }
+    await waitFor(() => seen.length === 2);
+    await application.close();
+    const warnings: unknown[] = warn.mock.calls.filter(
+      (call: unknown[]) =>
+        call[1] === 'unknown actor type: handled as the system; upgrade @cadenway/nest-messaging',
+    );
+    warn.mockRestore();
+
+    expect(seen).toEqual([
+      { organizationId: ATELIER_NORD, actor: { type: 'system', id: null }, role: null, scopes: [] },
+      { organizationId: ATELIER_NORD, actor: { type: 'system', id: null }, role: null, scopes: [] },
+    ]);
+    expect(warnings).toEqual([
+      [
+        { consumer: 'search-service__index-task', actorType: 'service-account' },
+        expect.any(String),
+      ],
+    ]);
+  });
+
+  it('records only the class of a handler error on its span, never its message', async () => {
+    const exporter: InMemorySpanExporter = new InMemorySpanExporter();
+    trace.setGlobalTracerProvider(
+      new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] }),
+    );
+    const application: TestingModule = await startApplication(
+      [
+        MessagingModule.forRoot(
+          messagingOptions(nats, { ...isolatedNames('span'), service: 'search-service' }),
+        ),
+      ],
+      { tuning: { retryDelaysMs: [60_000] } },
+    );
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      handle: (): Promise<void> =>
+        Promise.reject(new TypeError('cannot index secret-code-482913 for camille@example.test')),
+    });
+
+    await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+    await waitFor(() => exporter.getFinishedSpans().length === 1);
+    await application.close();
+    const span: ReadableSpan | undefined = exporter.getFinishedSpans()[0];
+    trace.disable();
+
+    expect(span?.name).toBe('process task.updated.v1');
+    expect(span?.status).toEqual({ code: SpanStatusCode.ERROR, message: 'TypeError' });
+    expect(span?.attributes['error.type']).toBe('TypeError');
+    expect(span?.events).toEqual([]);
+    expect(JSON.stringify([span?.attributes, span?.status, span?.events])).not.toMatch(
+      /secret-code|camille/u,
+    );
+  });
+
+  it('creates a deleted consumer again from before the gap, and receives the events published meanwhile', async () => {
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(nats, { ...isolatedNames('deleted'), service: 'search-service' }),
+      ),
+    ]);
+    const received: string[] = [];
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      deliverPolicy: 'new',
+      handle: (payload: TaskUpdatedV1): Promise<void> => {
+        received.push(payload.taskId);
+        return Promise.resolve();
+      },
+    });
+    const publisher: EventPublisher = application.get(EventPublisher);
+    await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-BEFORE' }));
+    await waitFor(() => received.length === 1);
+
+    await manager.consumers.delete('EVENTS_deleted', 'search-service__index-task');
+    await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-GAP' }));
+    await waitFor(() => received.includes('CAD-GAP'), 15_000);
+    const recreated: ConsumerInfo = await manager.consumers.info(
+      'EVENTS_deleted',
+      'search-service__index-task',
+    );
+    await expect(
+      messagingHealthIndicator(application.get(MessagingConnection)).check(),
+    ).resolves.toBeUndefined();
+    await application.close();
+
+    expect(recreated.config).toMatchObject({
+      deliver_policy: 'by_start_time',
+      filter_subject: 'evt-deleted.task.updated.v1',
+      max_deliver: 5,
+    });
+    expect(received[0]).toBe('CAD-BEFORE');
+    expect(received).toContain('CAD-GAP');
+  });
+
+  it('reports a missing consumer to readiness until it exists again, then resumes', async () => {
+    const consumerConfig: Partial<ConsumerConfig> = {
+      durable_name: 'search-service__index-task',
+      name: 'search-service__index-task',
+      filter_subject: 'evt-ready.task.updated.v1',
+      ack_policy: AckPolicy.Explicit,
+      ack_wait: nanos(30_000),
+      max_deliver: 5,
+    };
+    const owner: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('ready'))),
+    ]);
+    await manager.consumers.add('EVENTS_ready', consumerConfig);
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(nats, {
+          ...isolatedNames('ready'),
+          service: 'search-service',
+          manageStreams: false,
+          manageConsumers: false,
+        }),
+      ),
+    ]);
+    const readiness: HealthIndicator = messagingHealthIndicator(
+      application.get(MessagingConnection),
+    );
+    const received: string[] = [];
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      handle: (payload: TaskUpdatedV1): Promise<void> => {
+        received.push(payload.taskId);
+        return Promise.resolve();
+      },
+    });
+    await expect(readiness.check()).resolves.toBeUndefined();
+
+    await manager.consumers.delete('EVENTS_ready', 'search-service__index-task');
+    await waitFor(async () => {
+      try {
+        await readiness.check();
+        return false;
+      } catch (error) {
+        return (
+          error instanceof Error && error.message.includes('search-service__index-task: missing')
+        );
+      }
+    }, 15_000);
+    await manager.consumers.add('EVENTS_ready', consumerConfig);
+    await waitFor(async () => {
+      try {
+        await readiness.check();
+        return true;
+      } catch {
+        return false;
+      }
+    }, 15_000);
+    await owner.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+    await waitFor(() => received.length === 1);
+    await application.close();
+    await owner.close();
+
+    expect(received).toEqual(['CAD-482']);
   });
 });

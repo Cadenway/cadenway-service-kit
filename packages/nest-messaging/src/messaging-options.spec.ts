@@ -9,6 +9,7 @@ import {
   type MessagingConfig,
   type ResolvedMessagingOptions,
 } from './messaging-options.js';
+import { DEFAULT_MESSAGING_TUNING } from './messaging-tuning.js';
 
 describe('messaging options', () => {
   it('applies the documented default of every option left unset', () => {
@@ -37,6 +38,9 @@ describe('messaging options', () => {
       rebuildName: 'task-service',
       rebuildAcknowledgement: 'none',
       rebuildFlushEvery: 100,
+      rebuildMaxPending: 1000,
+      handlerTimeoutMs: 25_000,
+      restrictedDeadLetterPayload: 'drop',
       eventsMaxBytes: 1_073_741_824,
       restrictedMaxBytes: 67_108_864,
       deadLetterMaxBytes: 268_435_456,
@@ -44,8 +48,59 @@ describe('messaging options', () => {
       publishTimeoutMs: 5000,
       shutdownTimeoutMs: 10_000,
       rebuildTimeoutMs: 30_000,
-      retryDelaysMs: [1000, 5000, 30_000, 120_000],
     });
+  });
+
+  it('keeps the retry delays out of the public options: the consumers follow the production delays', () => {
+    expect(DEFAULT_MESSAGING_TUNING.retryDelaysMs).toEqual([1000, 5000, 30_000, 120_000]);
+    expect(
+      Object.keys(resolveMessagingOptions({ service: 'task-service', servers: 'nats://n:4222' })),
+    ).not.toContain('retryDelaysMs');
+  });
+
+  it('refuses a handler timeout that is not below the acknowledgement wait of 30 seconds', () => {
+    for (const handlerTimeoutMs of [0, 30_000, 45_000]) {
+      expect(() =>
+        resolveMessagingOptions({
+          service: 'task-service',
+          servers: 'nats://nats:4222',
+          handlerTimeoutMs,
+        }),
+      ).toThrow(/handler timeout/u);
+    }
+    expect(
+      resolveMessagingOptions({
+        service: 'task-service',
+        servers: 'nats://nats:4222',
+        handlerTimeoutMs: 29_999,
+      }).handlerTimeoutMs,
+    ).toBe(29_999);
+  });
+
+  it('refuses a subject prefix of several tokens or with a wildcard, and two equal prefixes', () => {
+    for (const prefix of ['evt.v2', 'evt.>', '*', '', 'evt v2']) {
+      expect(() =>
+        resolveMessagingOptions({
+          service: 'task-service',
+          servers: 'nats://nats:4222',
+          eventSubjectPrefix: prefix,
+        }),
+      ).toThrow(/eventSubjectPrefix of MessagingModule is one subject token/u);
+    }
+    expect(() =>
+      resolveMessagingOptions({
+        service: 'task-service',
+        servers: 'nats://nats:4222',
+        deadLetterSubjectPrefix: 'evt',
+      }),
+    ).toThrow(/pairwise distinct/u);
+    expect(() =>
+      resolveMessagingOptions({
+        service: 'task-service',
+        servers: 'nats://nats:4222',
+        rebuildSubjectPrefix: 'restricted',
+      }),
+    ).toThrow(/pairwise distinct/u);
   });
 
   it('keeps the options it is given', () => {
@@ -60,7 +115,7 @@ describe('messaging options', () => {
       restrictedEvents: ['user.sign-in-code-issued.v1'],
       eventsStream: 'EVENTS_TEST',
       rebuildAcknowledgement: 'reply',
-      retryDelaysMs: [10],
+      restrictedDeadLetterPayload: 'copy',
     });
 
     expect(resolved).toMatchObject({
@@ -72,7 +127,7 @@ describe('messaging options', () => {
       restrictedEvents: ['user.sign-in-code-issued.v1'],
       eventsStream: 'EVENTS_TEST',
       rebuildAcknowledgement: 'reply',
-      retryDelaysMs: [10],
+      restrictedDeadLetterPayload: 'copy',
     });
   });
 
@@ -129,7 +184,7 @@ describe('messaging options', () => {
     ]);
   });
 
-  it('refuses a missing service name, a missing server and empty retry delays', () => {
+  it('refuses a missing service name, a missing server and a pending limit below one', () => {
     expect(() => resolveMessagingOptions({ service: '', servers: 'nats://nats:4222' })).toThrow(
       /service name/u,
     );
@@ -143,9 +198,9 @@ describe('messaging options', () => {
       resolveMessagingOptions({
         service: 'task-service',
         servers: 'nats://nats:4222',
-        retryDelaysMs: [],
+        rebuildMaxPending: 0,
       }),
-    ).toThrow(/retry delay/u);
+    ).toThrow(/pending limit/u);
   });
 });
 

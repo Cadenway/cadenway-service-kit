@@ -3,15 +3,27 @@ import type { NatsConnection } from '@nats-io/transport-node';
 import type { TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { z } from 'zod';
+
 import { EventConsumers } from '../consumer/event-consumers.js';
-import { resolveMessagingOptions } from '../messaging-options.js';
 import { MessagingModule } from '../messaging.module.js';
 import { EventPublisher, EventStreamUnavailableError } from '../publisher/event-publisher.js';
+import { RebuildEmitter, RebuildFlushTimeoutError } from '../rebuild/rebuild-emitter.js';
 import { isolatedNames, messagingOptions, startApplication } from '../testing/application.js';
 import { eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
 import { waitFor } from '../testing/wait.js';
 import { MessagingConnection, messagingHealthIndicator } from './messaging-connection.js';
+
+/**
+ * Constant taskItemSchema
+ *
+ * @description
+ * Schema of the rebuild items of the specs.
+ *
+ * @type {z.ZodType<{ taskId: string }>}
+ */
+const taskItemSchema: z.ZodType<{ taskId: string }> = z.object({ taskId: z.string() });
 
 /**
  * Constant DAY_NS
@@ -176,11 +188,42 @@ describe('messaging connection on a real NATS server', () => {
 
   it('refuses wrong credentials instead of waiting for a connection forever', async () => {
     await expect(
-      MessagingConnection.open(
-        resolveMessagingOptions(messagingOptions(nats, { password: 'not-the-password' })),
-      ),
+      startApplication([
+        MessagingModule.forRoot(messagingOptions(nats, { password: 'not-the-password' })),
+      ]),
     ).rejects.toThrow();
   });
+
+  it('closes within the shutdown timeout, and fails a rebuild flush in time, once the server is gone', async () => {
+    const lost: TestNats = await startTestNats();
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(lost, { shutdownTimeoutMs: 1000, rebuildTimeoutMs: 500 }),
+      ),
+    ]);
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      handle: (): Promise<void> => Promise.resolve(),
+    });
+    await lost.stop();
+    const emitter: RebuildEmitter = application.get(RebuildEmitter);
+
+    const flushStarted: number = Date.now();
+    await expect(
+      emitter.emit({ consumer: 'search', entity: 'task', schema: taskItemSchema }, { taskId: 'A' }),
+    ).resolves.toBeUndefined();
+    await expect(emitter.flush()).rejects.toThrow(RebuildFlushTimeoutError);
+    const flushTook: number = Date.now() - flushStarted;
+    const closeStarted: number = Date.now();
+    await application.close();
+    const closeTook: number = Date.now() - closeStarted;
+
+    expect(flushTook).toBeLessThan(2000);
+    expect(closeTook).toBeLessThan(4000);
+    expect(application.get(MessagingConnection).isClosed()).toBe(true);
+  }, 60_000);
 
   it('resumes publishing and consuming after a NATS restart', async () => {
     const application: TestingModule = await startApplication([

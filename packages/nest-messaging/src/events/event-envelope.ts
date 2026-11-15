@@ -4,11 +4,23 @@ import { z } from 'zod';
  * Type EventActorType
  *
  * @description
- * Kinds of actor an event contract accepts.
+ * Kinds of actor this version of the kit knows, the ones the contracts define today. The
+ * envelope accepts any string, so a minor of `@cadenway/contracts` that adds a kind still
+ * compiles; the consumers narrow to these when they open the organization context.
  *
  * @type {'user' | 'automation' | 'git' | 'system'}
  */
 export type EventActorType = 'user' | 'automation' | 'git' | 'system';
+
+/**
+ * Constant EVENT_ACTOR_TYPES
+ *
+ * @description
+ * Kinds of actor this version of the kit knows.
+ *
+ * @type {readonly EventActorType[]}
+ */
+export const EVENT_ACTOR_TYPES: readonly EventActorType[] = ['user', 'automation', 'git', 'system'];
 
 /**
  * Interface EventActor
@@ -22,12 +34,13 @@ export interface EventActor {
    * Property type
    *
    * @description
-   * Kind of actor.
+   * Kind of actor, such as `user`. Typed as a string so that a kind added by the contracts does
+   * not break the compilation of a service; see `EventActorType` for the kinds the kit knows.
    *
-   * @type {EventActorType}
+   * @type {string}
    * @readonly
    */
-  readonly type: EventActorType;
+  readonly type: string;
 
   /**
    * Property id
@@ -150,11 +163,24 @@ export type EventPayloadOf<
  *
  * @description
  * What a caller gives to publish an event: its payload without `id` and `occurredAt`, which the
- * kit assigns.
+ * kit assigns. The omission distributes over a union, so a payload that is a discriminated union
+ * keeps its variants.
  *
- * @type {Omit<EventPayloadOf<TSchemas, TName>, 'id' | 'occurredAt'>}
+ * @type {DistributiveOmit<EventPayloadOf<TSchemas, TName>, 'id' | 'occurredAt'>}
  */
-export type EventDataOf<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>> = Omit<
-  EventPayloadOf<TSchemas, TName>,
-  'id' | 'occurredAt'
->;
+export type EventDataOf<
+  TSchemas extends EventSchemas,
+  TName extends EventNameOf<TSchemas>,
+> = DistributiveOmit<EventPayloadOf<TSchemas, TName>, 'id' | 'occurredAt'>;
+
+/**
+ * Type DistributiveOmit
+ *
+ * @description
+ * `Omit` applied to each member of a union separately.
+ *
+ * @type {TValue extends unknown ? Omit<TValue, TKeys> : never}
+ */
+export type DistributiveOmit<TValue, TKeys extends PropertyKey> = TValue extends unknown
+  ? Omit<TValue, TKeys>
+  : never;

@@ -1,4 +1,4 @@
-import { getOrganizationContext } from '@cadenway/nest-common';
+import { getOrganizationContext, runWithOrganizationContext } from '@cadenway/nest-common';
 import type { TestingModule } from '@nestjs/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { EventConsumers } from '../consumer/event-consumers.js';
 import { MessagingModule } from '../messaging.module.js';
 import { messagingOptions, startApplication } from '../testing/application.js';
+import { ATELIER_NORD, CAMILLE } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
 import { delay, waitFor } from '../testing/wait.js';
 import {
@@ -132,7 +133,10 @@ describe('rebuild on a real NATS server', () => {
 
     const started: number = Date.now();
     for (const taskId of ['CAD-1', 'CAD-2', 'CAD-3', 'CAD-4', 'CAD-5']) {
-      await plainEmitter.emit('search', 'task', taskItemSchema, { taskId, title: 'A' });
+      await plainEmitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId, title: 'A' },
+      );
     }
     await plainEmitter.flush();
     const elapsed: number = Date.now() - started;
@@ -154,18 +158,30 @@ describe('rebuild on a real NATS server', () => {
     });
 
     await expect(
-      plainEmitter.emit('search', 'document', taskItemSchema, { taskId: 'DOC-1', title: 'A' }),
+      plainEmitter.emit(
+        { consumer: 'search', entity: 'document', schema: taskItemSchema },
+        { taskId: 'DOC-1', title: 'A' },
+      ),
     ).resolves.toBeUndefined();
     await expect(
-      plainEmitter.emit('search', 'task', looseTaskItemSchema, {
-        taskId: 'CAD-1',
-        title: 'x'.repeat(41),
-      }),
+      plainEmitter.emit(
+        { consumer: 'search', entity: 'task', schema: looseTaskItemSchema },
+        {
+          taskId: 'CAD-1',
+          title: 'x'.repeat(41),
+        },
+      ),
     ).resolves.toBeUndefined();
     await expect(
-      plainEmitter.emit('search', 'task', taskItemSchema, { taskId: '', title: 'A' }),
+      plainEmitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: '', title: 'A' },
+      ),
     ).rejects.toThrow(RebuildItemError);
-    await plainEmitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-2', title: 'B' });
+    await plainEmitter.emit(
+      { consumer: 'search', entity: 'task', schema: taskItemSchema },
+      { taskId: 'CAD-2', title: 'B' },
+    );
     await plainEmitter.flush();
     await waitFor(() => applied.length === 1);
     await delay(200);
@@ -190,14 +206,23 @@ describe('rebuild on a real NATS server', () => {
     });
 
     const started: number = Date.now();
-    await emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-1', title: 'A' });
+    await emitter.emit(
+      { consumer: 'search', entity: 'task', schema: taskItemSchema },
+      { taskId: 'CAD-1', title: 'A' },
+    );
     const afterFirst: string[] = [...applied];
     await Promise.all([
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-2', title: 'B' }),
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-3', title: 'C' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-2', title: 'B' },
+      ),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-3', title: 'C' },
+      ),
     ]);
 
-    expect(afterFirst).toEqual(['CAD-1:undefined']);
+    expect(afterFirst).toEqual(['CAD-1:null']);
     expect(Date.now() - started).toBeGreaterThanOrEqual(350);
     expect(applied).toHaveLength(3);
     expect(overlapped).toBe(false);
@@ -215,10 +240,16 @@ describe('rebuild on a real NATS server', () => {
     });
 
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: '', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: '', title: 'A' },
+      ),
     ).rejects.toThrow(RebuildItemError);
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: '', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: '', title: 'A' },
+      ),
     ).rejects.toThrow(/taskId/u);
     expect(applied).toEqual([]);
   });
@@ -234,19 +265,31 @@ describe('rebuild on a real NATS server', () => {
     });
 
     await expect(
-      emitter.emit('search', 'task', looseTaskItemSchema, {
-        taskId: 'CAD-1',
-        title: 'x'.repeat(41),
-      }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: looseTaskItemSchema },
+        {
+          taskId: 'CAD-1',
+          title: 'x'.repeat(41),
+        },
+      ),
     ).rejects.toMatchObject({ name: 'RebuildRejectedError', reason: 'invalid-item' });
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-500', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-500', title: 'A' },
+      ),
     ).rejects.toMatchObject({ name: 'RebuildRejectedError', reason: 'handler-failed' });
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-500', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-500', title: 'A' },
+      ),
     ).rejects.toThrow(RebuildRejectedError);
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-2', title: 'B' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-2', title: 'B' },
+      ),
     ).resolves.toBeUndefined();
   });
 
@@ -260,10 +303,16 @@ describe('rebuild on a real NATS server', () => {
     });
 
     await expect(
-      emitter.emit('search', 'document', taskItemSchema, { taskId: 'CAD-1', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'document', schema: taskItemSchema },
+        { taskId: 'CAD-1', title: 'A' },
+      ),
     ).rejects.toThrow(RebuildConsumerUnavailableError);
     await expect(
-      emitter.emit('search', 'task', taskItemSchema, { taskId: 'CAD-1', title: 'A' }),
+      emitter.emit(
+        { consumer: 'search', entity: 'task', schema: taskItemSchema },
+        { taskId: 'CAD-1', title: 'A' },
+      ),
     ).rejects.toThrow(/timeout/iu);
   });
 
@@ -282,5 +331,75 @@ describe('rebuild on a real NATS server', () => {
         handle: (): Promise<void> => Promise.resolve(),
       }),
     ).rejects.toThrow(/already registered/u);
+  });
+
+  it('applies items outside any organization, whatever the context the handler was registered in', async () => {
+    const seen: (string | null | undefined)[] = [];
+    await runWithOrganizationContext(
+      {
+        organizationId: ATELIER_NORD,
+        actor: { type: 'user', id: CAMILLE },
+        role: 'owner',
+        scopes: ['tasks:write'],
+      },
+      () =>
+        consumer.get(EventConsumers).onRebuild({
+          entity: 'task',
+          schema: taskItemSchema,
+          handle: (): Promise<void> => {
+            seen.push(getOrganizationContext()?.organizationId);
+            return Promise.resolve();
+          },
+        }),
+    );
+
+    await emitter.emit(
+      { consumer: 'search', entity: 'task', schema: taskItemSchema },
+      { taskId: 'CAD-1', title: 'A' },
+    );
+
+    expect(seen).toEqual([null]);
+  });
+
+  it('drops the oldest items while more than the pending limit wait at the consumer', async () => {
+    const bounded: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(nats, {
+          service: 'index-service',
+          rebuildName: 'bounded',
+          rebuildMaxPending: 3,
+        }),
+      ),
+    ]);
+    const applied: string[] = [];
+    await bounded.get(EventConsumers).onRebuild({
+      entity: 'task',
+      schema: taskItemSchema,
+      handle: async (item: TaskItem): Promise<void> => {
+        await delay(100);
+        applied.push(item.taskId);
+      },
+    });
+
+    // An emitter that flushes once: the 30 items reach the consumer in one burst.
+    const burst: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, { service: 'burst-service' })),
+    ]);
+    const burstEmitter: RebuildEmitter = burst.get(RebuildEmitter);
+    for (let index: number = 0; index < 30; index += 1) {
+      await burstEmitter.emit(
+        { consumer: 'bounded', entity: 'task', schema: taskItemSchema },
+        { taskId: `CAD-${String(index)}`, title: 'A' },
+      );
+    }
+    await burstEmitter.flush();
+    await waitFor(() => applied.includes('CAD-29'), 5000);
+    await delay(300);
+    await burst.close();
+    await bounded.close();
+
+    // The item being applied when the burst arrived, then the newest three: the rest is dropped.
+    expect(applied.length).toBeLessThanOrEqual(5);
+    expect(applied.slice(-3)).toEqual(['CAD-27', 'CAD-28', 'CAD-29']);
   });
 });

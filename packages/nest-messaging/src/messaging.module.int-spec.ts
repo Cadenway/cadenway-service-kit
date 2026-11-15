@@ -155,22 +155,27 @@ describe('messaging module under the NATS permissions of cadenway-ops', () => {
    *
    * @param {string} name - NATS user, also the prefix of the service name.
    * @param {Partial<MessagingModuleOptions>} options - Options of the spec.
+   * @param {readonly number[] | undefined} retryDelaysMs - Retry delays of the consumers, when the spec shortens them.
    * @returns {Promise<TestingModule>} The running application, closed after the spec.
    */
   async function as(
     name: string,
     options: Partial<MessagingModuleOptions> = {},
+    retryDelaysMs?: readonly number[],
   ): Promise<TestingModule> {
-    const application: TestingModule = await startApplication([
-      MessagingModule.forRoot({
-        service: `${name}-service`,
-        servers: nats.url,
-        user: name,
-        password: `${name}Secret1`,
-        publishTimeoutMs: 2000,
-        ...options,
-      }),
-    ]);
+    const application: TestingModule = await startApplication(
+      [
+        MessagingModule.forRoot({
+          service: `${name}-service`,
+          servers: nats.url,
+          user: name,
+          password: `${name}Secret1`,
+          publishTimeoutMs: 2000,
+          ...options,
+        }),
+      ],
+      retryDelaysMs === undefined ? {} : { tuning: { retryDelaysMs } },
+    );
     applications.push(application);
     return application;
   }
@@ -236,7 +241,7 @@ describe('messaging module under the NATS permissions of cadenway-ops', () => {
 
   it('publishes, consumes, acknowledges, retries and terminates with the permissions of a publisher and a consumer', async () => {
     const task: TestingModule = await as('task');
-    const search: TestingModule = await as('search', { retryDelaysMs: [100, 100, 100, 100] });
+    const search: TestingModule = await as('search', {}, [100, 100, 100, 100]);
     const seen: { taskId: string; deliveryCount: number }[] = [];
     await search.get(EventConsumers).subscribe({
       handler: 'index-task',
@@ -312,11 +317,11 @@ describe('messaging module under the NATS permissions of cadenway-ops', () => {
   it('runs the dead-letter worker with the permissions of notification only', async () => {
     const restrictedEvents: string[] = ['user.signed-up.v1'];
     const task: TestingModule = await as('task');
-    const notification: TestingModule = await as('notification', {
-      restrictedEvents,
-      deadLetterWorker: true,
-      retryDelaysMs: [50],
-    });
+    const notification: TestingModule = await as(
+      'notification',
+      { restrictedEvents, deadLetterWorker: true, restrictedDeadLetterPayload: 'copy' },
+      [50],
+    );
     await notification.get(EventConsumers).subscribe({
       handler: 'notify-assignee',
       schemas: eventSchemas,
@@ -373,7 +378,9 @@ describe('messaging module under the NATS permissions of cadenway-ops', () => {
       },
     });
 
-    await task.get(RebuildEmitter).emit('search', 'task', taskItemSchema, { taskId: 'CAD-1' });
+    await task
+      .get(RebuildEmitter)
+      .emit({ consumer: 'search', entity: 'task', schema: taskItemSchema }, { taskId: 'CAD-1' });
     await waitFor(() => applied.length === 1);
 
     const replying: TestingModule = await as('task', {
@@ -382,7 +389,9 @@ describe('messaging module under the NATS permissions of cadenway-ops', () => {
       rebuildTimeoutMs: 1000,
     });
     await expect(
-      replying.get(RebuildEmitter).emit('search', 'task', taskItemSchema, { taskId: 'CAD-2' }),
+      replying
+        .get(RebuildEmitter)
+        .emit({ consumer: 'search', entity: 'task', schema: taskItemSchema }, { taskId: 'CAD-2' }),
     ).rejects.toThrow();
     await delay(100);
 

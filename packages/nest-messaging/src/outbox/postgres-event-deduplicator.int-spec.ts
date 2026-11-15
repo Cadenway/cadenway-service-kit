@@ -1,4 +1,4 @@
-import { getOrganizationContext } from '@cadenway/nest-common';
+import { getOrganizationContext, runWithOrganizationContext } from '@cadenway/nest-common';
 import {
   SystemTransactionRunner,
   TenantTransactionRunner,
@@ -15,21 +15,27 @@ import type { NatsConnection } from '@nats-io/transport-node';
 import type { TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { EVENT_DEDUPLICATOR } from '../consumer/event-deduplicator.js';
+import {
+  EVENT_DEDUPLICATOR,
+  type DeduplicationOutcome,
+  type EventDelivery,
+  type VersionClaim,
+} from '../consumer/event-deduplicator.js';
 import { EventConsumers, type EventContext } from '../consumer/event-consumers.js';
 import { isolatedNames } from '../testing/application.js';
 import {
   ATELIER_NORD,
   CAMILLE,
   eventSchemas,
+  OTHER_ORGANIZATION,
   userSignedUp,
   type TaskUpdatedV1,
   type UserSignedUpV1,
 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
-import { appendTaskUpdated, migrateOutbox, startService } from '../testing/outbox.js';
+import { appendTaskUpdated, asMember, migrateOutbox, startService } from '../testing/outbox.js';
 import { startTestDatabase, type TestDatabase } from '../testing/postgres.js';
-import { waitFor } from '../testing/wait.js';
+import { delay, waitFor } from '../testing/wait.js';
 import { OutboxWriter, type AppendedEvent } from './outbox-writer.js';
 import { PostgresEventDeduplicator } from './postgres-event-deduplicator.js';
 
@@ -125,11 +131,13 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
   });
 
   it('rolls back the processed id and the writes of a handler that fails, then handles the redelivery', async () => {
-    const application: TestingModule = await startService(database, nats, {
-      ...isolatedNames('rollback'),
-      service: 'search-service',
-      retryDelaysMs: [100, 100, 100, 100],
-    });
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      { ...isolatedNames('rollback'), service: 'search-service' },
+      {},
+      { retryDelaysMs: [100, 100, 100, 100] },
+    );
     const tenant: TenantTransactionRunner = application.get(TenantTransactionRunner);
     const attempts: { deliveryCount: number; settings: unknown }[] = [];
     await application.get(EventConsumers).subscribe({
@@ -284,5 +292,187 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
     expect(processed).toEqual([
       { consumer: 'notification-service__welcome', event_id: appended.id },
     ]);
+  });
+
+  it('keeps the versions of two organizations apart for the same aggregate key', async () => {
+    const application: TestingModule = await startService(database, nats, {
+      ...isolatedNames('orgversions'),
+      service: 'search-service',
+    });
+    const claims: { organizationId: string; version: number; apply: boolean }[] = [];
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      handle: async (payload: TaskUpdatedV1, eventContext: EventContext): Promise<void> => {
+        claims.push({
+          organizationId: payload.organizationId,
+          version: payload.version,
+          apply: await eventContext.claimVersion(`task:${payload.taskId}`),
+        });
+      },
+    });
+
+    // The same task key in two organizations: version 7 of one must not make version 3 of the
+    // other stale.
+    await appendTaskUpdated(application, { version: 7 });
+    await waitFor(() => claims.length === 1);
+    await appendTaskUpdated(application, { organizationId: OTHER_ORGANIZATION, version: 3 });
+    await waitFor(() => claims.length === 2);
+    await appendTaskUpdated(application, { organizationId: OTHER_ORGANIZATION, version: 2 });
+    await waitFor(() => claims.length === 3);
+    const versions: unknown[] = await table(
+      'select organization_id, aggregate_key, version from event_versions order by version desc',
+    );
+    await application.close();
+
+    expect(claims).toEqual([
+      { organizationId: ATELIER_NORD, version: 7, apply: true },
+      { organizationId: OTHER_ORGANIZATION, version: 3, apply: true },
+      { organizationId: OTHER_ORGANIZATION, version: 2, apply: false },
+    ]);
+    expect(versions).toEqual([
+      { organization_id: ATELIER_NORD, aggregate_key: 'task:CAD-482', version: '7' },
+      { organization_id: OTHER_ORGANIZATION, aggregate_key: 'task:CAD-482', version: '3' },
+    ]);
+  });
+
+  it('compares the versions of events without an organization with each other', async () => {
+    const application: TestingModule = await startService(database, nats, {
+      ...isolatedNames('nullversions'),
+      service: 'notification-service',
+    });
+    const deduplicator: PostgresEventDeduplicator = application.get(PostgresEventDeduplicator);
+    const claimed: boolean[] = [];
+
+    for (const [id, version] of [
+      ['0193a1f0-0000-7000-8000-0000000000f1', 4],
+      ['0193a1f0-0000-7000-8000-0000000000f2', 2],
+    ] as const) {
+      await runWithOrganizationContext(
+        { organizationId: null, actor: { type: 'system', id: null }, role: null, scopes: [] },
+        () =>
+          deduplicator.run(
+            {
+              consumer: 'notification-service__welcome',
+              event: 'user.signed-up.v1',
+              envelope: {
+                id,
+                occurredAt: '2026-11-14T09:30:00.000Z',
+                organizationId: null,
+                actor: { type: 'system', id: 'identity-service' },
+                version,
+              },
+            },
+            async (claimVersion: VersionClaim): Promise<void> => {
+              claimed.push(await claimVersion(`user:${CAMILLE}`));
+            },
+          ),
+      );
+    }
+    const versions: unknown[] = await table(
+      'select organization_id, version from event_versions where aggregate_key like $$user:%$$',
+    );
+    await application.close();
+
+    expect(claimed).toEqual([true, false]);
+    expect(versions).toEqual([{ organization_id: null, version: '4' }]);
+  });
+
+  it('bounds the wait of a delivery for the processed id another delivery of the same event holds', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      { ...isolatedNames('locked'), service: 'search-service' },
+      {},
+      { claimLockTimeoutMs: 300 },
+    );
+    const deduplicator: PostgresEventDeduplicator = application.get(PostgresEventDeduplicator);
+    const delivery: EventDelivery = {
+      consumer: 'search-service__index-task',
+      event: 'task.updated.v1',
+      envelope: {
+        id: '0193a1f0-0000-7000-8000-0000000000f3',
+        occurredAt: '2026-11-14T09:30:00.000Z',
+        organizationId: ATELIER_NORD,
+        actor: { type: 'user', id: CAMILLE },
+        version: 1,
+      },
+    };
+    let release: () => void = (): void => undefined;
+    const gate: Promise<void> = new Promise<void>((resolve: () => void) => {
+      release = resolve;
+    });
+
+    const first: Promise<DeduplicationOutcome> = asMember(ATELIER_NORD, () =>
+      deduplicator.run(delivery, () => gate),
+    );
+    await delay(200);
+    const started: number = Date.now();
+    const second: Promise<DeduplicationOutcome> = asMember(ATELIER_NORD, () =>
+      deduplicator.run(delivery, () => Promise.resolve()),
+    );
+    await expect(second).rejects.toThrow(/lock timeout/u);
+    const waited: number = Date.now() - started;
+    release();
+    const outcome: DeduplicationOutcome = await first;
+    const third: DeduplicationOutcome = await asMember(ATELIER_NORD, () =>
+      deduplicator.run(delivery, () => Promise.resolve()),
+    );
+    await application.close();
+
+    expect(waited).toBeLessThan(2000);
+    expect(outcome).toBe('handled');
+    expect(third).toBe('duplicate');
+  });
+
+  it('abandons a handler at its deadline, rolls its writes back, and handles the next message meanwhile', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      { ...isolatedNames('hung'), service: 'search-service', handlerTimeoutMs: 500 },
+      {},
+      { retryDelaysMs: [300, 300, 300, 300] },
+    );
+    const tenant: TenantTransactionRunner = application.get(TenantTransactionRunner);
+    const handled: string[] = [];
+    let aborted: boolean = false;
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      handle: async (payload: TaskUpdatedV1, eventContext: EventContext): Promise<void> => {
+        await tenant.run((tx: TransactionScope) =>
+          tx.client.query('insert into search_index (task_id, version) values ($1, $2)', [
+            payload.taskId,
+            payload.version,
+          ]),
+        );
+        if (payload.taskId === 'CAD-HUNG' && eventContext.deliveryCount === 1) {
+          eventContext.signal.addEventListener('abort', () => {
+            aborted = true;
+          });
+          await new Promise<never>(() => undefined);
+        }
+        handled.push(`${payload.taskId}#${String(eventContext.deliveryCount)}`);
+      },
+    });
+
+    await appendTaskUpdated(application, { taskId: 'CAD-HUNG' });
+    await appendTaskUpdated(application, { taskId: 'CAD-NEXT' });
+    await waitFor(() => handled.length === 2, 10_000);
+    const index: unknown[] = await table(
+      'select task_id, writes from search_index order by task_id',
+    );
+    const processed: unknown[] = await table('select event_id from processed_events');
+    await application.close();
+
+    expect(aborted).toBe(true);
+    expect(handled).toEqual(['CAD-NEXT#1', 'CAD-HUNG#2']);
+    expect(index).toEqual([
+      { task_id: 'CAD-HUNG', writes: 1 },
+      { task_id: 'CAD-NEXT', writes: 1 },
+    ]);
+    expect(processed).toHaveLength(2);
   });
 });

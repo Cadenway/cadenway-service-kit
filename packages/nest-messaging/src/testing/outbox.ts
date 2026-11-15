@@ -8,6 +8,7 @@ import {
 import type { TestingModule } from '@nestjs/testing';
 
 import type { MessagingModuleOptions } from '../messaging-options.js';
+import type { MessagingTuning } from '../messaging-tuning.js';
 import { MessagingModule } from '../messaging.module.js';
 import eventVersions from '../outbox/event-versions.schema.js';
 import outboxEvents from '../outbox/outbox-events.schema.js';
@@ -49,7 +50,8 @@ export function asMember<TResult>(
  *
  * @description
  * Creates the three tables of the kit the way a service does: with the DDL drizzle-kit generates
- * from the exported tables, then `FORCE ROW LEVEL SECURITY` on the outbox, added by hand.
+ * from the exported tables, then `FORCE ROW LEVEL SECURITY` on the outbox and the versions,
+ * added by hand.
  *
  * @param {TestDatabase} database - Disposable database.
  * @param {readonly string[]} extraStatements - DDL of the tables of the spec itself.
@@ -60,7 +62,7 @@ export async function migrateOutbox(
   extraStatements: readonly string[] = [],
 ): Promise<void> {
   const statements: string[] = await kitMigration({ outboxEvents, processedEvents, eventVersions });
-  await database.migrate([...statements, ...extraStatements], ['outbox_events']);
+  await database.migrate([...statements, ...extraStatements], ['outbox_events', 'event_versions']);
 }
 
 /**
@@ -75,6 +77,7 @@ export async function migrateOutbox(
  * @param {TestNats} nats - Disposable NATS server.
  * @param {Partial<MessagingModuleOptions>} messaging - Messaging options of the spec.
  * @param {OutboxModuleOptions} outbox - Outbox options of the spec.
+ * @param {Partial<MessagingTuning>} tuning - Timings of the kit to change.
  * @returns {Promise<TestingModule>} The running application.
  */
 export function startService(
@@ -82,12 +85,16 @@ export function startService(
   nats: TestNats,
   messaging: Partial<MessagingModuleOptions> = {},
   outbox: OutboxModuleOptions = {},
+  tuning: Partial<MessagingTuning> = {},
 ): Promise<TestingModule> {
-  return startApplication([
-    DatabaseModule.forRoot({ connectionString: database.appUrl, poolSize: 4 }),
-    MessagingModule.forRoot(messagingOptions(nats, messaging)),
-    OutboxModule.forRoot({ pollIntervalMs: 50, purgeIntervalMs: 0, ...outbox }),
-  ]);
+  return startApplication(
+    [
+      DatabaseModule.forRoot({ connectionString: database.appUrl, poolSize: 4 }),
+      MessagingModule.forRoot(messagingOptions(nats, messaging)),
+      OutboxModule.forRoot({ pollIntervalMs: 50, purgeIntervalMs: 0, ...outbox }),
+    ],
+    { tuning },
+  );
 }
 
 /**

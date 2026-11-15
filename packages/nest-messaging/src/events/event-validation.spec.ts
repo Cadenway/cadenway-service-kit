@@ -35,7 +35,7 @@ describe('validateEvent', () => {
       validateEvent(eventSchemas, 'task.updated.v1', {
         ...VALID,
         actor: { type: 'robot', id: 'secret-actor-value' },
-        taskId: '',
+        changed: 'status',
         email: 'camille@example.test',
       });
     } catch (error) {
@@ -47,7 +47,7 @@ describe('validateEvent', () => {
     expect(error.eventName).toBe('task.updated.v1');
     expect(error.issues.map((issue: { path: string }) => issue.path).sort()).toEqual([
       'actor.type',
-      'taskId',
+      'changed',
     ]);
     expect(error.message).toContain('actor.type');
     expect(JSON.stringify([error.message, error.issues])).not.toMatch(

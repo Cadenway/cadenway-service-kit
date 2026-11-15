@@ -11,18 +11,62 @@ import { rebuildSubject } from '../subjects.js';
  *
  * @description
  * Why a consumer refused a rebuild item: the item does not match the schema the consumer
- * validates with, or its handler failed.
+ * validates with, its handler failed, too many items were waiting, or a reason this version of
+ * the kit does not know (sent by a newer consumer).
  *
- * @type {'invalid-item' | 'handler-failed'}
+ * @type {'invalid-item' | 'handler-failed' | 'overloaded' | 'unknown'}
  */
-export type RebuildRejection = 'invalid-item' | 'handler-failed';
+export type RebuildRejection = 'invalid-item' | 'handler-failed' | 'overloaded' | 'unknown';
+
+/**
+ * Interface RebuildTarget
+ *
+ * @description
+ * Where and how `RebuildEmitter.emit` sends an item.
+ */
+export interface RebuildTarget<TItem> {
+  // #region Properties
+  /**
+   * Property consumer
+   *
+   * @description
+   * Rebuild name of the consumer, its NATS user by default, such as `search`.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly consumer: string;
+
+  /**
+   * Property entity
+   *
+   * @description
+   * Name of the entity re-emitted, such as `task`.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly entity: string;
+
+  /**
+   * Property schema
+   *
+   * @description
+   * Zod schema of an item; the consumer validates with the same.
+   *
+   * @type {z.ZodType<TItem>}
+   * @readonly
+   */
+  readonly schema: z.ZodType<TItem>;
+  // #endregion
+}
 
 /**
  * Class RebuildRejectedError
  *
  * @description
- * Raised by `RebuildEmitter.emit` when the consumer answered that it did not apply the item.
- * The emitter may send the item again: a rebuild is restartable.
+ * Raised by `RebuildEmitter.emit`, in the `reply` mode, when the consumer answered that it did
+ * not apply the item. The emitter may send the item again: a rebuild is restartable.
  */
 export class RebuildRejectedError extends Error {
   // #region Properties
@@ -89,8 +133,8 @@ export class RebuildItemError extends Error {
  * Class RebuildConsumerUnavailableError
  *
  * @description
- * Raised by `RebuildEmitter.emit` when no consumer listens on the rebuild subject: the consuming
- * service is down or did not register the entity.
+ * Raised by `RebuildEmitter.emit`, in the `reply` mode, when no consumer listens on the rebuild
+ * subject: the consuming service is down or did not register the entity.
  */
 export class RebuildConsumerUnavailableError extends Error {
   // #region Constructor
@@ -112,15 +156,55 @@ export class RebuildConsumerUnavailableError extends Error {
 }
 
 /**
+ * Class RebuildFlushTimeoutError
+ *
+ * @description
+ * Raised by `RebuildEmitter.emit` and `flush`, in the `none` mode, when the server did not
+ * confirm the items within `rebuildTimeoutMs`, as during a NATS outage.
+ */
+export class RebuildFlushTimeoutError extends Error {
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Builds the error.
+   *
+   * @param {number} timeoutMs - Time waited, in milliseconds.
+   * @constructor
+   */
+  public constructor(timeoutMs: number) {
+    super(`The server did not confirm the rebuild items within ${String(timeoutMs)} ms.`);
+    this.name = 'RebuildFlushTimeoutError';
+  }
+  // #endregion
+}
+
+/**
+ * Constant KNOWN_REJECTIONS
+ *
+ * @description
+ * Rejection reasons this version of the kit sends.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const KNOWN_REJECTIONS: ReadonlySet<string> = new Set<string>([
+  'invalid-item',
+  'handler-failed',
+  'overloaded',
+]);
+
+/**
  * Function encodeRebuildReply
  *
  * @description
- * Encodes the answer of a consumer to one rebuild item.
+ * Encodes the answer of a consumer to one rebuild item: `{"ok":true}`, or
+ * `{"ok":false,"reason":"<reason>"}`. A stable format, changed only in a major.
  *
- * @param {RebuildRejection | null} rejection - Why the item was refused, or `null` when it was applied.
+ * @param {Exclude<RebuildRejection, 'unknown'> | null} rejection - Why the item was refused, or `null` when it was applied.
  * @returns {string} The reply payload, as JSON.
  */
-export function encodeRebuildReply(rejection: RebuildRejection | null): string {
+export function encodeRebuildReply(rejection: Exclude<RebuildRejection, 'unknown'> | null): string {
   return JSON.stringify(rejection === null ? { ok: true } : { ok: false, reason: rejection });
 }
 
@@ -128,32 +212,31 @@ export function encodeRebuildReply(rejection: RebuildRejection | null): string {
  * Function decodeRebuildReply
  *
  * @description
- * Decodes the answer of a consumer to one rebuild item.
+ * Decodes the answer of a consumer to one rebuild item. Only `{"ok":true}` means applied; any
+ * other answer, an unknown reason or an unreadable reply included, is a rejection, so a newer
+ * consumer never makes an older emitter throw on parsing.
  *
  * @param {string} reply - Reply payload.
- * @returns {RebuildRejection | null} Why the item was refused, or `null` when it was applied.
- * @throws {Error} When the reply is not one the kit sends.
+ * @returns {RebuildRejection | null} Why the item was refused, `unknown` for a reason this kit does not know, or `null` when it was applied.
  */
 export function decodeRebuildReply(reply: string): RebuildRejection | null {
   let decoded: unknown;
   try {
     decoded = JSON.parse(reply);
   } catch {
-    decoded = undefined;
+    return 'unknown';
   }
-  if (typeof decoded === 'object' && decoded !== null && 'ok' in decoded) {
-    if (decoded.ok === true) {
-      return null;
-    }
-    if (
-      decoded.ok === false &&
-      'reason' in decoded &&
-      (decoded.reason === 'invalid-item' || decoded.reason === 'handler-failed')
-    ) {
-      return decoded.reason;
-    }
+  if (typeof decoded !== 'object' || decoded === null || !('ok' in decoded)) {
+    return 'unknown';
   }
-  throw new Error('Unexpected reply to a rebuild item.');
+  if (decoded.ok === true) {
+    return null;
+  }
+  return 'reason' in decoded &&
+    typeof decoded.reason === 'string' &&
+    KNOWN_REJECTIONS.has(decoded.reason)
+    ? (decoded.reason as RebuildRejection)
+    : 'unknown';
 }
 
 /**
@@ -168,8 +251,9 @@ export function decodeRebuildReply(reply: string): RebuildRejection | null {
  *
  * - `none` (default): each item is published and the connection is flushed every
  *   `rebuildFlushEvery` items, which paces the emitter on the server but not on the consumer.
- *   An item the consumer cannot take in time, or sent while no consumer listens, is lost. This
- *   is the only mode the permissions of cadenway-ops allow.
+ *   An item sent while no consumer listens, refused, or arriving while `rebuildMaxPending` items
+ *   already wait at the consumer, is lost. This is the only mode the permissions of
+ *   cadenway-ops allow.
  * - `reply`: each item is sent as a request and `emit` resolves when the consumer answered that
  *   it applied it; awaiting each `emit` gives exact back-pressure. The consuming user needs
  *   `allow_responses`.
@@ -216,24 +300,22 @@ export class RebuildEmitter {
    * Validates one item and sends it to the consumer: published, or sent as a request whose
    * answer it waits for, depending on `rebuildAcknowledgement`.
    *
-   * @param {string} consumer - Rebuild name of the consumer, its NATS user by default, such as `search`.
-   * @param {string} entity - Name of the entity re-emitted, such as `task`.
-   * @param {z.ZodType<TItem>} schema - Zod schema of an item; the consumer validates with the same.
+   * @param {RebuildTarget<TItem>} target - Consumer, entity and item schema.
    * @param {TItem} item - Current state of one entity.
-   * @returns {Promise<void>} Resolves once the item was published (and, every `rebuildFlushEvery` items, flushed), or, in the `reply` mode, once the consumer applied it.
+   * @returns {Promise<void>} Resolves once the item was published (and, every `rebuildFlushEvery` items, confirmed by the server), or, in the `reply` mode, once the consumer applied it.
    * @throws {RebuildItemError} When the item does not match the schema; nothing is sent.
+   * @throws {RebuildFlushTimeoutError} In the `none` mode, when a flush is not confirmed within `rebuildTimeoutMs`.
    * @throws {RebuildConsumerUnavailableError} In the `reply` mode, when no consumer listens on the subject.
    * @throws {RebuildRejectedError} In the `reply` mode, when the consumer refused the item or its handler failed.
    * @throws {Error} In the `reply` mode, when the consumer does not answer within `rebuildTimeoutMs`.
    */
-  public async emit<TItem>(
-    consumer: string,
-    entity: string,
-    schema: z.ZodType<TItem>,
-    item: TItem,
-  ): Promise<void> {
-    const subject: string = rebuildSubject(this.options.rebuildSubjectPrefix, consumer, entity);
-    const parsed: z.ZodSafeParseResult<TItem> = schema.safeParse(item);
+  public async emit<TItem>(target: RebuildTarget<TItem>, item: TItem): Promise<void> {
+    const subject: string = rebuildSubject(
+      this.options.rebuildSubjectPrefix,
+      target.consumer,
+      target.entity,
+    );
+    const parsed: z.ZodSafeParseResult<TItem> = target.schema.safeParse(item);
     if (!parsed.success) {
       throw new RebuildItemError(
         subject,
@@ -244,8 +326,7 @@ export class RebuildEmitter {
       this.connection.nats.publish(subject, JSON.stringify(parsed.data));
       this.unflushed += 1;
       if (this.unflushed >= this.options.rebuildFlushEvery) {
-        this.unflushed = 0;
-        await this.connection.flush();
+        await this.flush();
       }
       return;
     }
@@ -277,10 +358,23 @@ export class RebuildEmitter {
    * the `none` mode.
    *
    * @returns {Promise<void>} Resolves when the server answered.
+   * @throws {RebuildFlushTimeoutError} When the server does not answer within `rebuildTimeoutMs`, as during an outage.
    */
   public async flush(): Promise<void> {
     this.unflushed = 0;
-    await this.connection.flush();
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut: Promise<never> = new Promise<never>(
+      (_resolve: (value: never) => void, reject: (reason: Error) => void) => {
+        timer = setTimeout(() => {
+          reject(new RebuildFlushTimeoutError(this.options.rebuildTimeoutMs));
+        }, this.options.rebuildTimeoutMs);
+      },
+    );
+    try {
+      await Promise.race([this.connection.flush(), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
   // #endregion
 }

@@ -72,6 +72,17 @@ export const DEAD_LETTER_SEQUENCE_HEADER: string = 'Cadenway-Dead-Letter-Stream-
 export const DEAD_LETTER_DELIVERIES_HEADER: string = 'Cadenway-Dead-Letter-Deliveries';
 
 /**
+ * Constant DEAD_LETTER_PAYLOAD_HEADER
+ *
+ * @description
+ * Header of a dead letter whose body was not copied: `dropped`. Set on the copy of a restricted
+ * event unless `restrictedDeadLetterPayload` is `copy`.
+ *
+ * @type {string}
+ */
+export const DEAD_LETTER_PAYLOAD_HEADER: string = 'Cadenway-Dead-Letter-Payload';
+
+/**
  * Interface EventHeadersInput
  *
  * @description

@@ -5,7 +5,59 @@ import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-ho
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 
 import type { MessagingModuleOptions } from '../messaging-options.js';
+import {
+  DEFAULT_MESSAGING_TUNING,
+  MESSAGING_TUNING,
+  type MessagingTuning,
+} from '../messaging-tuning.js';
 import type { TestNats } from './nats.js';
+
+/**
+ * Constant TEST_TUNING
+ *
+ * @description
+ * Timings of the specs: the production retry delays, which a spec shortens when it waits for
+ * redeliveries, and quick recoveries and dead-letter retries.
+ *
+ * @type {MessagingTuning}
+ */
+const TEST_TUNING: MessagingTuning = {
+  ...DEFAULT_MESSAGING_TUNING,
+  deadLetterRetryDelaysMs: [200, 500, 1000, 2000],
+  consumerRecoveryDelaysMs: [0, 100, 200, 500],
+};
+
+/**
+ * Interface ApplicationOptions
+ *
+ * @description
+ * What a spec adds to the modules of its application.
+ */
+export interface ApplicationOptions {
+  // #region Properties
+  /**
+   * Property providers
+   *
+   * @description
+   * Extra providers of the application.
+   *
+   * @type {NonNullable<ModuleMetadata['providers']> | undefined}
+   * @readonly
+   */
+  readonly providers?: NonNullable<ModuleMetadata['providers']>;
+
+  /**
+   * Property tuning
+   *
+   * @description
+   * Timings of the kit to change, such as shorter retry delays.
+   *
+   * @type {Partial<MessagingTuning> | undefined}
+   * @readonly
+   */
+  readonly tuning?: Partial<MessagingTuning>;
+  // #endregion
+}
 
 /**
  * Function startApplication
@@ -13,20 +65,24 @@ import type { TestNats } from './nats.js';
  * @description
  * Builds and initializes a NestJS application made of the given modules, the way a service
  * starts: the bootstrap hooks run. Closing it runs the shutdown hooks. Logs are silenced: the
- * failure paths of the specs log errors on purpose.
+ * failure paths of the specs log errors on purpose. The internal timings of the kit are
+ * replaced with `overrideProvider`, as a spec cannot wait two minutes for a redelivery.
  *
  * @param {NonNullable<ModuleMetadata['imports']>} imports - Modules of the application.
- * @param {NonNullable<ModuleMetadata['providers']>} providers - Extra providers of the application.
+ * @param {ApplicationOptions} options - Extra providers and timings.
  * @returns {Promise<TestingModule>} The running application.
  */
 export async function startApplication(
   imports: NonNullable<ModuleMetadata['imports']>,
-  providers: NonNullable<ModuleMetadata['providers']> = [],
+  options: ApplicationOptions = {},
 ): Promise<TestingModule> {
   const application: TestingModule = await Test.createTestingModule({
     imports,
-    providers,
-  }).compile();
+    providers: options.providers ?? [],
+  })
+    .overrideProvider(MESSAGING_TUNING)
+    .useValue({ ...TEST_TUNING, ...options.tuning })
+    .compile();
   application.useLogger(false);
   await application.init();
   return application;

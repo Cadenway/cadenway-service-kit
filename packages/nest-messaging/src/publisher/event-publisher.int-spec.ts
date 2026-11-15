@@ -119,7 +119,7 @@ describe('event publisher on a real NATS server', () => {
     const before: StreamInfo = await manager.streams.info('EVENTS');
 
     await expect(
-      publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: '' })),
+      publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ version: 1.5 })),
     ).rejects.toThrow(EventValidationError);
 
     const after: StreamInfo = await manager.streams.info('EVENTS');
@@ -136,10 +136,33 @@ describe('event publisher on a real NATS server', () => {
 
     const again: PublishedEvent = await publisher.publishEnvelope({
       name: 'task.updated.v1',
+      subject: 'evt.task.updated.v1',
+      stream: 'EVENTS',
       payload,
       traceparent: null,
     });
 
     expect(again).toEqual({ ...first, duplicate: true });
+  });
+
+  it('refuses to publish when the subject is stored by another stream than the expected one', async () => {
+    const payload: TaskUpdatedV1 = {
+      ...taskUpdated(),
+      id: '0193a1f0-0000-7000-8000-0000000000e9',
+      occurredAt: '2026-11-14T09:30:00.000Z',
+    };
+    const before: StreamInfo = await manager.streams.info('EVENTS');
+
+    await expect(
+      publisher.publishEnvelope({
+        name: 'task.updated.v1',
+        subject: 'evt.task.updated.v1',
+        stream: 'EVENTS_RESTRICTED',
+        payload,
+        traceparent: null,
+      }),
+    ).rejects.toThrow(/expected stream does not match/u);
+
+    expect((await manager.streams.info('EVENTS')).state.messages).toBe(before.state.messages);
   });
 });

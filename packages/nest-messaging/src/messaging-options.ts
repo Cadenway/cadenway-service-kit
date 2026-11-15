@@ -1,7 +1,6 @@
 import type { ConfigShape } from '@cadenway/nest-common';
 import { z } from 'zod';
 
-import { DEFAULT_RETRY_DELAYS_MS } from './consumer/retry-delays.js';
 import { eventSubject } from './subjects.js';
 
 /**
@@ -189,6 +188,39 @@ export const DEFAULT_SHUTDOWN_TIMEOUT_MS: number = 10_000;
  * @type {number}
  */
 export const DEFAULT_REBUILD_TIMEOUT_MS: number = 30_000;
+
+/**
+ * Constant DEFAULT_HANDLER_TIMEOUT_MS
+ *
+ * @description
+ * Time an event handler may take before its attempt is abandoned, in milliseconds: 25 seconds,
+ * below the 30 seconds after which the server redelivers the message.
+ *
+ * @type {number}
+ */
+export const DEFAULT_HANDLER_TIMEOUT_MS: number = 25_000;
+
+/**
+ * Constant DEFAULT_REBUILD_MAX_PENDING
+ *
+ * @description
+ * Number of rebuild items that may wait at the consumer of one entity before the next ones are
+ * dropped.
+ *
+ * @type {number}
+ */
+export const DEFAULT_REBUILD_MAX_PENDING: number = 1000;
+
+/**
+ * Type RestrictedDeadLetterPayload
+ *
+ * @description
+ * What the dead-letter copy of a restricted event holds: `drop` keeps the headers and empties the
+ * body, which may hold a single-use code; `copy` keeps the body.
+ *
+ * @type {'drop' | 'copy'}
+ */
+export type RestrictedDeadLetterPayload = 'drop' | 'copy';
 
 /**
  * Constant DEFAULT_REBUILD_FLUSH_EVERY
@@ -535,17 +567,43 @@ export interface MessagingModuleOptions {
   readonly rebuildTimeoutMs?: number;
 
   /**
-   * Property retryDelaysMs
+   * Property handlerTimeoutMs
    *
    * @description
-   * Delay before each redelivery of an event whose handler failed, in milliseconds. Defaults to
-   * 1 s, 5 s, 30 s and 2 min, which makes five deliveries. The platform relies on these values:
-   * the option exists for tests, which cannot wait two minutes.
+   * Time an event handler may take, in milliseconds. Defaults to 25000 and must stay below the
+   * 30 seconds after which the server redelivers the message. Past it the attempt is abandoned:
+   * the `signal` of the handler context is aborted, the transaction of the PostgreSQL
+   * deduplicator rolls back, and the message is redelivered after the next retry delay.
    *
-   * @type {readonly number[] | undefined}
+   * @type {number | undefined}
    * @readonly
    */
-  readonly retryDelaysMs?: readonly number[];
+  readonly handlerTimeoutMs?: number;
+
+  /**
+   * Property restrictedDeadLetterPayload
+   *
+   * @description
+   * What the dead-letter copy of a restricted event holds. Defaults to `drop`: the headers are
+   * copied and the body is emptied, because it may hold a single-use code that would otherwise
+   * sit in the dead-letter stream for its whole retention. `copy` keeps the body.
+   *
+   * @type {RestrictedDeadLetterPayload | undefined}
+   * @readonly
+   */
+  readonly restrictedDeadLetterPayload?: RestrictedDeadLetterPayload;
+
+  /**
+   * Property rebuildMaxPending
+   *
+   * @description
+   * Number of rebuild items that may wait at the consumer of one entity. Defaults to 1000. Past
+   * it the oldest waiting items are dropped with an error log: a rebuild is restartable.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly rebuildMaxPending?: number;
   // #endregion
 }
 
@@ -602,17 +660,13 @@ export function parseServers(servers: string | readonly string[]): readonly stri
  *
  * @param {MessagingModuleOptions} options - Options given to `MessagingModule`.
  * @returns {ResolvedMessagingOptions} The complete options.
- * @throws {Error} When the service or rebuild name is not one token, no server is given, the retry delays are empty, the flush count is not positive or a restricted event name cannot be a subject.
+ * @throws {Error} When the service or rebuild name is not one token, no server is given, a subject prefix is not one token or two prefixes are equal, a count is not a positive integer, the handler timeout is not below the acknowledgement wait, or a restricted event name cannot be a subject.
  */
 export function resolveMessagingOptions(options: MessagingModuleOptions): ResolvedMessagingOptions {
   if (!NAME_PATTERN.test(options.service)) {
     throw new Error(
       'MessagingModule needs a service name made of letters, digits, hyphens and underscores.',
     );
-  }
-  const retryDelaysMs: readonly number[] = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-  if (retryDelaysMs.length === 0) {
-    throw new Error('MessagingModule needs at least one retry delay.');
   }
   const rebuildName: string = options.rebuildName ?? options.user ?? options.service;
   if (!NAME_PATTERN.test(rebuildName)) {
@@ -621,11 +675,42 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     );
   }
   const rebuildFlushEvery: number = options.rebuildFlushEvery ?? DEFAULT_REBUILD_FLUSH_EVERY;
-  if (!Number.isInteger(rebuildFlushEvery) || rebuildFlushEvery < 1) {
-    throw new Error('The rebuild flush count of MessagingModule is a positive integer.');
+  const rebuildMaxPending: number = options.rebuildMaxPending ?? DEFAULT_REBUILD_MAX_PENDING;
+  for (const [label, count] of [
+    ['rebuild flush count', rebuildFlushEvery],
+    ['rebuild pending limit', rebuildMaxPending],
+  ] as const) {
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`The ${label} of MessagingModule is a positive integer.`);
+    }
   }
+  const handlerTimeoutMs: number = options.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS;
+  if (!(handlerTimeoutMs > 0 && handlerTimeoutMs < ACK_WAIT_MS)) {
+    throw new Error(
+      `The handler timeout of MessagingModule is positive and below the acknowledgement wait of ${String(ACK_WAIT_MS)} ms.`,
+    );
+  }
+  const prefixes: Readonly<Record<string, string>> = {
+    eventSubjectPrefix: options.eventSubjectPrefix ?? DEFAULT_EVENT_SUBJECT_PREFIX,
+    restrictedSubjectPrefix: options.restrictedSubjectPrefix ?? DEFAULT_RESTRICTED_SUBJECT_PREFIX,
+    deadLetterSubjectPrefix: options.deadLetterSubjectPrefix ?? DEFAULT_DEAD_LETTER_SUBJECT_PREFIX,
+    rebuildSubjectPrefix: options.rebuildSubjectPrefix ?? DEFAULT_REBUILD_SUBJECT_PREFIX,
+  };
+  for (const [label, prefix] of Object.entries(prefixes)) {
+    if (!NAME_PATTERN.test(prefix)) {
+      throw new Error(
+        `The ${label} of MessagingModule is one subject token: letters, digits, hyphens and underscores.`,
+      );
+    }
+  }
+  if (new Set(Object.values(prefixes)).size !== Object.keys(prefixes).length) {
+    throw new Error(
+      'The subject prefixes of MessagingModule (events, restricted events, dead letters, rebuilds) are pairwise distinct.',
+    );
+  }
+  const eventSubjectPrefix: string = prefixes.eventSubjectPrefix ?? DEFAULT_EVENT_SUBJECT_PREFIX;
   const restrictedSubjectPrefix: string =
-    options.restrictedSubjectPrefix ?? DEFAULT_RESTRICTED_SUBJECT_PREFIX;
+    prefixes.restrictedSubjectPrefix ?? DEFAULT_RESTRICTED_SUBJECT_PREFIX;
   const restrictedEvents: readonly string[] = [...(options.restrictedEvents ?? [])];
   for (const name of restrictedEvents) {
     eventSubject(restrictedSubjectPrefix, name);
@@ -643,13 +728,16 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     eventsStream: options.eventsStream ?? DEFAULT_EVENTS_STREAM,
     restrictedStream: options.restrictedStream ?? DEFAULT_RESTRICTED_STREAM,
     deadLetterStream: options.deadLetterStream ?? DEFAULT_DEAD_LETTER_STREAM,
-    eventSubjectPrefix: options.eventSubjectPrefix ?? DEFAULT_EVENT_SUBJECT_PREFIX,
+    eventSubjectPrefix,
     restrictedSubjectPrefix,
-    deadLetterSubjectPrefix: options.deadLetterSubjectPrefix ?? DEFAULT_DEAD_LETTER_SUBJECT_PREFIX,
-    rebuildSubjectPrefix: options.rebuildSubjectPrefix ?? DEFAULT_REBUILD_SUBJECT_PREFIX,
+    deadLetterSubjectPrefix: prefixes.deadLetterSubjectPrefix ?? DEFAULT_DEAD_LETTER_SUBJECT_PREFIX,
+    rebuildSubjectPrefix: prefixes.rebuildSubjectPrefix ?? DEFAULT_REBUILD_SUBJECT_PREFIX,
     rebuildName,
     rebuildAcknowledgement: options.rebuildAcknowledgement ?? 'none',
     rebuildFlushEvery,
+    rebuildMaxPending,
+    handlerTimeoutMs,
+    restrictedDeadLetterPayload: options.restrictedDeadLetterPayload ?? 'drop',
     eventsMaxBytes: options.eventsMaxBytes ?? DEFAULT_EVENTS_MAX_BYTES,
     restrictedMaxBytes: options.restrictedMaxBytes ?? DEFAULT_RESTRICTED_MAX_BYTES,
     deadLetterMaxBytes: options.deadLetterMaxBytes ?? DEFAULT_DEAD_LETTER_MAX_BYTES,
@@ -657,7 +745,6 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     publishTimeoutMs: options.publishTimeoutMs ?? DEFAULT_PUBLISH_TIMEOUT_MS,
     shutdownTimeoutMs: options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
     rebuildTimeoutMs: options.rebuildTimeoutMs ?? DEFAULT_REBUILD_TIMEOUT_MS,
-    retryDelaysMs,
   };
 }
 

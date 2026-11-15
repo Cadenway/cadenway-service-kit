@@ -1,5 +1,5 @@
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import type {
   EventDataOf,
@@ -8,6 +8,12 @@ import type {
   EventSchemas,
 } from '../events/event-envelope.js';
 import { validateEvent } from '../events/event-validation.js';
+import {
+  eventRoute,
+  MESSAGING_OPTIONS,
+  type EventRoute,
+  type ResolvedMessagingOptions,
+} from '../messaging-options.js';
 import { currentTraceparent } from '../publisher/event-headers.js';
 
 /**
@@ -51,14 +57,31 @@ export interface AppendedEvent {
  */
 @Injectable()
 export class OutboxWriter {
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Stores the options of the messaging module, which decide the route of an event.
+   *
+   * @param {ResolvedMessagingOptions} options - Options of `MessagingModule`.
+   * @constructor
+   */
+  public constructor(
+    @Inject(MESSAGING_OPTIONS) private readonly options: ResolvedMessagingOptions,
+  ) {}
+  // #endregion
+
   // #region Methods
   /**
    * Method append
    *
    * @description
    * Completes a payload with an id and an instant asked from PostgreSQL (`uuidv7()`, `now()`),
-   * validates it with the schema of the event, captures the trace context of the caller and
-   * inserts the pending row through the given transaction.
+   * validates it with the schema of the event, routes it, captures the trace context of the
+   * caller and inserts the pending row through the given transaction. The route (subject and
+   * stream) is stored with the row: a restricted event stays restricted whatever the options of
+   * the replica that relays it.
    *
    * An event that carries an organization is appended in a transaction of the tenant runner for
    * that organization, or in a system transaction. An event without an organization is appended
@@ -98,15 +121,25 @@ export class OutboxWriter {
       id: row.id,
       occurredAt: row.occurred_at,
     });
+    const route: EventRoute = eventRoute(this.options, name);
     if (tx.kind === 'tenant' && payload.organizationId !== tx.organizationId) {
       throw new Error(
         `The event ${name} does not belong to the organization of this transaction: an event of another organization or without one is appended in a system transaction.`,
       );
     }
     await tx.client.query(
-      `insert into outbox_events (id, event_name, organization_id, payload, traceparent)
-       values ($1, $2, $3, $4::jsonb, $5)`,
-      [payload.id, name, payload.organizationId, JSON.stringify(payload), currentTraceparent()],
+      `insert into outbox_events
+         (id, event_name, subject, stream, organization_id, payload, traceparent)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [
+        payload.id,
+        name,
+        route.subject,
+        route.stream,
+        payload.organizationId,
+        JSON.stringify(payload),
+        currentTraceparent(),
+      ],
     );
     return { id: payload.id, occurredAt: payload.occurredAt };
   }

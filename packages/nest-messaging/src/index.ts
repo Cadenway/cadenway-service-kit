@@ -13,22 +13,16 @@ export {
   MessagingConnection,
   messagingHealthIndicator,
 } from './connection/messaging-connection.js';
-export {
-  EVENT_DEDUPLICATOR,
-  type DeduplicationOutcome,
-  type EventDeduplicator,
-  type EventDelivery,
-  type VersionClaim,
-} from './consumer/event-deduplicator.js';
+export type { VersionClaim } from './consumer/event-deduplicator.js';
 export {
   EventConsumers,
   type EventContext,
   type EventSubscription,
   type RebuildSubscription,
 } from './consumer/event-consumers.js';
-export { DEFAULT_RETRY_DELAYS_MS } from './consumer/retry-delays.js';
 export { DeadLetterWorker, type DeadLetterReason } from './dead-letter/dead-letter-worker.js';
 export type {
+  DistributiveOmit,
   EventActor,
   EventActorType,
   EventDataOf,
@@ -51,27 +45,27 @@ export {
   DEFAULT_EVENT_SUBJECT_PREFIX,
   DEFAULT_EVENTS_MAX_BYTES,
   DEFAULT_EVENTS_STREAM,
+  DEFAULT_HANDLER_TIMEOUT_MS,
   DEFAULT_PUBLISH_TIMEOUT_MS,
   DEFAULT_REBUILD_FLUSH_EVERY,
+  DEFAULT_REBUILD_MAX_PENDING,
   DEFAULT_REBUILD_SUBJECT_PREFIX,
   DEFAULT_REBUILD_TIMEOUT_MS,
   DEFAULT_RESTRICTED_MAX_BYTES,
   DEFAULT_RESTRICTED_STREAM,
   DEFAULT_RESTRICTED_SUBJECT_PREFIX,
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
-  eventRoute,
-  MESSAGING_OPTIONS,
   messagingConfigShape,
-  type EventRoute,
   type MessagingConfig,
   type MessagingModuleOptions,
   type RebuildAcknowledgement,
-  type ResolvedMessagingOptions,
+  type RestrictedDeadLetterPayload,
 } from './messaging-options.js';
 export { MessagingModule, type MessagingModuleAsyncOptions } from './messaging.module.js';
 export {
   DEAD_LETTER_CONSUMER_HEADER,
   DEAD_LETTER_DELIVERIES_HEADER,
+  DEAD_LETTER_PAYLOAD_HEADER,
   DEAD_LETTER_REASON_HEADER,
   DEAD_LETTER_SEQUENCE_HEADER,
   EVENT_NAME_HEADER,
@@ -87,8 +81,10 @@ export {
 export {
   RebuildConsumerUnavailableError,
   RebuildEmitter,
+  RebuildFlushTimeoutError,
   RebuildItemError,
   RebuildRejectedError,
   type RebuildRejection,
+  type RebuildTarget,
 } from './rebuild/rebuild-emitter.js';
 export { durableConsumerName, eventSubject } from './subjects.js';

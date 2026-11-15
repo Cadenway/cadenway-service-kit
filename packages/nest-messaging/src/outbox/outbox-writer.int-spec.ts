@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { EventValidationError } from '../events/event-validation.js';
+import { resolveMessagingOptions } from '../messaging-options.js';
 import { disableTracePropagation, enableTracePropagation } from '../testing/application.js';
 import {
   ATELIER_NORD,
@@ -52,7 +53,13 @@ describe('outbox writer on a real PostgreSQL', () => {
   let tenant: TenantTransactionRunner;
   let system: SystemTransactionRunner;
   let statements: string[];
-  const writer: OutboxWriter = new OutboxWriter();
+  const writer: OutboxWriter = new OutboxWriter(
+    resolveMessagingOptions({
+      service: 'identity-service',
+      servers: 'nats://unused:4222',
+      restrictedEvents: ['user.signed-up.v1'],
+    }),
+  );
 
   /**
    * Function rows
@@ -73,7 +80,7 @@ describe('outbox writer on a real PostgreSQL', () => {
     enableTracePropagation();
     database = await startTestDatabase();
     statements = await kitMigration({ outboxEvents, processedEvents, eventVersions });
-    await database.migrate(statements, ['outbox_events']);
+    await database.migrate(statements, ['outbox_events', 'event_versions']);
     pool = new pg.Pool({ connectionString: database.appUrl, max: 2 });
     tenant = new TenantTransactionRunner(pool);
     system = new SystemTransactionRunner(pool);
@@ -98,22 +105,35 @@ describe('outbox writer on a real PostgreSQL', () => {
     expect(ddl).toMatch(/ALTER TABLE "outbox_events" ENABLE ROW LEVEL SECURITY/u);
     expect(ddl).toMatch(/CREATE POLICY "outbox_events_organization_isolation"/u);
     expect(ddl).toMatch(/"outbox_events_status_check" CHECK/u);
-    expect(ddl).toMatch(/CREATE INDEX "outbox_events_pending_index".*WHERE.*'pending'/u);
+    expect(ddl).toMatch(
+      /CREATE INDEX "outbox_events_pending_index".*"next_attempt_at".*WHERE.*'pending'/u,
+    );
+    expect(ddl).toMatch(/"subject" text NOT NULL/u);
+    expect(ddl).toMatch(/"stream" text NOT NULL/u);
+    expect(ddl).toMatch(/ALTER TABLE "event_versions" ENABLE ROW LEVEL SECURITY/u);
+    expect(ddl).toMatch(/CREATE POLICY "event_versions_organization_isolation"/u);
+    expect(ddl).toMatch(
+      /"event_versions_aggregate_unique" UNIQUE NULLS NOT DISTINCT\("consumer","organization_id","aggregate_key"\)/u,
+    );
     // drizzle-kit does not generate FORCE: a service adds it by hand, as the helper does here.
     expect(ddl).not.toMatch(/FORCE ROW LEVEL SECURITY/u);
   });
 
-  it('runs as a role without DDL rights, under forced row-level security on the outbox', async () => {
+  it('runs as a role without DDL rights, under forced row-level security on the outbox and the versions', async () => {
     const role: { rows: unknown[] } = await pool.query(
       `select rolsuper, rolbypassrls, has_database_privilege(current_user, current_database(), 'CREATE') as can_create
          from pg_roles where rolname = current_user`,
     );
-    const table: { rows: unknown[] } = await database.admin.query(
-      "select relrowsecurity, relforcerowsecurity from pg_class where relname = 'outbox_events'",
+    const tables: { rows: unknown[] } = await database.admin.query(
+      `select relname, relrowsecurity, relforcerowsecurity from pg_class
+        where relname in ('outbox_events', 'event_versions') order by relname`,
     );
 
     expect(role.rows[0]).toEqual({ rolsuper: false, rolbypassrls: false, can_create: false });
-    expect(table.rows[0]).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
+    expect(tables.rows).toEqual([
+      { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
+      { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
+    ]);
     await expect(pool.query('create table intruder (id int)')).rejects.toThrow(
       /permission denied/u,
     );
@@ -146,6 +166,8 @@ describe('outbox writer on a real PostgreSQL', () => {
     expect(stored[0]).toMatchObject({
       id: appended.id,
       event_name: 'task.updated.v1',
+      subject: 'evt.task.updated.v1',
+      stream: 'EVENTS',
       organization_id: ATELIER_NORD,
       payload: { ...taskUpdated({ version: 9 }), id: appended.id, occurredAt: appended.occurredAt },
       traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
@@ -173,7 +195,7 @@ describe('outbox writer on a real PostgreSQL', () => {
     await expect(
       as(ATELIER_NORD, () =>
         tenant.run((tx: TransactionScope) =>
-          writer.append(tx, eventSchemas, 'task.updated.v1', taskUpdated({ taskId: '' })),
+          writer.append(tx, eventSchemas, 'task.updated.v1', taskUpdated({ version: 1.5 })),
         ),
       ),
     ).rejects.toThrow(EventValidationError);
@@ -198,8 +220,8 @@ describe('outbox writer on a real PostgreSQL', () => {
       as(ATELIER_NORD, () =>
         tenant.run((tx: TransactionScope) =>
           tx.client.query(
-            `insert into outbox_events (id, event_name, organization_id, payload)
-             values (uuidv7(), 'task.updated.v1', $1, '{}'::jsonb)`,
+            `insert into outbox_events (id, event_name, subject, stream, organization_id, payload)
+             values (uuidv7(), 'task.updated.v1', 'evt.task.updated.v1', 'EVENTS', $1, '{}'::jsonb)`,
             [OTHER_ORGANIZATION],
           ),
         ),
@@ -242,8 +264,8 @@ describe('outbox writer on a real PostgreSQL', () => {
       as(ATELIER_NORD, () =>
         tenant.run((tx: TransactionScope) =>
           tx.client.query(
-            `insert into outbox_events (id, event_name, organization_id, payload)
-             values (uuidv7(), 'user.signed-up.v1', null, '{}'::jsonb)`,
+            `insert into outbox_events (id, event_name, subject, stream, organization_id, payload)
+             values (uuidv7(), 'user.signed-up.v1', 'evt.user.signed-up.v1', 'EVENTS', null, '{}'::jsonb)`,
           ),
         ),
       ),
@@ -258,6 +280,8 @@ describe('outbox writer on a real PostgreSQL', () => {
     expect(stored[0]).toMatchObject({
       id: appended.id,
       event_name: 'user.signed-up.v1',
+      subject: 'restricted.user.signed-up.v1',
+      stream: 'EVENTS_RESTRICTED',
       organization_id: null,
       status: 'pending',
     });
@@ -267,8 +291,8 @@ describe('outbox writer on a real PostgreSQL', () => {
     await expect(
       system.run((tx: TransactionScope) =>
         tx.client.query(
-          `insert into outbox_events (id, event_name, organization_id, payload, status)
-           values (uuidv7(), 'task.updated.v1', $1, '{}'::jsonb, 'lost')`,
+          `insert into outbox_events (id, event_name, subject, stream, organization_id, payload, status)
+           values (uuidv7(), 'task.updated.v1', 'evt.task.updated.v1', 'EVENTS', $1, '{}'::jsonb, 'lost')`,
           [ATELIER_NORD],
         ),
       ),

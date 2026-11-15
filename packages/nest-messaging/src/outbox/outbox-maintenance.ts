@@ -1,6 +1,9 @@
 import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/database';
 
-import { OUTBOX_RETENTION_DAYS, PROCESSED_EVENTS_RETENTION_DAYS } from './outbox-options.js';
+import {
+  DEFAULT_OUTBOX_RETENTION_DAYS,
+  DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
+} from './outbox-options.js';
 
 /**
  * Function countOf
@@ -29,7 +32,7 @@ function countOf(result: { rows: unknown[] }): number {
  */
 export async function purgeSentOutboxEvents<TDatabase extends DatabaseSchema>(
   tx: TransactionScope<TDatabase>,
-  olderThanDays: number = OUTBOX_RETENTION_DAYS,
+  olderThanDays: number = DEFAULT_OUTBOX_RETENTION_DAYS,
 ): Promise<number> {
   return countOf(
     await tx.client.query(
@@ -49,12 +52,14 @@ export async function purgeSentOutboxEvents<TDatabase extends DatabaseSchema>(
  *
  * @description
  * Marks as pending again the outbox rows sent since an instant, so the relay publishes them
- * again: the way to restore what a NATS loss dropped, for the seven days sent rows are kept.
- * Consumers that already handled these events skip them through their processed-ids table.
+ * again: the way to restore what a NATS loss dropped, for the seven days sent rows are kept. It
+ * also gives the parked rows (`failed`, after 20 failed attempts) a new series of attempts, once
+ * their cause is fixed. Consumers that already handled these events skip them through their
+ * processed-ids table.
  *
  * @param {TransactionScope<TDatabase>} tx - Scope of a system transaction.
  * @param {Date} since - Rows sent at or after this instant are published again.
- * @returns {Promise<number>} Number of rows marked pending.
+ * @returns {Promise<number>} Number of rows marked pending, parked ones included.
  */
 export async function requeueOutboxEvents<TDatabase extends DatabaseSchema>(
   tx: TransactionScope<TDatabase>,
@@ -64,8 +69,9 @@ export async function requeueOutboxEvents<TDatabase extends DatabaseSchema>(
     await tx.client.query(
       `with requeued as (
          update outbox_events
-            set status = 'pending', sent_at = null
-          where status = 'sent' and sent_at >= $1::timestamptz
+            set status = 'pending', sent_at = null, attempts = 0, next_attempt_at = now(),
+                last_error = null
+          where (status = 'sent' and sent_at >= $1::timestamptz) or status = 'failed'
          returning 1
        )
        select count(*)::int as count from requeued`,
@@ -88,7 +94,7 @@ export async function requeueOutboxEvents<TDatabase extends DatabaseSchema>(
  */
 export async function purgeProcessedEvents<TDatabase extends DatabaseSchema>(
   tx: TransactionScope<TDatabase>,
-  olderThanDays: number = PROCESSED_EVENTS_RETENTION_DAYS,
+  olderThanDays: number = DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
 ): Promise<number> {
   return countOf(
     await tx.client.query(

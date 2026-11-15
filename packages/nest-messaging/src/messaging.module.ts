@@ -1,4 +1,10 @@
-import { Module, type DynamicModule, type FactoryProvider, type Provider } from '@nestjs/common';
+import {
+  Module,
+  type DynamicModule,
+  type FactoryProvider,
+  type ModuleMetadata,
+  type Provider,
+} from '@nestjs/common';
 
 import { MessagingConnection } from './connection/messaging-connection.js';
 import { EventConsumers } from './consumer/event-consumers.js';
@@ -9,6 +15,7 @@ import {
   type MessagingModuleOptions,
   type ResolvedMessagingOptions,
 } from './messaging-options.js';
+import { DEFAULT_MESSAGING_TUNING, MESSAGING_TUNING } from './messaging-tuning.js';
 import { EventPublisher } from './publisher/event-publisher.js';
 import { RebuildEmitter } from './rebuild/rebuild-emitter.js';
 
@@ -22,10 +29,22 @@ import { RebuildEmitter } from './rebuild/rebuild-emitter.js';
 export interface MessagingModuleAsyncOptions {
   // #region Properties
   /**
+   * Property imports
+   *
+   * @description
+   * Modules whose exported providers `useFactory` injects, when they are not global.
+   *
+   * @type {ModuleMetadata['imports']}
+   * @readonly
+   */
+  readonly imports?: ModuleMetadata['imports'];
+
+  /**
    * Property inject
    *
    * @description
-   * Tokens of the providers handed to `useFactory`, in order. They must be visible globally.
+   * Tokens of the providers handed to `useFactory`, in order: global providers, or providers
+   * exported by `imports`.
    *
    * @type {FactoryProvider['inject']}
    * @readonly
@@ -63,6 +82,7 @@ const SHARED_PROVIDERS: Provider[] = [
       MessagingConnection.open(options),
     inject: [MESSAGING_OPTIONS],
   },
+  { provide: MESSAGING_TUNING, useValue: DEFAULT_MESSAGING_TUNING },
   EventPublisher,
   EventConsumers,
   RebuildEmitter,
@@ -73,12 +93,14 @@ const SHARED_PROVIDERS: Provider[] = [
  * Constant SHARED_EXPORTS
  *
  * @description
- * What the module makes injectable in the whole application.
+ * What the module makes injectable in the whole application. The options and the timings are
+ * exported for the outbox module of this package; they are not part of the public API.
  *
  * @type {NonNullable<DynamicModule['exports']>}
  */
 const SHARED_EXPORTS: NonNullable<DynamicModule['exports']> = [
   MESSAGING_OPTIONS,
+  MESSAGING_TUNING,
   MessagingConnection,
   EventPublisher,
   EventConsumers,
@@ -139,6 +161,7 @@ export class MessagingModule {
     return {
       module: MessagingModule,
       global: true,
+      imports: options.imports ?? [],
       providers: [
         {
           provide: MESSAGING_OPTIONS,

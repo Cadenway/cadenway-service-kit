@@ -31,7 +31,7 @@
     "@nats-io/transport-node": "^3.4.0"
   },
   "peerDependencies": {
-    "@cadenway/contracts": "^0.2.0",
+    "@cadenway/contracts": ">=0.2.0 <1.0.0",
     "@cadenway/nest-common": "workspace:^",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
@@ -41,6 +41,9 @@
     "zod": "catalog:"
   },
   "peerDependenciesMeta": {
+    "@cadenway/contracts": {
+      "optional": true
+    },
     "drizzle-orm": {
       "optional": true
     },
@@ -56,6 +59,7 @@
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/context-async-hooks": "^3.1.1",
     "@opentelemetry/core": "^3.1.1",
+    "@opentelemetry/sdk-trace": "^3.1.1",
     "@testcontainers/nats": "^12.2.1",
     "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "catalog:",

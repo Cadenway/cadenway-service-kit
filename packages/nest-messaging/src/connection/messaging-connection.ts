@@ -107,7 +107,8 @@ export function isJetStreamApiError(error: unknown, code: number): boolean {
  * The connection reconnects forever: a NATS restart suspends publishing and consuming, which
  * resume by themselves. Status changes are logged, never a payload. Inject it to build a
  * readiness indicator with `messagingHealthIndicator`; the publisher, the consumers and the
- * rebuild emitter are the normal way to use NATS.
+ * rebuild emitter are the normal way to use NATS. The NATS clients it holds are internal: they
+ * are not part of the published declarations.
  */
 export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
   // #region Properties
@@ -117,6 +118,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * Core NATS connection.
    *
+   * @internal
    * @type {NatsConnection}
    * @readonly
    */
@@ -128,10 +130,34 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * JetStream client bound to the connection.
    *
+   * @internal
    * @type {JetStreamClient}
    * @readonly
    */
   public readonly jetstream: JetStreamClient;
+
+  /**
+   * Property unhealthyConsumers
+   *
+   * @description
+   * Durable consumers of this application that are missing or stopped, with the reason, as the
+   * event consumers report them. Readiness is down while one is listed.
+   *
+   * @type {Map<string, string>}
+   * @readonly
+   */
+  private readonly unhealthyConsumers: Map<string, string> = new Map<string, string>();
+
+  /**
+   * Property shutdownTimeoutMs
+   *
+   * @description
+   * Time the drain of the connection may take on shutdown before it is closed, in milliseconds.
+   *
+   * @type {number}
+   * @readonly
+   */
+  private readonly shutdownTimeoutMs: number;
 
   /**
    * Property logger
@@ -164,11 +190,13 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    *
    * @param {NatsConnection} nats - Open NATS connection.
    * @param {number} publishTimeoutMs - Time a JetStream request may take, in milliseconds.
+   * @param {number} shutdownTimeoutMs - Time the drain may take on shutdown, in milliseconds.
    * @constructor
    */
-  private constructor(nats: NatsConnection, publishTimeoutMs: number) {
+  private constructor(nats: NatsConnection, publishTimeoutMs: number, shutdownTimeoutMs: number) {
     this.nats = nats;
     this.jetstream = jetstream(nats, { timeout: publishTimeoutMs });
+    this.shutdownTimeoutMs = shutdownTimeoutMs;
     void this.logStatus();
   }
   // #endregion
@@ -187,6 +215,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * With a user, replies are received under `_INBOX.<user>`, the only inbox prefix the broker
    * lets that user subscribe to.
    *
+   * @internal
    * @param {ResolvedMessagingOptions} options - Options of the module.
    * @returns {Promise<MessagingConnection>} The open connection.
    * @throws {Error} When the server refuses the credentials, a stream it uses is missing, or a managed stream cannot be created or updated.
@@ -204,7 +233,11 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
       waitOnFirstConnect: true,
       reconnectTimeWait: 2000,
     });
-    const connection: MessagingConnection = new MessagingConnection(nats, options.publishTimeoutMs);
+    const connection: MessagingConnection = new MessagingConnection(
+      nats,
+      options.publishTimeoutMs,
+      options.shutdownTimeoutMs,
+    );
     try {
       await (options.manageStreams
         ? connection.ensureStreams(options)
@@ -223,6 +256,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * Returns the JetStream management client. It does not probe the account, so it needs no
    * permission on `$JS.API.INFO`.
    *
+   * @internal
    * @returns {Promise<JetStreamManager>} The management client.
    */
   public manager(): Promise<JetStreamManager> {
@@ -259,12 +293,48 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
   }
 
   /**
+   * Method reportConsumer
+   *
+   * @description
+   * Records whether a durable consumer of this application works. The event consumers call it.
+   *
+   * @internal
+   * @param {string} consumer - Name of the durable consumer.
+   * @param {string | null} problem - What is wrong with it, or `null` once it works again.
+   * @returns {void}
+   */
+  public reportConsumer(consumer: string, problem: string | null): void {
+    if (problem === null) {
+      this.unhealthyConsumers.delete(consumer);
+    } else {
+      this.unhealthyConsumers.set(consumer, problem);
+    }
+  }
+
+  /**
+   * Method consumerProblem
+   *
+   * @description
+   * Describes the first durable consumer that does not work, for readiness.
+   *
+   * @internal
+   * @returns {string | undefined} `<consumer>: <problem>`, or `undefined` when every consumer works.
+   */
+  public consumerProblem(): string | undefined {
+    for (const [consumer, problem] of this.unhealthyConsumers) {
+      return `${consumer}: ${problem}`;
+    }
+    return undefined;
+  }
+
+  /**
    * Method onApplicationShutdown
    *
    * @description
    * Drains the connection: what is buffered is sent, then the connection closes. Consumers,
    * the dead-letter worker and the outbox relay have stopped before, in the earlier shutdown
-   * phase.
+   * phase. A drain that does not finish within `shutdownTimeoutMs`, as when the server is gone,
+   * gives way to a plain close.
    *
    * @returns {Promise<void>} Resolves once the connection is closed.
    */
@@ -272,10 +342,31 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     if (this.nats.isClosed()) {
       return;
     }
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut: Promise<'timeout'> = new Promise<'timeout'>(
+      (resolve: (value: 'timeout') => void) => {
+        timer = setTimeout(() => {
+          resolve('timeout');
+        }, this.shutdownTimeoutMs);
+      },
+    );
     try {
-      await this.nats.drain();
+      const outcome: 'drained' | 'timeout' = await Promise.race([
+        this.nats.drain().then((): 'drained' => 'drained'),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          { timeoutMs: this.shutdownTimeoutMs },
+          'draining the NATS connection timed out: closing it',
+        );
+      }
     } catch (error) {
       this.logger.warn({ err: error }, 'draining the NATS connection failed');
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!this.nats.isClosed()) {
       await this.nats.close();
     }
   }
@@ -437,16 +528,27 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
  *
  * @description
  * Builds the readiness indicator of NATS for `HealthModule` of `@cadenway/nest-common`: the
- * connection is not closed and a flush makes the round trip. While the connection is
+ * connection is not closed, every durable consumer of the application works (none missing,
+ * being recovered or stopped), and a flush makes the round trip. While the connection is
  * reconnecting the flush does not answer, so readiness reports NATS down after its timeout.
  *
  * @param {MessagingConnection} connection - Connection of the application, injected.
- * @param {string} name - Key in the readiness body; defaults to `nats`.
+ * @param {string} name - Key of the dependency in the readiness body; defaults to `nats`.
  * @returns {HealthIndicator} The indicator.
  */
 export function messagingHealthIndicator(
   connection: MessagingConnection,
   name: string = 'nats',
 ): HealthIndicator {
-  return natsIndicator(connection, name);
+  const nats: HealthIndicator = natsIndicator(connection, name);
+  return {
+    name,
+    check: async (): Promise<void> => {
+      const problem: string | undefined = connection.consumerProblem();
+      if (problem !== undefined) {
+        throw new Error(`A durable consumer does not work (${problem}).`);
+      }
+      await nats.check();
+    },
+  };
 }

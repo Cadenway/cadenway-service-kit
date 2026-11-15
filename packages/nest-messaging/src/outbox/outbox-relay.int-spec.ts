@@ -1,4 +1,5 @@
 import {
+  DatabaseModule,
   SystemTransactionRunner,
   TenantTransactionRunner,
   type DatabaseSchema,
@@ -13,16 +14,20 @@ import {
   type StreamInfo,
 } from '@nats-io/jetstream';
 import type { NatsConnection } from '@nats-io/transport-node';
+import { Module } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
 import { context, ROOT_CONTEXT, trace, TraceFlags } from '@opentelemetry/api';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { EventConsumers } from '../consumer/event-consumers.js';
+import { MessagingModule } from '../messaging.module.js';
 import { EVENT_NAME_HEADER, TRACEPARENT_HEADER } from '../publisher/event-headers.js';
 import {
   disableTracePropagation,
   enableTracePropagation,
   isolatedNames,
+  messagingOptions,
+  startApplication,
 } from '../testing/application.js';
 import { ATELIER_NORD, eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
@@ -36,6 +41,61 @@ import {
 } from './outbox-maintenance.js';
 import { OutboxRelay, type RelayPass } from './outbox-relay.js';
 import { OutboxWriter, type AppendedEvent } from './outbox-writer.js';
+import { OutboxModule } from './outbox.module.js';
+
+/**
+ * Constant SETTINGS
+ *
+ * @description
+ * Injection token of the settings of the spec, provided by a module that is not global.
+ *
+ * @type {symbol}
+ */
+const SETTINGS: unique symbol = Symbol('settings');
+
+/**
+ * Interface Settings
+ *
+ * @description
+ * Settings the asynchronous options are built from.
+ */
+interface Settings {
+  // #region Properties
+  /**
+   * Property service
+   *
+   * @description
+   * Name of the service.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly service: string;
+
+  /**
+   * Property relay
+   *
+   * @description
+   * Whether the relay runs.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  readonly relay: boolean;
+  // #endregion
+}
+
+/**
+ * Class SettingsModule
+ *
+ * @description
+ * Non-global module providing the settings, as a configuration module of an application would.
+ */
+@Module({
+  providers: [{ provide: SETTINGS, useValue: { service: 'task-service', relay: false } }],
+  exports: [SETTINGS],
+})
+class SettingsModule {}
 
 /**
  * Interface OutboxRow
@@ -224,8 +284,41 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
       taskId: 'CAD-COMMIT',
     });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: committed.id, status: 'sent', attempts: 1 });
+    expect(rows[0]).toMatchObject({ id: committed.id, status: 'sent', attempts: 0 });
     expect(rows[0]?.sent_at).toBeInstanceOf(Date);
+  });
+
+  it('keeps a restricted event restricted during a rolling deploy: the relay publishes the route the writer stored', async () => {
+    const names: ReturnType<typeof isolatedNames> = isolatedNames('rolling');
+    // The new replica knows the event is restricted; the old one, which relays, does not.
+    const writer: TestingModule = await startService(
+      database,
+      nats,
+      { ...names, restrictedEvents: ['task.updated.v1'] },
+      { relay: false },
+    );
+    const relay: TestingModule = await startService(database, nats, names, { relay: false });
+
+    const appended: AppendedEvent = await appendTaskUpdated(writer);
+    const row: { rows: unknown[] } = await database.admin.query(
+      'select subject, stream from outbox_events where id = $1',
+      [appended.id],
+    );
+    const pass: RelayPass = await relay.get(OutboxRelay).publishPending();
+    const restricted: StoredMsg | null = await manager.streams.getMessage(
+      'EVENTS_RESTRICTED_rolling',
+      { last_by_subj: 'restricted-rolling.task.updated.v1' },
+    );
+    await writer.close();
+    await relay.close();
+
+    expect(row.rows[0]).toEqual({
+      subject: 'restricted-rolling.task.updated.v1',
+      stream: 'EVENTS_RESTRICTED_rolling',
+    });
+    expect(pass).toEqual({ published: 1, failed: 0, interrupted: false });
+    expect(restricted?.json<TaskUpdatedV1>().id).toBe(appended.id);
+    expect(await stored('EVENTS_rolling')).toBe(0);
   });
 
   it('publishes again after a crash between the publish and the commit, and the consumer handles the event once', async () => {
@@ -285,7 +378,7 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
     expect(afterCrash).toMatchObject([{ id: appended.id, status: 'pending', attempts: 0 }]);
     expect(publishedOnce).toBe(1);
     expect(second).toEqual({ published: 1, failed: 0, interrupted: false });
-    expect(afterRetry).toMatchObject([{ id: appended.id, status: 'sent', attempts: 1 }]);
+    expect(afterRetry).toMatchObject([{ id: appended.id, status: 'sent', attempts: 0 }]);
     expect(publishedTwice).toBe(1);
     expect(await stored('EVENTS_crash')).toBe(2);
     expect(received).toEqual([appended.id]);
@@ -314,24 +407,73 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
 
     const first: RelayPass = await relay.publishPending();
     const afterFirst: OutboxRow[] = await outbox();
+    const delayed: { rows: unknown[] } = await database.admin.query(
+      `select extract(epoch from next_attempt_at - now()) as wait from outbox_events where id = $1`,
+      [large.id],
+    );
     const fresh: AppendedEvent = await appendTaskUpdated(application, { taskId: 'CAD-FRESH' });
     const second: RelayPass = await relay.publishPending();
     const afterSecond: OutboxRow[] = await outbox();
+    await delay(1100);
+    const third: RelayPass = await relay.publishPending();
+    const backoff: { rows: unknown[] } = await database.admin.query(
+      `select attempts, extract(epoch from next_attempt_at - now()) as wait
+         from outbox_events where id = $1`,
+      [large.id],
+    );
     await application.close();
 
     expect(first).toEqual({ published: 1, failed: 1, interrupted: false });
     expect(afterFirst).toMatchObject([
       { id: large.id, status: 'pending', attempts: 1, sent_at: null },
-      { id: small.id, status: 'sent', attempts: 1, last_error: null },
+      { id: small.id, status: 'sent', attempts: 0, last_error: null },
     ]);
     expect(afterFirst[0]?.last_error).toMatch(/^[A-Za-z]+Error$/u);
-    expect(second).toEqual({ published: 1, failed: 1, interrupted: false });
+    // The row that keeps failing waits 1 s, then 2 s: it is not tried at every pass.
+    expect(Number((delayed.rows[0] as { wait: string }).wait)).toBeGreaterThan(0.5);
+    expect(second).toEqual({ published: 1, failed: 0, interrupted: false });
     expect(afterSecond).toMatchObject([
-      { id: large.id, status: 'pending', attempts: 2 },
+      { id: large.id, status: 'pending', attempts: 1 },
       { id: small.id, status: 'sent' },
-      { id: fresh.id, status: 'sent', attempts: 1 },
+      { id: fresh.id, status: 'sent', attempts: 0 },
     ]);
+    expect(third).toEqual({ published: 0, failed: 1, interrupted: false });
+    expect(backoff.rows[0]).toMatchObject({ attempts: 2 });
+    expect(Number((backoff.rows[0] as { wait: string }).wait)).toBeGreaterThan(1.5);
     expect(await stored('EVENTS_refused')).toBe(2);
+  });
+
+  it('parks a row after 20 failed attempts, until requeueOutboxEvents gives it a new series', async () => {
+    const application: TestingModule = await startService(database, nats, isolatedNames('parked'), {
+      relay: false,
+    });
+    const relay: OutboxRelay = application.get(OutboxRelay);
+    const system: SystemTransactionRunner = application.get(SystemTransactionRunner);
+    await manager.streams.update('EVENTS_parked', { max_msg_size: 2048 });
+    const large: AppendedEvent = await appendTaskUpdated(application, {
+      changed: Array.from(
+        { length: 400 },
+        (_value: unknown, index: number) => `field-${String(index)}`,
+      ),
+    });
+    await database.admin.query('update outbox_events set attempts = 19 where id = $1', [large.id]);
+
+    const last: RelayPass = await relay.publishPending();
+    const parked: OutboxRow[] = await outbox();
+    const skipped: RelayPass = await relay.publishPending();
+    const requeued: number = await system.run((tx: TransactionScope) =>
+      requeueOutboxEvents(tx, new Date()),
+    );
+    const afterRequeue: OutboxRow[] = await outbox();
+    await application.close();
+
+    expect(last).toEqual({ published: 0, failed: 1, interrupted: false });
+    expect(parked).toMatchObject([{ id: large.id, status: 'failed', attempts: 20 }]);
+    expect(skipped).toEqual({ published: 0, failed: 0, interrupted: false });
+    expect(requeued).toBe(1);
+    expect(afterRequeue).toMatchObject([
+      { id: large.id, status: 'pending', attempts: 0, last_error: null },
+    ]);
   });
 
   it('stops its pass when the stream cannot be reached, then publishes everything once it is back', async () => {
@@ -351,13 +493,14 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
     const back: RelayPass = await relay.publishPending();
     await application.close();
 
-    expect(down).toEqual({ published: 0, failed: 1, interrupted: true });
+    // A failure that concerns every row stops the pass and does not count against the row.
+    expect(down).toEqual({ published: 0, failed: 0, interrupted: true });
     expect(whileDown.map((row: OutboxRow) => row.status)).toEqual([
       'pending',
       'pending',
       'pending',
     ]);
-    expect(whileDown.map((row: OutboxRow) => row.attempts)).toEqual([1, 0, 0]);
+    expect(whileDown.map((row: OutboxRow) => row.attempts)).toEqual([0, 0, 0]);
     expect(whileDown[0]?.last_error).toBe('EventStreamUnavailableError');
     expect(back).toEqual({ published: 3, failed: 0, interrupted: false });
     expect(await allSent(3)).toBe(true);
@@ -369,12 +512,13 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
     await manager.streams.delete('EVENTS_away');
     await appendTaskUpdated(application);
 
-    await waitFor(async () => ((await outbox())[0]?.attempts ?? 0) >= 2);
+    await waitFor(async () => (await outbox())[0]?.last_error === 'EventStreamUnavailableError');
     await manager.streams.add({ name: 'EVENTS_away', subjects: ['evt-away.>'] });
     await waitFor(() => allSent(1));
     await application.close();
 
     expect(await stored('EVENTS_away')).toBe(1);
+    expect((await outbox())[0]?.attempts).toBe(0);
   });
 
   it('lets two relays share the outbox without publishing a row twice', async () => {
@@ -395,8 +539,35 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
     await first.close();
     await second.close();
 
-    expect(rows.every((row: OutboxRow) => row.attempts === 1)).toBe(true);
+    expect(rows.every((row: OutboxRow) => row.attempts === 0)).toBe(true);
     expect(await stored('EVENTS_shared')).toBe(40);
+  });
+
+  it('is configured asynchronously from a module that is not global', async () => {
+    const application: TestingModule = await startApplication([
+      DatabaseModule.forRoot({ connectionString: database.appUrl, poolSize: 2 }),
+      MessagingModule.forRootAsync({
+        imports: [SettingsModule],
+        inject: [SETTINGS],
+        useFactory: (settings: Settings) =>
+          messagingOptions(nats, { ...isolatedNames('async'), service: settings.service }),
+      }),
+      OutboxModule.forRootAsync({
+        imports: [SettingsModule],
+        inject: [SETTINGS],
+        useFactory: (settings: Settings) => ({ relay: settings.relay, pollIntervalMs: 50 }),
+      }),
+    ]);
+
+    await appendTaskUpdated(application);
+    await delay(400);
+    const pending: OutboxRow[] = await outbox();
+    const pass: RelayPass = await application.get(OutboxRelay).publishPending();
+    await application.close();
+
+    expect(pending).toMatchObject([{ status: 'pending' }]);
+    expect(pass).toEqual({ published: 1, failed: 0, interrupted: false });
+    expect(await stored('EVENTS_async')).toBe(1);
   });
 
   it('publishes at once when woken instead of waiting for the poll interval', async () => {
@@ -471,9 +642,9 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
 
   it('purges by itself while the relay runs', async () => {
     await database.admin.query(
-      `insert into outbox_events (id, event_name, organization_id, payload, status, sent_at)
-       values (uuidv7(), 'task.updated.v1', $1, '{}'::jsonb, 'sent', now() - interval '8 days'),
-              (uuidv7(), 'task.updated.v1', $1, '{}'::jsonb, 'sent', now() - interval '6 days')`,
+      `insert into outbox_events (id, event_name, subject, stream, organization_id, payload, status, sent_at)
+       values (uuidv7(), 'task.updated.v1', 'evt.task.updated.v1', 'EVENTS', $1, '{}'::jsonb, 'sent', now() - interval '8 days'),
+              (uuidv7(), 'task.updated.v1', 'evt.task.updated.v1', 'EVENTS', $1, '{}'::jsonb, 'sent', now() - interval '6 days')`,
       [ATELIER_NORD],
     );
     const application: TestingModule = await startService(

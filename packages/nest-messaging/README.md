@@ -6,9 +6,10 @@ the dead-letter worker, the rebuild channel and the readiness indicator (main en
 outbox table, its writer and relay, and the PostgreSQL deduplicator with version tracking
 (`/outbox` entry point).
 
-`@cadenway/contracts`, `@cadenway/nest-common`, `@nestjs/common`, `@nestjs/core`,
-`@opentelemetry/api` and `zod` are peer dependencies: the application provides them. `drizzle-orm`
-and `pg` are optional peers, needed only by the `/outbox` entry point.
+`@cadenway/nest-common`, `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api` and `zod` are
+peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers,
+needed only by the `/outbox` entry point. `@cadenway/contracts` (`>=0.2.0 <1.0.0`) is an optional
+peer: the kit imports nothing from it, the service passes the schemas it imports.
 
 | Entry point                       | Holds                                                                                               | Needs a database |
 | --------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------- |
@@ -73,42 +74,56 @@ MessagingModule.forRootAsync({
 });
 ```
 
+`forRootAsync` also takes `imports`, for a factory that injects providers of a module that is not
+global.
+
 The module is global. The application waits for its first NATS connection while it starts, then
 reconnects forever: a NATS restart suspends publishing and consuming, which resume by themselves.
 With a user, the client receives its replies under `_INBOX.<user>`, the only inbox prefix the
 broker lets that user subscribe to. Disconnections and reconnections are logged through the
 NestJS `Logger`, never a payload. On shutdown (enable the shutdown hooks, as `createApplication`
 of `@cadenway/nest-common` does) the consumers stop pulling and their running handlers finish
-first, then the connection is drained.
+first, then the connection is drained; a drain that does not finish within `shutdownTimeoutMs`,
+as when the server is gone, gives way to a plain close.
 
-| Option                    | Default                | Effect                                                                                                                                                                                        |
-| ------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `service`                 | Required               | Name of the service: connection name, prefix of its durable consumers (`<service>__<handler>`). Letters, digits, `-` and `_` only                                                             |
-| `servers`                 | Required               | `NATS_URL`: one URL, several separated by commas, or a list                                                                                                                                   |
-| `user`, `password`        | None                   | Credentials of the NATS user of the service; the user also sets the inbox prefix                                                                                                              |
-| `connectionName`          | `service`              | Name in the server monitoring                                                                                                                                                                 |
-| `manageStreams`           | `false`                | Creates or updates the three streams at start-up, for local tests. Off because cadenway-ops owns the streams and no service user may create them; the module then checks the streams it uses  |
-| `manageConsumers`         | `true`                 | `subscribe` creates the durable consumer of a handler, or aligns its `AckWait` and delivery limit. With `false` it binds to a consumer created elsewhere and fails clearly when it is missing |
-| `deadLetterWorker`        | `false`                | Runs the [dead-letter worker](#dead-letters). notification-service alone turns it on                                                                                                          |
-| `restrictedEvents`        | None                   | Names of the [restricted events](#restricted-events), published and consumed in the restricted stream. Only identity-service and notification-service list any                                |
-| `eventsStream`            | `EVENTS`               | Stream of the events                                                                                                                                                                          |
-| `restrictedStream`        | `EVENTS_RESTRICTED`    | Stream of the restricted events                                                                                                                                                               |
-| `deadLetterStream`        | `EVENTS_DLQ`           | Stream of the dead letters                                                                                                                                                                    |
-| `eventSubjectPrefix`      | `evt`                  | First token of an event subject                                                                                                                                                               |
-| `restrictedSubjectPrefix` | `restricted`           | First token of a restricted event subject                                                                                                                                                     |
-| `deadLetterSubjectPrefix` | `dlq`                  | First token of a dead-letter subject                                                                                                                                                          |
-| `rebuildSubjectPrefix`    | `rebuild`              | First token of a rebuild subject                                                                                                                                                              |
-| `rebuildName`             | `user`, else `service` | Name this application receives rebuilds under: `rebuild.<rebuildName>.<entity>`                                                                                                               |
-| `rebuildAcknowledgement`  | `none`                 | How `RebuildEmitter.emit` sends an item: `none` publishes, `reply` waits for the consumer (see [Rebuild](#rebuild))                                                                           |
-| `rebuildFlushEvery`       | 100                    | Items published between two flushes in the `none` mode                                                                                                                                        |
-| `rebuildTimeoutMs`        | 30 000                 | Time `emit` waits for the consumer in the `reply` mode                                                                                                                                        |
-| `eventsMaxBytes`          | 1 GiB                  | Byte cap of `EVENTS`, with `manageStreams`                                                                                                                                                    |
-| `restrictedMaxBytes`      | 64 MiB                 | Byte cap of `EVENTS_RESTRICTED`, with `manageStreams`                                                                                                                                         |
-| `deadLetterMaxBytes`      | 256 MiB                | Byte cap of `EVENTS_DLQ`, with `manageStreams`                                                                                                                                                |
-| `deadLetterMaxAgeDays`    | 30                     | Retention of `EVENTS_DLQ`, with `manageStreams`                                                                                                                                               |
-| `publishTimeoutMs`        | 5000                   | Time a publish, or another JetStream request, waits for its answer                                                                                                                            |
-| `shutdownTimeoutMs`       | 10 000                 | Time a shutdown waits for running handlers; an abandoned one sees its message redelivered                                                                                                     |
-| `retryDelaysMs`           | 1 s, 5 s, 30 s, 2 min  | Delays before each redelivery after a handler failure; their count plus one is the delivery limit. The platform relies on the default: the option exists for tests                            |
+**`service` names every durable consumer.** Changing it renames them all: the new consumers
+start from scratch, the processed ids and versions recorded under the old names no longer apply,
+and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
+
+| Option                        | Default                | Effect                                                                                                                                                                                        |
+| ----------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service`                     | Required               | Name of the service: connection name, prefix of its durable consumers (`<service>__<handler>`). Letters, digits, `-` and `_` only                                                             |
+| `servers`                     | Required               | `NATS_URL`: one URL, several separated by commas, or a list                                                                                                                                   |
+| `user`, `password`            | None                   | Credentials of the NATS user of the service; the user also sets the inbox prefix                                                                                                              |
+| `connectionName`              | `service`              | Name in the server monitoring                                                                                                                                                                 |
+| `manageStreams`               | `false`                | Creates or updates the three streams at start-up, for local tests. Off because cadenway-ops owns the streams and no service user may create them; the module then checks the streams it uses  |
+| `manageConsumers`             | `true`                 | `subscribe` creates the durable consumer of a handler, or aligns its `AckWait` and delivery limit. With `false` it binds to a consumer created elsewhere and fails clearly when it is missing |
+| `deadLetterWorker`            | `false`                | Runs the [dead-letter worker](#dead-letters). notification-service alone turns it on                                                                                                          |
+| `restrictedEvents`            | None                   | Names of the [restricted events](#restricted-events), published and consumed in the restricted stream. Only identity-service and notification-service list any                                |
+| `eventsStream`                | `EVENTS`               | Stream of the events                                                                                                                                                                          |
+| `restrictedStream`            | `EVENTS_RESTRICTED`    | Stream of the restricted events                                                                                                                                                               |
+| `deadLetterStream`            | `EVENTS_DLQ`           | Stream of the dead letters                                                                                                                                                                    |
+| `restrictedDeadLetterPayload` | `drop`                 | Body of the dead-letter copy of a restricted event: `drop` keeps the headers only, as the body may hold a single-use code; `copy` keeps it                                                    |
+| `eventSubjectPrefix`          | `evt`                  | First token of an event subject. The four prefixes are single tokens and pairwise distinct                                                                                                    |
+| `restrictedSubjectPrefix`     | `restricted`           | First token of a restricted event subject                                                                                                                                                     |
+| `deadLetterSubjectPrefix`     | `dlq`                  | First token of a dead-letter subject                                                                                                                                                          |
+| `rebuildSubjectPrefix`        | `rebuild`              | First token of a rebuild subject                                                                                                                                                              |
+| `rebuildName`                 | `user`, else `service` | Name this application receives rebuilds under: `rebuild.<rebuildName>.<entity>`                                                                                                               |
+| `rebuildAcknowledgement`      | `none`                 | How `RebuildEmitter.emit` sends an item: `none` publishes, `reply` waits for the consumer (see [Rebuild](#rebuild))                                                                           |
+| `rebuildFlushEvery`           | 100                    | Items published between two flushes in the `none` mode                                                                                                                                        |
+| `rebuildMaxPending`           | 1000                   | Items that may wait at the consumer of one entity; past it the oldest waiting ones are dropped with an error log                                                                              |
+| `rebuildTimeoutMs`            | 30 000                 | Time `emit` waits for the consumer in the `reply` mode, and a flush waits for the server in the `none` mode                                                                                   |
+| `handlerTimeoutMs`            | 25 000                 | Time a handler may take, below the 30 s `AckWait`. Past it the attempt is abandoned and retried (see [Consuming](#consuming))                                                                 |
+| `eventsMaxBytes`              | 1 GiB                  | Byte cap of `EVENTS`, with `manageStreams`                                                                                                                                                    |
+| `restrictedMaxBytes`          | 64 MiB                 | Byte cap of `EVENTS_RESTRICTED`, with `manageStreams`                                                                                                                                         |
+| `deadLetterMaxBytes`          | 256 MiB                | Byte cap of `EVENTS_DLQ`, with `manageStreams`                                                                                                                                                |
+| `deadLetterMaxAgeDays`        | 30                     | Retention of `EVENTS_DLQ`, with `manageStreams`                                                                                                                                               |
+| `publishTimeoutMs`            | 5000                   | Time a publish, or another JetStream request, waits for its answer                                                                                                                            |
+| `shutdownTimeoutMs`           | 10 000                 | Time a shutdown waits for running handlers, then for the drain of the connection; an abandoned handler sees its message redelivered                                                           |
+
+The retry delays (1 s, 5 s, 30 s, 2 min, so five deliveries) are not an option: every durable
+consumer of the platform gets the same `max_deliver`. The specs of the package shorten them
+through an internal provider.
 
 Streams, as cadenway-ops creates them and as `manageStreams` creates them locally (file storage,
 oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes):
@@ -125,8 +140,10 @@ when it lists restricted events or runs the dead-letter worker, `EVENTS_DLQ` whe
 worker. A stream lost later makes a publish reject with `EventStreamUnavailableError` and
 `subscribe` reject with an error naming the stream.
 
-Readiness: `messagingHealthIndicator(connection)` returns a `HealthIndicator` of
-`@cadenway/nest-common` (the connection is open and a flush makes the round trip):
+Readiness: `messagingHealthIndicator(connection, name = 'nats')` returns a `HealthIndicator` of
+`@cadenway/nest-common`, reported under `name` in the readiness body. It is up while the
+connection is open, every durable consumer of the application works (none missing, being
+recovered or stopped), and a flush makes the round trip:
 
 ```ts
 HealthModule.forRootAsync({
@@ -137,12 +154,17 @@ HealthModule.forRootAsync({
 });
 ```
 
+`MessagingConnection` exposes `isClosed()` and `flush()` only: the NATS clients it holds are
+internal and absent from the published declarations.
+
 ## Publishing
 
 Subjects are derived from the event name and never typed: `task.status-changed.v1` is published
 on `evt.task.status-changed.v1`. Every message carries `Nats-Msg-Id` (the event id),
 `Cadenway-Event-Name`, `Cadenway-Organization-Id` (absent when the organization is `null`) and,
-inside a trace, `traceparent` (W3C, from the active OpenTelemetry context).
+inside a trace, `traceparent` (W3C, from the active OpenTelemetry context). Every publish names
+the stream that must store it (`Nats-Expected-Stream`): a subject captured by another stream is
+refused instead of stored elsewhere.
 
 ### With an outbox: a service that changes its own data
 
@@ -175,21 +197,23 @@ row-level security policy of the table refuses it in a tenant one, and `append` 
 `EventPublisher.publish(schemas, name, data)` completes the payload with an id (a UUID version 7
 generated in process) and the current instant, validates it, publishes it and resolves with the
 JetStream acknowledgement (`{ id, stream, streamSequence, duplicate }`). An invalid payload throws
-`EventValidationError` before anything is sent. The event is lost if the process dies before the
+`EventValidationError` before anything is sent. A publish that times out or finds no stream is
+tried three times with the same `Nats-Msg-Id`. The event is lost if the process dies before the
 acknowledgement: use it only where there is no database.
 
-`EventPublisher.publishEnvelope({ name, payload, traceparent })` publishes an already complete
-and validated payload with a stored trace context; the relay uses it.
+`EventPublisher.publishEnvelope({ name, subject, stream, payload, traceparent })` publishes an
+already complete and validated payload on the route it carries, once; the relay uses it. To
+retry it, call it again with the same event: the id is kept and the server keeps one copy.
 
 ## Restricted events
 
 The identity events that carry a single-use code or link must reach notification-service only.
 They live outside `evt.>`: an event listed in `restrictedEvents` is published on
 `restricted.<name>`, stored in `EVENTS_RESTRICTED`, and its handlers consume from that stream with
-that filter. The subject is derived from the option when the event is published, by
-`EventPublisher` and by the outbox relay alike: the outbox row stores only the event name, so
-identity-service and notification-service must list the same names. `eventRoute(options, name)`
-returns the subject and the stream of an event.
+that filter. `EventPublisher.publish` routes with its own options. `OutboxWriter.append` routes
+when the use case writes the event and stores the subject and the stream in the outbox row; the
+relay publishes that route as it is. During a rolling deploy, a replica that does not list the
+event yet cannot move it to `evt.>`.
 
 ## Consuming
 
@@ -222,6 +246,17 @@ await this.consumers.subscribe({
 | Start            | `deliverPolicy` of the registration: `all` (default, what the stream still holds) or `new`; only on creation                          |
 | Concurrency      | One message at a time per handler and per replica                                                                                     |
 | Changes          | Never deleted nor listed by the kit. When the server refuses an update, `subscribe` fails naming the consumer; an operator removes it |
+| Loss             | A consumer deleted on the server, or lost with its stream, is reported down to readiness and recovered: see below                     |
+
+**A consumer that disappears.** The client reports it (`consumer_deleted`, `consumer_not_found`, `no_responders`,
+`stream_not_found`); the kit closes the pull loop, reports the consumer to readiness and recovers
+it, trying again after 0 s, 1 s, 2 s, 5 s, 10 s then every 30 s. With `manageConsumers` it creates
+the consumer again: with `deliverPolicy: 'all'` from the start of the stream (up to seven days
+delivered again, the deduplicator skipping what was handled), with `new` from the stream time of
+the oldest message this process has not answered for good (the last one it handled, or the
+registration when it handled none, and any message waiting for a redelivery) minus one minute,
+so no event published during the gap is skipped. Without `manageConsumers` it waits for the
+platform to create the consumer again.
 
 On each delivery the payload is parsed and validated with the schema of the event. A message that
 is not JSON or does not match can never succeed: it is terminated (`term`), so it is not
@@ -229,23 +264,37 @@ redelivered, becomes a dead letter at once and is logged as an error with the ev
 consumer and the stream sequence, never the payload. A valid message runs the handler inside the
 organization context of the envelope (`runWithOrganizationContext` with its `organizationId` and
 `actor`, role `null`, no scopes) and inside an OpenTelemetry consumer span whose parent is the
-`traceparent` of the message.
+`traceparent` of the message. A failed attempt sets the span status to error with the class of
+the error only (`error.type`), never its message, which may quote a payload.
+
+**Actor kinds.** The envelope types `actor.type` as a string, so a minor of `@cadenway/contracts`
+that adds a kind of actor does not break the compilation of a service. The organization context
+knows `user`, `automation`, `git` and `system`; an event with another kind runs its handler as
+`{ type: 'system', id: null }`, with one warning per consumer and kind. Upgrade the kit when the
+contracts add an actor kind.
 
 The handler receives the typed payload and `{ deliveryCount, streamSequence, redelivered,
-claimVersion }`. Resolving acknowledges the message. Rejecting asks for a redelivery after 1 s,
-5 s, 30 s then 2 min (`nak(delay)`), logged as a warning; the fifth failure is logged as an error
-and makes the message a dead letter.
+claimVersion, signal }`. Resolving acknowledges the message. Rejecting asks for a redelivery after
+1 s, 5 s, 30 s then 2 min (`nak(delay)`), logged as a warning; the fifth failure is logged as an
+error and makes the message a dead letter. A handler still running after `handlerTimeoutMs`
+(25 s) is abandoned: `signal` is aborted (pass it to the calls the handler makes), the attempt
+counts as failed and the next message is handled. An answer that cannot be sent because the
+connection closed is logged at debug level; the server redelivers the message.
 
 **Deduplication.** Without a deduplicator, the handler runs for every delivery, duplicates
 included, and `claimVersion` always resolves to `true`: fine for the realtime gateway, which only
-relays. Importing `OutboxModule` registers the PostgreSQL deduplicator (`EVENT_DEDUPLICATOR`):
-each delivery then runs in one transaction (tenant runner for the organization of the event,
-system runner for an event without one) that records `(consumer, event id)` in
-`processed_events`, skips the handler when the id is already there, and otherwise runs the
-handler in the same transaction: a `run` of the same runner inside the handler joins it. The
-message is acknowledged after the commit; a handler failure rolls the processed id back too.
-`claimVersion(aggregateKey)` raises the version stored in `event_versions` only when the event is
-newer and resolves to whether to apply it: a late redelivery of an older version changes nothing.
+relays. Importing `OutboxModule` registers the PostgreSQL deduplicator: each delivery then runs in
+one transaction (tenant runner for the organization of the event, system runner for an event
+without one) that records `(consumer, event id)` in `processed_events`, skips the handler when
+the id is already there, and otherwise runs the handler in the same transaction: a `run` of the
+same runner inside the handler joins it. The message is acknowledged after the commit; a handler
+failure, or its deadline, rolls the processed id back too. No statement of that transaction may
+run longer than `handlerTimeoutMs`, and the claim of the processed id waits at most five seconds
+(`lock_timeout`) for another delivery of the same event: past it the delivery fails and is retried
+after the next delay, when it finds the id and skips the handler.
+`claimVersion(aggregateKey)` raises the version stored in `event_versions` for the organization of
+the event only when the event is newer, and resolves to whether to apply it: a late redelivery of
+an older version changes nothing, and two organizations never compete for the same key.
 
 `subscribe` and `onRebuild` reject once the application is shutting down.
 
@@ -277,10 +326,18 @@ its original headers plus:
 | `Cadenway-Dead-Letter-Reason`          | `max-deliveries` or `terminated`       |
 | `Cadenway-Dead-Letter-Stream-Sequence` | Sequence of the original in its stream |
 | `Cadenway-Dead-Letter-Deliveries`      | Delivery count                         |
+| `Cadenway-Dead-Letter-Payload`         | `dropped` when the body was not copied |
 
-Its `Nats-Msg-Id` is `<stream>.<consumer>.<sequence>`, so a repeated advisory stores it once.
-Each dead letter is logged as an error, without the payload. No backend consumes `EVENTS_DLQ`;
-operators read it.
+The copy of a restricted event keeps its headers and has an empty body, because the body may
+hold a single-use code that would otherwise sit 30 days in `EVENTS_DLQ`; set
+`restrictedDeadLetterPayload: 'copy'` to keep it. Its `Nats-Msg-Id` is
+`<stream>.<consumer>.<sequence>`, so a repeated advisory stores it once, and the publish requires
+`EVENTS_DLQ` to store it. A copy that fails (the dead-letter stream briefly missing, a timeout) is
+tried five times over about two minutes, then logged as an error naming the consumer, the stream
+and the sequence. Each dead letter is logged as an error, without the payload; a termination
+reason other than the kit's own is cut to 64 printable characters. No backend consumes
+`EVENTS_DLQ`; operators read it. On shutdown the advisory subscriptions are drained, so the
+advisories already received are copied.
 
 **Who runs it:** the worker is off by default (`deadLetterWorker: false`) and runs in
 notification-service only: reading a message by sequence includes the restricted ones, which no
@@ -303,21 +360,24 @@ await this.consumers.onRebuild({
 });
 
 // In task-service: re-emit every task for search-service.
+const target = { consumer: 'search', entity: 'task', schema: taskItemSchema };
 for await (const task of this.tasks.all()) {
-  await this.rebuild.emit('search', 'task', taskItemSchema, task);
+  await this.rebuild.emit(target, task);
 }
 await this.rebuild.flush();
 ```
 
 Both sides validate the item with the schema the caller passes: an invalid item is not sent
 (`RebuildItemError`), and the consumer refuses one that does not match its own schema. Replicas
-of the consumer share the items through a queue group, and its handler runs outside any
-organization context. Two acknowledgement modes (`rebuildAcknowledgement`):
+of the consumer share the items through a queue group, and its handler always runs in a context
+without organization, whatever the context `onRebuild` was called in. When more than
+`rebuildMaxPending` items (1000) wait at the consumer, the oldest waiting ones are dropped with
+an error log. Two acknowledgement modes (`rebuildAcknowledgement`):
 
-| Mode             | Behavior                                                                                                                                                                                                                                                                                                                                       |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `none` (default) | `emit` publishes the item and flushes every `rebuildFlushEvery` items, which paces the emitter on the server but not on the consumer. **Lossy**: an item sent while no consumer listens, refused, or more than the consumer can buffer is lost. The only mode the permissions of cadenway-ops allow                                            |
-| `reply`          | `emit` sends a request and resolves once the consumer applied the item: exact back-pressure when each call is awaited. A refused item rejects with `RebuildRejectedError` (`invalid-item`, `handler-failed`), a missing consumer with `RebuildConsumerUnavailableError`, a slow one with a timeout. The consuming user needs `allow_responses` |
+| Mode             | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `none` (default) | `emit` publishes the item and flushes every `rebuildFlushEvery` items, which paces the emitter on the server but not on the consumer: a flush not confirmed within `rebuildTimeoutMs`, as during an outage, rejects with `RebuildFlushTimeoutError`. **Lossy**: an item sent while no consumer listens, refused, or arriving while `rebuildMaxPending` items already wait is lost. The only mode the permissions of cadenway-ops allow |
+| `reply`          | `emit` sends a request and resolves once the consumer applied the item: exact back-pressure when each call is awaited. A refused item rejects with `RebuildRejectedError` (`invalid-item`, `handler-failed`, `overloaded`, or `unknown` for a reason a newer consumer sends), a missing consumer with `RebuildConsumerUnavailableError`, a slow one with a timeout. The consuming user needs `allow_responses`                         |
 
 **A rebuild is restartable and not durable:** nothing is stored, an interrupted or lossy rebuild
 is simply started again, and applying an item twice must be harmless.
@@ -339,7 +399,8 @@ export class AppModule {}
 ```
 
 It requires `DatabaseModule` of `@cadenway/nest-common/database` and `MessagingModule`, and
-provides `OutboxWriter`, `OutboxRelay` and the deduplicator, globally.
+provides `OutboxWriter`, `OutboxRelay` and the deduplicator, globally. `OutboxModule.forRootAsync({
+imports, inject, useFactory })` builds the options from injected providers.
 
 | Option                   | Default | Effect                                                                                                   |
 | ------------------------ | ------- | -------------------------------------------------------------------------------------------------------- |
@@ -352,33 +413,39 @@ provides `OutboxWriter`, `OutboxRelay` and the deduplicator, globally.
 
 **The relay** starts when the application has bootstrapped and stops, after its pass in progress,
 on shutdown. Each pass is one transaction of the system runner:
-`select ... where status = 'pending' order by attempts, created_at limit <batch> for update skip
-locked`, publish each row with `Nats-Msg-Id` set to its id, mark the published ones `sent`. A row
-locked by one replica is skipped by the others. A full batch is followed by another pass at once.
+`select ... where status = 'pending' and next_attempt_at <= now() order by next_attempt_at,
+created_at limit <batch> for update skip locked`, publish each row on the subject and to the stream
+it stores, with `Nats-Msg-Id` set to its id, mark the published ones `sent`. A row locked by one
+replica is skipped by the others. A full batch is followed by another pass at once.
 
-A publish failure leaves the row pending, increments `attempts` and stores the class of the error
-in `last_error` (never a message or a payload). Rows are read least attempted first, so a row that
-keeps failing sinks behind the rows never tried and cannot block them. When the failure means
-that NATS or the stream cannot be reached (timeout, closed connection, missing stream), the pass
-stops there and the relay backs off, doubling the poll interval up to 30 seconds, instead of
-timing out on every row. `relay.publishPending()` runs one pass by hand and returns
-`{ published, failed, interrupted }`.
+A publish failure of one row leaves it pending, increments `attempts`, stores the class of the
+error in `last_error` (never a message or a payload) and delays its next attempt: 1 s, doubling,
+capped at five minutes. After 20 failed attempts the row is parked (`status = 'failed'`) with one
+error log, until `requeueOutboxEvents` gives it a new series; warnings about failing rows are
+logged at most once a minute per class of error. A failure that concerns every row (NATS or the
+stream unreachable, a timeout, a closed connection, a missing permission, the server out of
+resources) stops the pass without counting against the row, and the relay backs off, doubling the
+poll interval up to 30 seconds; so does a database failure. `relay.publishPending()` runs one
+pass by hand and returns `{ published, failed, interrupted }`.
 
 Maintenance functions, each taking the scope of a system transaction:
 
-| Function                                       | Effect                                                                                   |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `purgeSentOutboxEvents(tx, olderThanDays = 7)` | Deletes the rows sent before that age; pending rows are never deleted                    |
-| `purgeProcessedEvents(tx, olderThanDays = 14)` | Deletes the processed ids recorded before that age                                       |
-| `requeueOutboxEvents(tx, since)`               | Marks pending again the rows sent since `since`, to publish them again after a NATS loss |
+| Function                                       | Effect                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `purgeSentOutboxEvents(tx, olderThanDays = 7)` | Deletes the rows sent before that age; pending rows are never deleted                                         |
+| `purgeProcessedEvents(tx, olderThanDays = 14)` | Deletes the processed ids recorded before that age                                                            |
+| `requeueOutboxEvents(tx, since)`               | Marks pending again the rows sent since `since`, to publish them again after a NATS loss, and the parked rows |
+
+`DEFAULT_OUTBOX_RETENTION_DAYS` (7) and `DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS` (14) are the
+defaults of the two purges.
 
 ## Tables and migrations
 
-| Table              | Columns                                                                                                                                                                                                                                                            | Row-level security          |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------- |
-| `outbox_events`    | `id uuid` primary key (the event id), `event_name`, `organization_id uuid` null, `payload jsonb`, `traceparent` null, `status` (`pending`, `sent`, checked), `attempts`, `last_error` null, `created_at`, `sent_at` null; partial indexes on pending and sent rows | Organization policy, forced |
-| `processed_events` | Primary key (`consumer`, `event_id`), `processed_at`, indexed                                                                                                                                                                                                      | None: no organization data  |
-| `event_versions`   | Primary key (`consumer`, `aggregate_key`), `version bigint`, `updated_at`                                                                                                                                                                                          | None: no organization data  |
+| Table              | Columns                                                                                                                                                                                                                                                                                                              | Row-level security          |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `outbox_events`    | `id uuid` primary key (the event id), `event_name`, `subject`, `stream`, `organization_id uuid` null, `payload jsonb`, `traceparent` null, `status` (`pending`, `sent`, `failed`, checked), `attempts`, `next_attempt_at`, `last_error` null, `created_at`, `sent_at` null; partial indexes on pending and sent rows | Organization policy, forced |
+| `processed_events` | Primary key (`consumer`, `event_id`), `processed_at`, indexed                                                                                                                                                                                                                                                        | None: no organization data  |
+| `event_versions`   | `consumer`, `organization_id uuid` null, `aggregate_key`, `version bigint`, `updated_at`; unique (`consumer`, `organization_id`, `aggregate_key`) with nulls not distinct                                                                                                                                            | Organization policy, forced |
 
 The tables reach a service's own migrations like the idempotency table of nest-common: re-export
 them from one of its `src/modules/*/infrastructure/persistence/*.schema.ts` files,
@@ -393,6 +460,7 @@ generate it:
 
 ```sql
 ALTER TABLE "outbox_events" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "event_versions" FORCE ROW LEVEL SECURITY;
 ```
 
 The application role needs `select, insert, update, delete` on the three tables and no DDL right.
@@ -427,13 +495,30 @@ a server configured like cadenway-ops.
 
 - One message at a time per handler and per replica: throughput per handler is bounded by the
   handler latency; scale with replicas.
-- A handler must finish within 30 seconds; the kit does not extend `AckWait` with progress
-  acknowledgements.
+- A handler is abandoned at `handlerTimeoutMs`, not stopped: work that ignores `signal` goes on
+  in the background, though its writes through the runners are rolled back with the transaction
+  of the deduplicator. The kit does not extend `AckWait` with progress acknowledgements.
 - Dead letters rely on advisories, which are not stored: none is copied while no worker runs.
 - A new consumer with the default `deliverPolicy: 'all'` receives what its stream still holds, up
   to seven days of events; a handler with outside effects (notifications) registers with `new`.
 - A handler still running after `shutdownTimeoutMs` is abandoned and its message redelivered.
 - A rebuild is not durable and, in the default mode, lossy; the stream is not an archive.
 - The relay does not reorder events and the consumers do not serialize them.
-- The subject of a restricted event is derived when it is published: changing `restrictedEvents`
-  while outbox rows are pending moves those rows to the new subject.
+- The route of an outbox row is decided by the replica that writes it: listing an event in
+  `restrictedEvents` does not move rows already written.
+- `processed_events` is keyed by consumer and event id only, not by organization: event ids are
+  UUIDs unique across organizations.
+
+## Stable formats
+
+These are read by other services, other versions of the kit or operators, and change only in a
+major, with a migration note per service:
+
+| Format              | Value                                                                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Subjects            | `evt.<event>`, `restricted.<event>`, `dlq.<consumer>.<original subject>`, `rebuild.<consumer>.<entity>`                                                                                |
+| Durable consumers   | `<service>__<handler>`, filtered on one subject                                                                                                                                        |
+| Event headers       | `Nats-Msg-Id` (the event id), `Cadenway-Event-Name`, `Cadenway-Organization-Id` (absent without organization), `traceparent`                                                           |
+| Dead-letter headers | `Cadenway-Dead-Letter-Consumer`, `-Reason` (`max-deliveries`, `terminated`), `-Stream-Sequence`, `-Deliveries`, `-Payload` (`dropped`); `Nats-Msg-Id` `<stream>.<consumer>.<sequence>` |
+| Rebuild reply       | `{"ok":true}` or `{"ok":false,"reason":"<reason>"}`; an emitter reads a reason it does not know as a rejection                                                                         |
+| Tables              | `outbox_events` (key `id`), `processed_events` (key `consumer`, `event_id`), `event_versions` (unique `consumer`, `organization_id`, `aggregate_key`, nulls not distinct)              |

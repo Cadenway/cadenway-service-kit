@@ -9,17 +9,17 @@
 export const OUTBOX_OPTIONS: unique symbol = Symbol('cadenway.messaging.outbox.options');
 
 /**
- * Constant OUTBOX_RETENTION_DAYS
+ * Constant DEFAULT_OUTBOX_RETENTION_DAYS
  *
  * @description
  * How long a sent outbox row is kept, in days, so it can be published again after a NATS loss.
  *
  * @type {number}
  */
-export const OUTBOX_RETENTION_DAYS: number = 7;
+export const DEFAULT_OUTBOX_RETENTION_DAYS: number = 7;
 
 /**
- * Constant PROCESSED_EVENTS_RETENTION_DAYS
+ * Constant DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS
  *
  * @description
  * How long a processed event id is kept, in days: the seven days a message stays in the stream
@@ -27,7 +27,7 @@ export const OUTBOX_RETENTION_DAYS: number = 7;
  *
  * @type {number}
  */
-export const PROCESSED_EVENTS_RETENTION_DAYS: number = 14;
+export const DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS: number = 14;
 
 /**
  * Interface OutboxModuleOptions
@@ -137,8 +137,9 @@ export function resolveOutboxOptions(options: OutboxModuleOptions = {}): Resolve
     pollIntervalMs: options.pollIntervalMs ?? 1000,
     batchSize: options.batchSize ?? 100,
     purgeIntervalMs: options.purgeIntervalMs ?? 3_600_000,
-    retentionDays: options.retentionDays ?? OUTBOX_RETENTION_DAYS,
-    processedRetentionDays: options.processedRetentionDays ?? PROCESSED_EVENTS_RETENTION_DAYS,
+    retentionDays: options.retentionDays ?? DEFAULT_OUTBOX_RETENTION_DAYS,
+    processedRetentionDays:
+      options.processedRetentionDays ?? DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
   };
   if (!Number.isInteger(resolved.batchSize) || resolved.batchSize < 1) {
     throw new Error('The batch size of the outbox relay is a positive integer.');

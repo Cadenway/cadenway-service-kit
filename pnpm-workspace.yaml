@@ -30,6 +30,12 @@ catalog:
 # Disable pnpm's default release-age delay.
 minimumReleaseAge: 0
 
+# A peer a package declares is installed by the application, not by this workspace: auto-installing
+# them would pull optional peers such as `@cadenway/contracts`, which no package of the kit imports,
+# into the lockfile and make every install fetch it. A package that needs a peer for its own specs
+# lists it in its devDependencies.
+autoInstallPeers: false
+
 # A version that loses the provenance or the trusted publisher of an earlier one is refused.
 trustPolicy: no-downgrade
 

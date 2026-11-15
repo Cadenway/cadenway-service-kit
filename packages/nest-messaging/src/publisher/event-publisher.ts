@@ -31,7 +31,8 @@ import { uuidv7 } from './uuid-v7.js';
  * Interface OutgoingEvent
  *
  * @description
- * An event ready to be sent: its payload is complete and was validated against its contract.
+ * An event ready to be sent: its payload is complete and was validated against its contract, and
+ * its route was decided when the event was produced.
  */
 export interface OutgoingEvent {
   // #region Properties
@@ -39,12 +40,37 @@ export interface OutgoingEvent {
    * Property name
    *
    * @description
-   * Name of the event in the contracts, from which the subject is derived.
+   * Name of the event in the contracts.
    *
    * @type {string}
    * @readonly
    */
   readonly name: string;
+
+  /**
+   * Property subject
+   *
+   * @description
+   * Subject to publish on, decided when the event was produced: `evt.<name>`, or
+   * `restricted.<name>` for a restricted event. It is not derived again at publish time, so a
+   * replica configured differently cannot move a restricted event to `evt.>`.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly subject: string;
+
+  /**
+   * Property stream
+   *
+   * @description
+   * Stream that must store the event. The publish asks the server to check it
+   * (`Nats-Expected-Stream`), so a subject captured by another stream is refused.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly stream: string;
 
   /**
    * Property payload
@@ -234,8 +260,10 @@ export class EventPublisher {
    *
    * @description
    * Completes a payload with a new id (UUID version 7) and the current instant, validates it
-   * with the schema of the event, then publishes it and waits for the acknowledgement. The trace
-   * context of the caller travels with the event.
+   * with the schema of the event, routes it (`restricted.<name>` for a restricted event,
+   * `evt.<name>` otherwise), then publishes it and waits for the acknowledgement. The trace
+   * context of the caller travels with the event. A publish that times out or finds no stream is
+   * tried up to three times with the same `Nats-Msg-Id`, so a retry never stores the event twice.
    *
    * @param {TSchemas} schemas - `eventSchemas` object of an event module of `@cadenway/contracts`.
    * @param {TName} name - Name of the event.
@@ -255,30 +283,53 @@ export class EventPublisher {
       id: uuidv7(),
       occurredAt: new Date().toISOString(),
     });
-    return this.publishEnvelope({ name, payload, traceparent: currentTraceparent() });
+    const route: EventRoute = eventRoute(this.options, name);
+    return this.send(
+      {
+        name,
+        subject: route.subject,
+        stream: route.stream,
+        payload,
+        traceparent: currentTraceparent(),
+      },
+      3,
+    );
   }
 
   /**
    * Method publishEnvelope
    *
    * @description
-   * Publishes an event whose payload is already complete and validated, with the trace context
-   * it was stored with. The outbox relay uses it; application code calls `publish` or the outbox
-   * writer.
+   * Publishes an event whose payload is already complete and validated, on the subject and to
+   * the stream it carries, with the trace context it was stored with. Nothing is derived again:
+   * the outbox relay publishes the route the writer stored. Application code calls `publish` or
+   * the outbox writer.
    *
-   * The subject is derived from the name when the event is published, from the
-   * `restrictedEvents` option: `restricted.<name>` for a restricted event, `evt.<name>`
-   * otherwise. Publishing the same id again inside the deduplication window of the stream is
-   * safe: the server keeps one copy and answers `duplicate`.
+   * It tries once. To retry, call it again with the same event: the id, and so the
+   * `Nats-Msg-Id`, is kept, and the server keeps one copy inside its deduplication window and
+   * answers `duplicate`.
    *
-   * @param {OutgoingEvent} event - Name, payload and trace context of the event.
+   * @param {OutgoingEvent} event - Name, route, payload and trace context of the event.
    * @returns {Promise<PublishedEvent>} The acknowledgement of JetStream.
    * @throws {EventStreamUnavailableError} When no stream stores the subject.
-   * @throws {Error} When the acknowledgement does not arrive in time or the server refuses the message.
+   * @throws {Error} When the acknowledgement does not arrive in time, the subject is stored by another stream than the expected one, or the server refuses the message.
    */
   public async publishEnvelope(event: OutgoingEvent): Promise<PublishedEvent> {
-    const route: EventRoute = eventRoute(this.options, event.name);
-    const subject: string = route.subject;
+    return this.send(event, 1);
+  }
+
+  /**
+   * Method send
+   *
+   * @description
+   * Publishes an event with its headers, asking the server to check the stream that stores it.
+   *
+   * @param {OutgoingEvent} event - Name, route, payload and trace context of the event.
+   * @param {number} attempts - Attempts on a timeout or a missing stream, all with the same message id.
+   * @returns {Promise<PublishedEvent>} The acknowledgement of JetStream.
+   */
+  private async send(event: OutgoingEvent, attempts: number): Promise<PublishedEvent> {
+    const subject: string = event.subject;
     const messageHeaders: MsgHdrs = headers();
     const values: Record<string, string> = buildEventHeaders({
       name: event.name,
@@ -296,6 +347,8 @@ export class EventPublisher {
           msgID: event.payload.id,
           headers: messageHeaders,
           timeout: this.options.publishTimeoutMs,
+          expect: { streamName: event.stream },
+          retries: attempts,
         },
       );
       return {
@@ -306,7 +359,7 @@ export class EventPublisher {
       };
     } catch (error) {
       if (isNoResponders(error)) {
-        throw new EventStreamUnavailableError(subject, route.stream, error);
+        throw new EventStreamUnavailableError(subject, event.stream, error);
       }
       throw error;
     }
