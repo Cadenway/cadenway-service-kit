@@ -4,6 +4,11 @@ import {
   DEFAULT_OUTBOX_RETENTION_DAYS,
   DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
 } from './outbox-options.js';
+import {
+  REDACTED_PAYLOAD_KEY,
+  REDACTED_PAYLOAD_SQL,
+  type RestrictedNames,
+} from './outbox-redaction.js';
 
 /**
  * Function countOf
@@ -57,9 +62,12 @@ export async function purgeSentOutboxEvents<TDatabase extends DatabaseSchema>(
  * their cause is fixed. Consumers that already handled these events skip them through their
  * processed-ids table.
  *
+ * A sent restricted row is not requeued: the relay redacted its payload when it published it, so
+ * it cannot be published again. A lost single-use code or link is issued again by its owner.
+ *
  * @param {TransactionScope<TDatabase>} tx - Scope of a system transaction.
  * @param {Date} since - Rows sent at or after this instant are published again.
- * @returns {Promise<number>} Number of rows marked pending, parked ones included.
+ * @returns {Promise<number>} Number of rows marked pending, parked ones included, redacted ones excluded.
  */
 export async function requeueOutboxEvents<TDatabase extends DatabaseSchema>(
   tx: TransactionScope<TDatabase>,
@@ -71,11 +79,46 @@ export async function requeueOutboxEvents<TDatabase extends DatabaseSchema>(
          update outbox_events
             set status = 'pending', sent_at = null, attempts = 0, next_attempt_at = now(),
                 last_error = null
-          where (status = 'sent' and sent_at >= $1::timestamptz) or status = 'failed'
+          where (status = 'sent' and sent_at >= $1::timestamptz and not (payload ? $2))
+             or status = 'failed'
          returning 1
        )
        select count(*)::int as count from requeued`,
-      [since.toISOString()],
+      [since.toISOString(), REDACTED_PAYLOAD_KEY],
+    ),
+  );
+}
+
+/**
+ * Function redactSentRestrictedOutboxEvents
+ *
+ * @description
+ * Redacts the restricted rows that are sent but still hold their payload: rows sent before the
+ * kit redacted them, or by a replica still on an older kit during a rolling deploy. The relay
+ * runs it at its first pass and with every purge, so the table converges once every replica runs
+ * this kit. It applies the predicate of `isRestrictedRoute` to the stored route and never touches
+ * a pending or parked row, which still needs its payload.
+ *
+ * @param {TransactionScope<TDatabase>} tx - Scope of a system transaction.
+ * @param {RestrictedNames} restricted - Restricted stream and subject prefix of the module.
+ * @returns {Promise<number>} Number of rows redacted.
+ */
+export async function redactSentRestrictedOutboxEvents<TDatabase extends DatabaseSchema>(
+  tx: TransactionScope<TDatabase>,
+  restricted: RestrictedNames,
+): Promise<number> {
+  return countOf(
+    await tx.client.query(
+      `with redacted as (
+         update outbox_events
+            set payload = ${REDACTED_PAYLOAD_SQL}
+          where status = 'sent'
+            and (stream = $1 or starts_with(subject, $2))
+            and not (payload ? $3)
+         returning 1
+       )
+       select count(*)::int as count from redacted`,
+      [restricted.restrictedStream, `${restricted.restrictedSubjectPrefix}.`, REDACTED_PAYLOAD_KEY],
     ),
   );
 }

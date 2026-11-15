@@ -642,7 +642,8 @@ export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<str
  * When the transaction starts the runner issues the equivalent of
  * `SET LOCAL app.system_access = 'on'`, which the row-level security policies accept in place of
  * an organization. Nothing filters for the caller any more: every query of a system transaction
- * names the rows it means. Never use it to serve the request of a user.
+ * names the rows it means. Never use it to serve a request that carries an organization: that one
+ * goes through the tenant runner. A request without an organization is served here.
  *
  * A `run` called inside a system transaction joins it.
  */
