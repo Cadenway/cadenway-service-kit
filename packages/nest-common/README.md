@@ -355,19 +355,24 @@ each part in kebab-case. `title` defaults to the standard phrase of the status a
 `about:blank`; `detail`, `instance` and `details` are optional. Human texts are English:
 applications translate from `code`.
 
-| Thrown                                 | Response                                                       |
-| -------------------------------------- | -------------------------------------------------------------- |
-| `ProblemException`                     | Its problem, as is                                             |
-| `HttpException` with an allowed status | That status, the matching `http.*` code, its message as detail |
-| `HttpException` with another status    | 400 for a client error, 503 for a server error                 |
-| JSON body over the size limit          | 400 `request.body-too-large`                                   |
-| Anything else                          | 500 `internal.unexpected`, with no detail                      |
+| Thrown                                 | Response                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| `ProblemException`                     | Its problem, as is                                                        |
+| `HttpException` with an allowed status | That status, the matching `http.*` code, its message as detail            |
+| `HttpException` with another status    | 400 for a client error, 503 for a server error                            |
+| JSON body over the size limit          | 400 `request.body-too-large`                                              |
+| Body that is not valid JSON            | 400 `request.invalid` with a fixed detail (see [Body limit](#body-limit)) |
+| Anything else                          | 500 `internal.unexpected`, with no detail                                 |
 
 Codes produced by this package: `http.bad-request`, `http.unauthorized`, `http.forbidden`,
 `http.not-found`, `http.conflict`, `http.unprocessable-content`,
 `http.too-many-requests`, `http.service-unavailable`, `internal.unexpected`, `request.invalid`,
 `request.body-too-large`, `request.if-match-invalid`, `request.if-match-required`,
 `precondition.failed` and `pagination.cursor-invalid`.
+
+A request body that is not valid JSON answers `request.invalid`, the code the contracts declare
+for a body that does not match its schema. Up to 0.4.1 it answered `http.bad-request`, with the
+text of the JSON parser as `detail`.
 
 - A stack trace or the text of an unexpected error is never sent. From status 500 the error is
   handed to the request logger, which writes it on the `request failed` line.
@@ -452,8 +457,38 @@ contract set). A weak tag (`W/"7"`) never matches, as `If-Match` requires a stro
 ## Body limit
 
 `applyJsonBodyLimit(app, limitBytes = JSON_BODY_LIMIT_BYTES)` registers the JSON body parser with
-a limit of 1 MB (1 048 576 bytes). Call it before the application is initialized. A larger body
-answers 400 `request.body-too-large`; a malformed one answers 400 `http.bad-request`.
+a limit of 1 MB (1 048 576 bytes). Call it before the application is initialized;
+`createApplication` does. A larger body answers 400 `request.body-too-large`.
+
+A body that is not valid JSON (an unquoted or single-quoted value, a trailing comma, a truncated
+body, a top-level value other than an object or an array) answers the same problem whatever its
+content:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "code": "request.invalid",
+  "detail": "The request body is not valid JSON.",
+  "details": {
+    "issues": [
+      { "in": "body", "path": "", "code": "invalid_json", "message": "Expected valid JSON." }
+    ]
+  }
+}
+```
+
+The text of the parser error quotes the characters around the faulty token, which on a sign-in
+can be part of a password: the parser hands on this fixed problem instead, so neither the
+response nor the logs nor the trace carry it. The span of the parser middleware records a
+`ProblemException` with the message `request.invalid: The request body is not valid JSON.`.
+`ProblemFilter` answers the same problem for the JSON parser NestJS registers itself, in an
+application that does not call `applyJsonBodyLimit`. Every other refusal of the parser keeps its
+mapping.
+
+The parser does not keep the raw body: the `rawBody` option of NestJS has no effect on JSON
+bodies.
 
 ## Internal token
 

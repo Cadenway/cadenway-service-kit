@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -27,8 +28,64 @@ import {
 import { applyJsonBodyLimit } from '../http/body-limit.js';
 import { pageQueryShape, type PageQuery } from '../pagination/cursor.js';
 import { zodDto, ZodValidationPipe } from '../validation/zod-validation.pipe.js';
-import { ProblemFilter, WS_EXCEPTION_EVENT } from './problem.filter.js';
+import { ProblemFilter, toProblem, WS_EXCEPTION_EVENT } from './problem.filter.js';
 import { ProblemException, type Problem } from './problem.js';
+
+/**
+ * Constant MALFORMED_BODIES
+ *
+ * @description
+ * Bodies that are not valid JSON, by the mistake they make. The text of `JSON.parse` for some of
+ * them quotes the characters around the faulty token.
+ *
+ * @type {readonly (readonly [string, string])[]}
+ */
+const MALFORMED_BODIES: readonly (readonly [string, string])[] = [
+  ['an unquoted value', '{"password": hunter2-secret}'],
+  ['single quotes', "{'password':'x'}"],
+  ['a trailing comma', '{"password": "hunter2-secret",}'],
+  ['a truncated body', '{"password": "hunter2'],
+  ['a top-level string refused by strict mode', '"password hunter2-secret"'],
+];
+
+/**
+ * Constant MALFORMED_JSON_PROBLEM
+ *
+ * @description
+ * Response every body that is not valid JSON receives.
+ *
+ * @type {Problem}
+ */
+const MALFORMED_JSON_PROBLEM: Problem = {
+  type: 'about:blank',
+  title: 'Bad Request',
+  status: 400,
+  code: 'request.invalid',
+  detail: 'The request body is not valid JSON.',
+  details: {
+    issues: [{ in: 'body', path: '', code: 'invalid_json', message: 'Expected valid JSON.' }],
+  },
+};
+
+/**
+ * Function parseFailure
+ *
+ * @description
+ * Builds the error the body parser of Express raises for a body that is not valid JSON: a
+ * `SyntaxError` with the text of `JSON.parse`, the body, and the members of `http-errors`.
+ *
+ * @param {string} body - Body that failed to parse.
+ * @returns {SyntaxError} The error.
+ */
+function parseFailure(body: string): SyntaxError {
+  return Object.assign(new SyntaxError(`Unexpected token 'h', "${body}" is not valid JSON`), {
+    body,
+    type: 'entity.parse.failed',
+    status: 400,
+    statusCode: 400,
+    expose: true,
+  });
+}
 
 /**
  * Interface ListQuery
@@ -248,15 +305,36 @@ describe('HTTP formats', () => {
       });
     });
 
-    it('answers 400 to a malformed JSON body', async () => {
-      const response: Response = await request(app.getHttpServer())
+    it.each(MALFORMED_BODIES)(
+      'answers %s with the fixed 400 request.invalid and nothing of the body',
+      async (_mistake: string, body: string) => {
+        const response: Response = await request(app.getHttpServer())
+          .post('/samples')
+          .set('Content-Type', 'application/json')
+          .send(body)
+          .expect(400);
+
+        expect(response.headers['content-type']).toMatch(/^application\/problem\+json/u);
+        expect(response.body).toEqual(MALFORMED_JSON_PROBLEM);
+        expect(response.text).not.toContain('hunter2');
+        expect(response.text).not.toContain('password');
+      },
+    );
+
+    it('keeps the mapping of the other refusals of the body parser', async () => {
+      const charset: Response = await request(app.getHttpServer())
         .post('/samples')
-        .set('Content-Type', 'application/json')
-        .send('{"title": ')
+        .set('Content-Type', 'application/json; charset=latin1')
+        .send('{"title": "x"}')
         .expect(400);
 
-      expect(response.headers['content-type']).toMatch(/^application\/problem\+json/u);
-      expect((response.body as Problem).code).toBe('http.bad-request');
+      expect(charset.body).toEqual({
+        type: 'about:blank',
+        title: 'Bad Request',
+        status: 400,
+        code: 'http.bad-request',
+        detail: 'unsupported charset "LATIN1"',
+      });
     });
 
     it('answers 400 request.body-too-large beyond 1 MB and accepts a body just under', async () => {
@@ -375,6 +453,58 @@ describe('HTTP formats', () => {
 
       expect((malformed.body as Problem).code).toBe('request.if-match-invalid');
       expect((missing.body as Problem).code).toBe('request.if-match-required');
+    });
+  });
+});
+
+describe('a malformed JSON body without applyJsonBodyLimit', () => {
+  let app: INestApplication<App>;
+
+  beforeAll(async () => {
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      controllers: [SampleController],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    app.useGlobalFilters(new ProblemFilter());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('gets the fixed problem through the JSON parser NestJS registers itself', async () => {
+    const response: Response = await request(app.getHttpServer())
+      .post('/samples')
+      .set('Content-Type', 'application/json')
+      .send('{"password": hunter2-secret}')
+      .expect(400);
+
+    expect(response.body).toEqual(MALFORMED_JSON_PROBLEM);
+    expect(response.text).not.toContain('hunter2');
+  });
+});
+
+describe('toProblem', () => {
+  it('gives a parse failure, raw or wrapped by NestJS, the fixed problem without its text', () => {
+    const failure: SyntaxError = parseFailure('{"password": hunter2-secret}');
+
+    const problems: Problem[] = [
+      toProblem(failure),
+      toProblem(new BadRequestException(failure.message, { cause: failure })),
+    ];
+
+    expect(problems).toEqual([MALFORMED_JSON_PROBLEM, MALFORMED_JSON_PROBLEM]);
+    expect(JSON.stringify(problems)).not.toContain('hunter2');
+  });
+
+  it('keeps the message of any other client error', () => {
+    expect(toProblem(new BadRequestException('The header X-Sample is missing.'))).toEqual({
+      type: 'about:blank',
+      title: 'Bad Request',
+      status: 400,
+      code: 'http.bad-request',
+      detail: 'The header X-Sample is missing.',
     });
   });
 });

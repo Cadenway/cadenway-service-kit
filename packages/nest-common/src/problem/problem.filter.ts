@@ -6,6 +6,7 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 
+import { isJsonParseFailure, malformedJsonBody } from '../http/body-limit.js';
 import { PROBLEM_CONTENT_TYPE, ProblemException, statusTitle, type Problem } from './problem.js';
 
 /**
@@ -204,12 +205,23 @@ function externalStatus(exception: unknown): number | undefined {
  * never leaves the process: only a `ProblemException` and a client-error `HttpException` speak
  * to the caller.
  *
+ * A body that is not valid JSON gets the fixed problem of `malformedJsonBody()`, never the
+ * parser text, which quotes part of the body: the parser of `applyJsonBodyLimit` already hands
+ * that problem on, and this also covers the JSON parser NestJS registers itself, whose refusal
+ * NestJS wraps in a `BadRequestException` carrying the parser text.
+ *
  * @param {unknown} exception - Error caught by the filter.
  * @returns {Problem} The response body.
  */
 export function toProblem(exception: unknown): Problem {
   if (exception instanceof ProblemException) {
     return exception.problem;
+  }
+  if (
+    isJsonParseFailure(exception) ||
+    (exception instanceof HttpException && isJsonParseFailure(exception.cause))
+  ) {
+    return malformedJsonBody().problem;
   }
   const raw: number | undefined =
     exception instanceof HttpException ? exception.getStatus() : externalStatus(exception);
@@ -245,6 +257,7 @@ export function toProblem(exception: unknown): Problem {
  * | `HttpException` with an allowed status | That status, an `http.*` code, the message as detail  |
  * | `HttpException` with another status    | 400 for a client error, 503 for a server error        |
  * | Body larger than the limit             | 400 `request.body-too-large`                          |
+ * | Body that is not valid JSON            | 400 `request.invalid`, a fixed detail                 |
  * | Anything else                          | 500 `internal.unexpected`, with no detail             |
  *
  * A stack trace is never sent. A response from 500 hands its error to the request logger, which
