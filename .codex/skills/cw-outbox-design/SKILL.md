@@ -25,12 +25,14 @@ failure ──► retry with backoff (max n) ──► dead-letter stream + erro
 | Ordering | Not guaranteed. Every event carries the `version` of its aggregate; a consumer skips a version it has already applied |
 | Headers | `traceparent` (W3C), organization id, event name |
 | Payload | JSON, validated with the zod schema of `@cadenway/contracts` on publish and on receipt |
+| Redaction | The statement that marks a restricted row sent keeps only the envelope and `"$redacted": true` in its payload; the message carries the full payload. A failed publish keeps it for the next attempt; a redacted row is never requeued nor published again; rows an older kit sent whole are redacted at start and with every purge |
 | Publisher | One NATS user per service, allowed to publish its own subjects only, on the inbox prefix `_INBOX.<user>` |
 | Transactions | The relay and the handler of an event without an organization use the system transaction runner of `@cadenway/nest-common/database`; the handler of an event that carries an organization uses the tenant runner, with the organization of the validated envelope |
 
 ## Rebuild
 
-Sent outbox rows are kept seven days, so a service can publish again after a NATS loss. The stream
+Sent outbox rows are kept seven days, so a service can publish again after a NATS loss, except a
+redacted restricted row: its owner issues a new code or link instead. The stream
 is not an archive: an index is rebuilt by the owning service re-emitting the current state of its
 entities on `rebuild.<consumer>.<entity>`, where `<consumer>` is the NATS user of the consumer. These
 messages are plain NATS and unacknowledged by default: the broker gives no user the right to reply.

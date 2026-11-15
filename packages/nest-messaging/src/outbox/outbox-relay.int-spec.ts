@@ -29,7 +29,15 @@ import {
   messagingOptions,
   startApplication,
 } from '../testing/application.js';
-import { ATELIER_NORD, eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
+import {
+  ATELIER_NORD,
+  CAMILLE,
+  eventSchemas,
+  taskUpdated,
+  userSignedUp,
+  type TaskUpdatedV1,
+  type UserSignedUpV1,
+} from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
 import { appendTaskUpdated, asMember, migrateOutbox, startService } from '../testing/outbox.js';
 import { startTestDatabase, type TestDatabase } from '../testing/postgres.js';
@@ -162,6 +170,68 @@ interface OutboxRow {
   // #endregion
 }
 
+/**
+ * Interface StoredPayload
+ *
+ * @description
+ * Status and payload of an outbox row, for the specs of the redaction.
+ */
+interface StoredPayload {
+  // #region Properties
+  /**
+   * Property status
+   *
+   * @description
+   * `pending`, `sent` or `failed`.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly status: string;
+
+  /**
+   * Property attempts
+   *
+   * @description
+   * Number of failed publish attempts.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly attempts: number;
+
+  /**
+   * Property payload
+   *
+   * @description
+   * Payload as the table holds it.
+   *
+   * @type {Record<string, unknown>}
+   * @readonly
+   */
+  readonly payload: Record<string, unknown>;
+  // #endregion
+}
+
+/**
+ * Function appendUserSignedUp
+ *
+ * @description
+ * Runs a use case without organization that appends one `user.signed-up.v1` event to the outbox
+ * and commits, in a system transaction. The specs list it as a restricted event: it stands for
+ * the identity events that carry a single-use code.
+ *
+ * @param {TestingModule} application - Application started with `startService`.
+ * @returns {Promise<AppendedEvent>} The id and the instant of the event.
+ */
+function appendUserSignedUp(application: TestingModule): Promise<AppendedEvent> {
+  return application
+    .get(SystemTransactionRunner)
+    .run((tx: TransactionScope<DatabaseSchema>) =>
+      application.get(OutboxWriter).append(tx, eventSchemas, 'user.signed-up.v1', userSignedUp()),
+    );
+}
+
 describe('outbox relay on real PostgreSQL and NATS', () => {
   let database: TestDatabase;
   let nats: TestNats;
@@ -209,6 +279,23 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
   async function stored(stream: string): Promise<number> {
     const info: StreamInfo = await manager.streams.info(stream);
     return info.state.messages;
+  }
+
+  /**
+   * Function payloads
+   *
+   * @description
+   * Reads the status, attempts and payload of every outbox row as the superuser, by event id.
+   *
+   * @returns {Promise<Map<string, StoredPayload>>} The rows, by id.
+   */
+  async function payloads(): Promise<Map<string, StoredPayload>> {
+    const result: { rows: (StoredPayload & { id: string })[] } = await database.admin.query(
+      'select id, status, attempts, payload from outbox_events',
+    );
+    return new Map<string, StoredPayload>(
+      result.rows.map(({ id, ...row }: StoredPayload & { id: string }) => [id, row]),
+    );
   }
 
   beforeAll(async () => {
@@ -309,6 +396,7 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
       'EVENTS_RESTRICTED_rolling',
       { last_by_subj: 'restricted-rolling.task.updated.v1' },
     );
+    const relayed: StoredPayload | undefined = (await payloads()).get(appended.id);
     await writer.close();
     await relay.close();
 
@@ -317,8 +405,235 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
       stream: 'EVENTS_RESTRICTED_rolling',
     });
     expect(pass).toEqual({ published: 1, failed: 0, interrupted: false });
-    expect(restricted?.json<TaskUpdatedV1>().id).toBe(appended.id);
+    expect(restricted?.json<TaskUpdatedV1>()).toMatchObject({ id: appended.id, taskId: 'CAD-482' });
     expect(await stored('EVENTS_rolling')).toBe(0);
+    // The old replica redacts the row too: it reads the route stored with it.
+    expect(relayed?.payload).not.toHaveProperty('taskId');
+    expect(relayed?.payload).toHaveProperty('$redacted', true);
+  });
+
+  it('redacts a restricted row in the statement that marks it sent, keeps its payload until its publish succeeds, and leaves an unrestricted row as it is', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      {
+        ...isolatedNames('redact'),
+        service: 'identity-service',
+        restrictedEvents: ['user.signed-up.v1'],
+      },
+      { relay: false },
+    );
+    const relay: OutboxRelay = application.get(OutboxRelay);
+    const restricted: AppendedEvent = await appendUserSignedUp(application);
+    const unrestricted: AppendedEvent = await appendTaskUpdated(application, {
+      taskId: 'CAD-PLAIN',
+    });
+    const written: Map<string, StoredPayload> = await payloads();
+    // The server refuses the restricted message once: the relay must be able to try it again.
+    await manager.streams.update('EVENTS_RESTRICTED_redact', { max_msg_size: 64 });
+
+    const first: RelayPass = await relay.publishPending();
+    const afterFailure: Map<string, StoredPayload> = await payloads();
+    await manager.streams.update('EVENTS_RESTRICTED_redact', { max_msg_size: -1 });
+    await database.admin.query('update outbox_events set next_attempt_at = now() where id = $1', [
+      restricted.id,
+    ]);
+    const second: RelayPass = await relay.publishPending();
+    const afterPublish: Map<string, StoredPayload> = await payloads();
+    const message: StoredMsg | null = await manager.streams.getMessage('EVENTS_RESTRICTED_redact', {
+      last_by_subj: 'restricted-redact.user.signed-up.v1',
+    });
+    await application.close();
+
+    expect(written.get(restricted.id)?.payload).toMatchObject({
+      id: restricted.id,
+      email: 'camille@example.test',
+    });
+    expect(first).toEqual({ published: 1, failed: 1, interrupted: false });
+    expect(afterFailure.get(restricted.id)).toEqual({
+      status: 'pending',
+      attempts: 1,
+      payload: written.get(restricted.id)?.payload,
+    });
+    expect(second).toEqual({ published: 1, failed: 0, interrupted: false });
+    // The message delivered on restricted.<name> carries the whole payload.
+    expect(message?.json<UserSignedUpV1>()).toEqual(written.get(restricted.id)?.payload);
+    // The row keeps the envelope and the marker only.
+    expect(afterPublish.get(restricted.id)).toEqual({
+      status: 'sent',
+      attempts: 1,
+      payload: {
+        id: restricted.id,
+        occurredAt: restricted.occurredAt,
+        organizationId: null,
+        actor: { type: 'user', id: CAMILLE },
+        version: 1,
+        $redacted: true,
+      },
+    });
+    expect(afterPublish.get(unrestricted.id)).toEqual({
+      status: 'sent',
+      attempts: 0,
+      payload: written.get(unrestricted.id)?.payload,
+    });
+    expect(written.get(unrestricted.id)?.payload).toMatchObject({ taskId: 'CAD-PLAIN' });
+  });
+
+  it('never requeues nor publishes again a redacted row, and still requeues an unrestricted one', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      {
+        ...isolatedNames('noreplay'),
+        service: 'identity-service',
+        restrictedEvents: ['user.signed-up.v1'],
+      },
+      { relay: false },
+    );
+    const relay: OutboxRelay = application.get(OutboxRelay);
+    const system: SystemTransactionRunner = application.get(SystemTransactionRunner);
+    const restricted: AppendedEvent = await appendUserSignedUp(application);
+    const unrestricted: AppendedEvent = await appendTaskUpdated(application);
+    const sent: RelayPass = await relay.publishPending();
+
+    const requeued: number = await system.run((tx: TransactionScope) =>
+      requeueOutboxEvents(tx, new Date(Date.now() - 60_000)),
+    );
+    const afterRequeue: Map<string, StoredPayload> = await payloads();
+    const republished: RelayPass = await relay.publishPending();
+    // An operator, or the requeue of an older kit, makes the redacted row pending again.
+    await database.admin.query(
+      `update outbox_events set status = 'pending', sent_at = null where id = $1`,
+      [restricted.id],
+    );
+    const guarded: RelayPass = await relay.publishPending();
+    const afterGuard: Map<string, StoredPayload> = await payloads();
+    await application.close();
+
+    expect(sent).toEqual({ published: 2, failed: 0, interrupted: false });
+    expect(requeued).toBe(1);
+    expect(afterRequeue.get(restricted.id)?.status).toBe('sent');
+    expect(afterRequeue.get(unrestricted.id)?.status).toBe('pending');
+    expect(republished).toEqual({ published: 1, failed: 0, interrupted: false });
+    expect(guarded).toEqual({ published: 0, failed: 0, interrupted: false });
+    expect(afterGuard.get(restricted.id)?.status).toBe('sent');
+    expect(afterGuard.get(restricted.id)?.payload).toHaveProperty('$redacted', true);
+    expect(afterGuard.get(restricted.id)?.payload).not.toHaveProperty('email');
+  });
+
+  it('keeps a restricted row pending and whole after a crash between its publish and the commit, then redacts it once it is marked sent', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      {
+        ...isolatedNames('redactcrash'),
+        service: 'identity-service',
+        restrictedEvents: ['user.signed-up.v1'],
+      },
+      { relay: false },
+    );
+    const relay: OutboxRelay = application.get(OutboxRelay);
+    await database.admin.query(`
+      create function simulate_crash() returns trigger language plpgsql as $$
+      begin
+        if new.status = 'sent' then raise exception 'simulated crash'; end if;
+        return new;
+      end $$;
+      create trigger outbox_crash before update on outbox_events
+        for each row execute function simulate_crash();
+    `);
+    const restricted: AppendedEvent = await appendUserSignedUp(application);
+    const written: Map<string, StoredPayload> = await payloads();
+
+    await expect(relay.publishPending()).rejects.toThrow(/simulated crash/u);
+    const afterCrash: Map<string, StoredPayload> = await payloads();
+    const publishedOnce: number = await stored('EVENTS_RESTRICTED_redactcrash');
+    await database.admin.query(
+      'drop trigger outbox_crash on outbox_events; drop function simulate_crash()',
+    );
+    const second: RelayPass = await relay.publishPending();
+    const afterRetry: Map<string, StoredPayload> = await payloads();
+    await application.close();
+
+    expect(publishedOnce).toBe(1);
+    expect(afterCrash.get(restricted.id)).toEqual({
+      status: 'pending',
+      attempts: 0,
+      payload: written.get(restricted.id)?.payload,
+    });
+    expect(second).toEqual({ published: 1, failed: 0, interrupted: false });
+    // The server dropped the second copy inside its window; the row is now sent and redacted.
+    expect(await stored('EVENTS_RESTRICTED_redactcrash')).toBe(1);
+    expect(afterRetry.get(restricted.id)?.status).toBe('sent');
+    expect(afterRetry.get(restricted.id)?.payload).toHaveProperty('$redacted', true);
+    expect(afterRetry.get(restricted.id)?.payload).not.toHaveProperty('email');
+  });
+
+  it('redacts by itself the restricted rows an older kit sent whole, and leaves parked and unrestricted rows alone', async () => {
+    const signedUp: Record<string, unknown> = {
+      id: '0193a1f0-0000-7000-8000-0000000000d1',
+      occurredAt: '2026-11-15T10:00:00.000Z',
+      ...userSignedUp(),
+    };
+    const parked: Record<string, unknown> = {
+      ...signedUp,
+      id: '0193a1f0-0000-7000-8000-0000000000d2',
+    };
+    const task: Record<string, unknown> = {
+      id: '0193a1f0-0000-7000-8000-0000000000d3',
+      occurredAt: '2026-11-15T10:00:00.000Z',
+      ...taskUpdated({ taskId: 'CAD-OLD-KIT' }),
+    };
+    // What an older kit leaves behind: a restricted row sent with its payload.
+    await database.admin.query(
+      `insert into outbox_events
+         (id, event_name, subject, stream, organization_id, payload, status, sent_at, attempts)
+       values
+         ($1, 'user.signed-up.v1', 'restricted-sweep.user.signed-up.v1', 'EVENTS_RESTRICTED_sweep',
+          null, $2::jsonb, 'sent', now() - interval '1 hour', 0),
+         ($3, 'user.signed-up.v1', 'restricted-sweep.user.signed-up.v1', 'EVENTS_RESTRICTED_sweep',
+          null, $4::jsonb, 'failed', null, 20),
+         ($5, 'task.updated.v1', 'evt-sweep.task.updated.v1', 'EVENTS_sweep',
+          $6, $7::jsonb, 'sent', now() - interval '1 hour', 0)`,
+      [
+        signedUp.id,
+        JSON.stringify(signedUp),
+        parked.id,
+        JSON.stringify(parked),
+        task.id,
+        ATELIER_NORD,
+        JSON.stringify(task),
+      ],
+    );
+
+    const application: TestingModule = await startService(database, nats, {
+      ...isolatedNames('sweep'),
+      service: 'identity-service',
+    });
+    await waitFor(async () =>
+      Object.hasOwn((await payloads()).get(String(signedUp.id))?.payload ?? {}, '$redacted'),
+    );
+    const rows: Map<string, StoredPayload> = await payloads();
+    await application.close();
+
+    expect(rows.get(String(signedUp.id))).toEqual({
+      status: 'sent',
+      attempts: 0,
+      payload: {
+        id: signedUp.id,
+        occurredAt: signedUp.occurredAt,
+        organizationId: null,
+        actor: { type: 'user', id: CAMILLE },
+        version: 1,
+        $redacted: true,
+      },
+    });
+    expect(rows.get(String(parked.id))).toEqual({
+      status: 'failed',
+      attempts: 20,
+      payload: parked,
+    });
+    expect(rows.get(String(task.id))).toEqual({ status: 'sent', attempts: 0, payload: task });
   });
 
   it('publishes again after a crash between the publish and the commit, and the consumer handles the event once', async () => {

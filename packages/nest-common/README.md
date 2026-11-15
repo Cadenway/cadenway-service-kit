@@ -778,7 +778,10 @@ await this.tenant.run(async (tx) => {
   process. The pool enables TCP keep-alive. `statement_timeout`, `lock_timeout` and
   `idle_in_transaction_session_timeout` are set per role, by cadenway-ops.
 - The system runner removes the filter: every query of a system transaction names the rows it
-  means. Never use it to serve the request of a user.
+  means. Never use it to serve a request that carries an organization: that one goes through the
+  tenant runner. A request without an organization (sign-up, sign-in, a route with an anonymous
+  or system subject, a user acting outside any organization) is served in a system transaction,
+  as the `Idempotency-Key` interceptor does.
 
 ### Row-level security
 

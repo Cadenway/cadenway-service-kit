@@ -14,6 +14,11 @@ paths:
 - The identity events that carry a single-use code or link live on `restricted.<event-name>`, in
   `EVENTS_RESTRICTED`: identity publishes them, notification alone consumes them. A service lists
   them in the `restrictedEvents` option; nothing else is published outside `evt.>`.
+- The statement that marks a restricted outbox row sent replaces its payload with the envelope
+  and `"$redacted": true`: the code or link travels in the message only. A failed publish keeps
+  the payload for the next attempt; a redacted row is never requeued nor published again. Rows an
+  older kit sent whole are redacted by the relay at start and with every purge. The table schema
+  does not change.
 - cadenway-ops creates the three streams (`EVENTS`, `EVENTS_RESTRICTED`, `EVENTS_DLQ`): a service
   never creates, changes or deletes a stream outside local tests (`manageStreams` stays off).
 - Publish with `Nats-Msg-Id` set to the event id. The server deduplicates inside its two-minute
@@ -28,9 +33,9 @@ paths:
   backend allowed to read a restricted event (`deadLetterWorker`, off by default).
 - Every event carries the `version` of its aggregate. A consumer skips a version it has already
   applied, so a late redelivery never overwrites a newer state.
-- Sent outbox rows are kept seven days, to publish again after a NATS loss. An index is rebuilt by
-  its owner re-emitting current state on `rebuild.<consumer>.<entity>`, never by replaying the stream.
-  `<consumer>` is the NATS user of the consumer (`rebuild.search.task`); the messages are plain NATS
+- Sent outbox rows are kept seven days, to publish again after a NATS loss; a redacted restricted
+  row cannot be, its owner issues a new code. An index is rebuilt by its owner re-emitting current
+  state on `rebuild.<consumer>.<entity>`, never by replaying the stream. `<consumer>` is the NATS user of the consumer (`rebuild.search.task`); the messages are plain NATS
   and unacknowledged by default, because the broker gives no user the right to reply.
 - The trace context travels as `traceparent` (W3C). Payloads are validated with the zod schemas of
   `@cadenway/contracts` on publish and on receipt.

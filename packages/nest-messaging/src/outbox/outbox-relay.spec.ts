@@ -89,7 +89,8 @@ describe('OutboxRelay', () => {
     // Passes at 0 s, 2 s, 6 s, 14 s and 30 s (pauses of 2, 4, 8, 16 then 30 s), the next at 60 s.
     expect(calls.slice(0, 7)).toEqual([1, 2, 2, 2, 2, 3, 3]);
     expect(whileDown).toBe(5);
-    expect(recovered).toBe(whileDown + 1);
+    // The first pass that succeeds is followed by the redaction sweep, then never again here.
+    expect(recovered).toBe(whileDown + 2);
     // Once a pass succeeds, the relay polls every second again.
     expect(run.mock.calls.length - recovered).toBeGreaterThanOrEqual(4);
   });

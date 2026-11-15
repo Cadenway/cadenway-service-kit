@@ -215,6 +215,31 @@ when the use case writes the event and stores the subject and the stream in the 
 relay publishes that route as it is. During a rolling deploy, a replica that does not list the
 event yet cannot move it to `evt.>`.
 
+**The outbox does not keep the code.** The statement that marks a restricted row sent (a row
+stored on `EVENTS_RESTRICTED`, or on a subject under `restricted.`) replaces its payload with its
+envelope and a marker, `{ id, occurredAt, organizationId, actor, version, "$redacted": true }`,
+so the single-use code or link it carried does not stay in the table while a sent row is kept
+(`retentionDays`, seven by default). The message on `restricted.<name>` carries the full payload.
+Unrestricted rows keep theirs. The column keeps its type and its constraints: the table schema
+does not change.
+
+- A publish that fails leaves the payload in place for the next attempt, and so does a crash or a
+  failed commit after the publish: the row stays pending and whole, and is redacted only by the
+  statement that marks it sent. A row parked after 20 failures keeps its payload until it is
+  requeued and published.
+- Rows sent whole before the upgrade, or by a replica still on an older kit during the rollout,
+  are redacted by the relay at its first pass and with every purge (`purgeIntervalMs`), so the
+  table converges once every replica runs this version. With the purge disabled, that happens
+  at the start of each process only.
+- A redacted row is never published again by this version. `requeueOutboxEvents` skips it, and a
+  relay that finds one pending (set pending by hand, or by the requeue of an older kit) marks it
+  sent again with a warning instead of publishing it. A relay of an older kit would publish its
+  bare envelope, which the consumer terminates as an invalid payload: once a replica runs this
+  version, run `requeueOutboxEvents` from this version only. A restricted event lost with NATS is
+  not restored by a requeue: its owner issues a new code or link.
+- A spec that needs the code reads the message from `EVENTS_RESTRICTED`, as notification-service
+  receives it, not the outbox row.
+
 ## Consuming
 
 A handler consumes one event through its own durable pull consumer, `<service>__<handler>`, with
@@ -402,21 +427,22 @@ It requires `DatabaseModule` of `@cadenway/nest-common/database` and `MessagingM
 provides `OutboxWriter`, `OutboxRelay` and the deduplicator, globally. `OutboxModule.forRootAsync({
 imports, inject, useFactory })` builds the options from injected providers.
 
-| Option                   | Default | Effect                                                                                                   |
-| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------- |
-| `relay`                  | `true`  | Runs the relay in this process. Several replicas may run it; turn it off to run it in one replica only   |
-| `pollIntervalMs`         | 1000    | Pause between two passes when nothing woke the relay                                                     |
-| `batchSize`              | 100     | Rows locked and published per pass                                                                       |
-| `purgeIntervalMs`        | 1 hour  | Pause between two purges by the relay; `0` disables them (schedule the purge functions yourself)         |
-| `retentionDays`          | 7       | Age of the sent outbox rows the purge deletes                                                            |
-| `processedRetentionDays` | 14      | Age of the processed ids the purge deletes: seven days in the stream plus seven days of possible requeue |
+| Option                   | Default | Effect                                                                                                                                                  |
+| ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `relay`                  | `true`  | Runs the relay in this process. Several replicas may run it; turn it off to run it in one replica only                                                  |
+| `pollIntervalMs`         | 1000    | Pause between two passes when nothing woke the relay                                                                                                    |
+| `batchSize`              | 100     | Rows locked and published per pass                                                                                                                      |
+| `purgeIntervalMs`        | 1 hour  | Pause between two purges by the relay, each of which also redacts restricted rows sent whole; `0` disables them (schedule the purge functions yourself) |
+| `retentionDays`          | 7       | Age of the sent outbox rows the purge deletes                                                                                                           |
+| `processedRetentionDays` | 14      | Age of the processed ids the purge deletes: seven days in the stream plus seven days of possible requeue                                                |
 
 **The relay** starts when the application has bootstrapped and stops, after its pass in progress,
 on shutdown. Each pass is one transaction of the system runner:
 `select ... where status = 'pending' and next_attempt_at <= now() order by next_attempt_at,
 created_at limit <batch> for update skip locked`, publish each row on the subject and to the stream
-it stores, with `Nats-Msg-Id` set to its id, mark the published ones `sent`. A row locked by one
-replica is skipped by the others. A full batch is followed by another pass at once.
+it stores, with `Nats-Msg-Id` set to its id, mark the published ones `sent` and, in the same
+statement, [redact the restricted ones](#restricted-events). A row locked by one replica is
+skipped by the others. A full batch is followed by another pass at once.
 
 A publish failure of one row leaves it pending, increments `attempts`, stores the class of the
 error in `last_error` (never a message or a payload) and delays its next attempt: 1 s, doubling,
@@ -430,11 +456,11 @@ pass by hand and returns `{ published, failed, interrupted }`.
 
 Maintenance functions, each taking the scope of a system transaction:
 
-| Function                                       | Effect                                                                                                        |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `purgeSentOutboxEvents(tx, olderThanDays = 7)` | Deletes the rows sent before that age; pending rows are never deleted                                         |
-| `purgeProcessedEvents(tx, olderThanDays = 14)` | Deletes the processed ids recorded before that age                                                            |
-| `requeueOutboxEvents(tx, since)`               | Marks pending again the rows sent since `since`, to publish them again after a NATS loss, and the parked rows |
+| Function                                       | Effect                                                                                                                                         |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `purgeSentOutboxEvents(tx, olderThanDays = 7)` | Deletes the rows sent before that age; pending rows are never deleted                                                                          |
+| `purgeProcessedEvents(tx, olderThanDays = 14)` | Deletes the processed ids recorded before that age                                                                                             |
+| `requeueOutboxEvents(tx, since)`               | Marks pending again the rows sent since `since`, to publish them again after a NATS loss, and the parked rows; never a redacted restricted row |
 
 `DEFAULT_OUTBOX_RETENTION_DAYS` (7) and `DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS` (14) are the
 defaults of the two purges.
@@ -506,6 +532,7 @@ a server configured like cadenway-ops.
 - The relay does not reorder events and the consumers do not serialize them.
 - The route of an outbox row is decided by the replica that writes it: listing an event in
   `restrictedEvents` does not move rows already written.
+- A restricted event cannot be published again from the outbox once sent: its payload is redacted.
 - `processed_events` is keyed by consumer and event id only, not by organization: event ids are
   UUIDs unique across organizations.
 
@@ -522,3 +549,4 @@ major, with a migration note per service:
 | Dead-letter headers | `Cadenway-Dead-Letter-Consumer`, `-Reason` (`max-deliveries`, `terminated`), `-Stream-Sequence`, `-Deliveries`, `-Payload` (`dropped`); `Nats-Msg-Id` `<stream>.<consumer>.<sequence>` |
 | Rebuild reply       | `{"ok":true}` or `{"ok":false,"reason":"<reason>"}`; an emitter reads a reason it does not know as a rejection                                                                         |
 | Tables              | `outbox_events` (key `id`), `processed_events` (key `consumer`, `event_id`), `event_versions` (unique `consumer`, `organization_id`, `aggregate_key`, nulls not distinct)              |
+| Redacted payload    | Payload of a sent restricted outbox row: `{ id, occurredAt, organizationId, actor, version, "$redacted": true }`; the `$redacted` key marks it                                         |
