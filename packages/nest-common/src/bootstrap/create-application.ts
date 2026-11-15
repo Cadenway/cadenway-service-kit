@@ -1,9 +1,10 @@
-import type { DynamicModule, Type } from '@nestjs/common';
+import { Logger as NestLogger, type DynamicModule, type Type } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from 'nestjs-pino';
 import type pino from 'pino';
 
+import { OrganizationContextInterceptor } from '../auth/internal-token.guard.js';
 import {
   InternalTokenModule,
   type InternalTokenModuleOptions,
@@ -150,6 +151,23 @@ export interface CreateApplicationOptions {
 }
 
 /**
+ * Function silenceNestLogger
+ *
+ * @description
+ * Drops the NestJS lines buffered while a failed application was being created, and keeps the
+ * static NestJS logger silent afterwards. The caller reports the error as one structured line
+ * (`runApplication`); NestJS would otherwise print the buffered lines, and those its other
+ * modules still write while the creation unwinds, through its console logger. The next
+ * application created in the same process, such as the next test, installs its own logger.
+ *
+ * @returns {void}
+ */
+function silenceNestLogger(): void {
+  NestLogger.overrideLogger(false);
+  NestLogger.flush();
+}
+
+/**
  * Function createApplication
  *
  * @description
@@ -159,21 +177,28 @@ export interface CreateApplicationOptions {
  * - structured logs (`LoggingModule`) and the NestJS logger routed to them;
  * - `ProblemFilter` for every error, `ZodValidationPipe` for `zodDto` parameters;
  * - `RouteNameInterceptor` and `EtagInterceptor`;
- * - the internal token guard and the organization context, required unless
- *   `internalTokenVerification` is `off`;
+ * - the internal token guard, required unless `internalTokenVerification` is `off`;
+ * - `OrganizationContextInterceptor` in every case: it opens the context of the verified
+ *   internal token, or the one attached with `setRequestOrganizationContext` by an application
+ *   that verifies its callers itself, and does nothing for a request with neither;
  * - the JSON body limit and the request deadline;
+ * - no `X-Powered-By` header;
  * - shutdown hooks, with telemetry flushed after the application closed its own resources.
  *
  * It does not listen: the caller calls `app.listen(port)`. It imports no health or database
  * module either: the module of the application declares what it depends on.
  *
- * @param {Type<unknown>} applicationModule - Root module of the application.
+ * An error while the application is created (an invalid configuration read by a provider, a
+ * failing provider factory) rejects the returned promise: NestJS neither prints it with its
+ * console logger nor aborts the process, so `runApplication` can write it as one structured line.
+ *
+ * @param {Type<unknown> | DynamicModule} applicationModule - Root module of the application, as a class or a dynamic module.
  * @param {CreateApplicationOptions} options - Identity of the application and optional settings.
  * @returns {Promise<NestExpressApplication>} The application, ready to listen.
- * @throws {Error} When no internal token verifier is configured and verification was not turned off.
+ * @throws {Error} When no internal token verifier is configured and verification was not turned off, or when a provider fails while the application is created.
  */
 export async function createApplication(
-  applicationModule: Type<unknown>,
+  applicationModule: Type<unknown> | DynamicModule,
   options: CreateApplicationOptions,
 ): Promise<NestExpressApplication> {
   if (
@@ -203,17 +228,36 @@ export async function createApplication(
         : [InternalTokenModule.forRoot(options.internalToken)]),
       applicationModule,
     ],
+    // Global interceptors run in the order they are registered, the first outermost. The
+    // providers of this root module come before those of any imported module, so the
+    // organization context opened here wraps the handler and the `Idempotency-Key`
+    // interceptor of `DatabaseModule`.
     providers: [
       { provide: APP_FILTER, useClass: ProblemFilter },
       { provide: APP_PIPE, useValue: new ZodValidationPipe() },
       { provide: APP_INTERCEPTOR, useClass: RouteNameInterceptor },
       { provide: APP_INTERCEPTOR, useClass: EtagInterceptor },
+      { provide: APP_INTERCEPTOR, useClass: OrganizationContextInterceptor },
     ],
   };
-  const app: NestExpressApplication = await NestFactory.create<NestExpressApplication>(root, {
-    bufferLogs: true,
-  });
+  let app: NestExpressApplication;
+  try {
+    app = await NestFactory.create<NestExpressApplication>(root, {
+      bufferLogs: true,
+      // The lines buffered before the structured logger exists are flushed below, through it;
+      // when creation fails they are dropped instead of printed by the NestJS console logger.
+      autoFlushLogs: false,
+      // NestJS would otherwise log the error with its console logger and abort the process.
+      abortOnError: false,
+    });
+  } catch (error) {
+    silenceNestLogger();
+    throw error;
+  }
   app.useLogger(app.get(Logger));
+  app.flushLogs();
+  // Express announces itself by default; the header tells a scanner what to try.
+  app.disable('x-powered-by');
   applyJsonBodyLimit(app, options.jsonBodyLimitBytes ?? JSON_BODY_LIMIT_BYTES);
   app.use(
     requestDeadlineMiddleware({

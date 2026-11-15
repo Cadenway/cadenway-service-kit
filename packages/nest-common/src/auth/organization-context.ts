@@ -49,7 +49,9 @@ export interface InternalActor {
  *
  * @description
  * Who the current work is done for: the organization and the actor. On an HTTP request it is
- * derived from the verified internal token and from nothing else.
+ * derived from the verified internal token or, in an application that verifies its callers
+ * itself, from what `setRequestOrganizationContext` attached after that verification; from
+ * nothing else.
  */
 export interface OrganizationContext {
   // #region Properties
@@ -145,10 +147,11 @@ export function requireOrganizationId(): string {
  * @description
  * Runs work inside an organization context. Everything the work awaits sees the context.
  *
- * For trusted entry points only. On HTTP the kit calls it with the verified internal token and
- * an application never does. Elsewhere it is called with an identity the service itself
- * established: the envelope of an event validated against its contract, or a job the service
- * enqueued. Never build the context from a path, a query string or a request body.
+ * For trusted entry points only. On HTTP the kit calls it with the verified internal token or
+ * the context attached by `setRequestOrganizationContext`, and an application never does.
+ * Elsewhere it is called with an identity the service itself established: the envelope of an
+ * event validated against its contract, or a job the service enqueued. Never build the context
+ * from a path, a query string or a request body.
  *
  * @param {OrganizationContext} context - Organization and actor of the work.
  * @param {() => TResult} work - Work to run inside the context.

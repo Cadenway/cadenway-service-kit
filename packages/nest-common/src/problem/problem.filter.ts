@@ -1,6 +1,74 @@
-import { Catch, HttpException, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
+import {
+  Catch,
+  HttpException,
+  Logger,
+  type ArgumentsHost,
+  type ExceptionFilter,
+} from '@nestjs/common';
 
 import { PROBLEM_CONTENT_TYPE, ProblemException, statusTitle, type Problem } from './problem.js';
+
+/**
+ * Constant WS_EXCEPTION_EVENT
+ *
+ * @description
+ * Event a WebSocket client receives the problem under: the name the NestJS WebSocket exception
+ * filter uses, which Socket.IO clients of NestJS gateways listen to.
+ *
+ * @type {'exception'}
+ */
+export const WS_EXCEPTION_EVENT: 'exception' = 'exception';
+
+/**
+ * Interface ProblemSocket
+ *
+ * @description
+ * Part of a WebSocket client (a Socket.IO socket) the filter uses. Structural, so this package
+ * does not depend on `@nestjs/websockets` or on a socket library.
+ */
+interface ProblemSocket {
+  // #region Methods
+  /**
+   * Method emit
+   *
+   * @description
+   * Sends one event to the client.
+   *
+   * @param {string} event - Event name.
+   * @param {unknown} payload - Event payload.
+   * @returns {unknown} Ignored.
+   */
+  emit(event: string, payload: unknown): unknown;
+  // #endregion
+}
+
+/**
+ * Constant logger
+ *
+ * @description
+ * Logger of the unexpected errors of WebSocket messages, which have no request logger to carry
+ * them.
+ *
+ * @type {Logger}
+ */
+const logger: Logger = new Logger('ProblemFilter');
+
+/**
+ * Function isProblemSocket
+ *
+ * @description
+ * Tells whether a WebSocket client can receive an event.
+ *
+ * @param {unknown} client - Client of the message.
+ * @returns {boolean} `true` when it has an `emit` method.
+ */
+function isProblemSocket(client: unknown): client is ProblemSocket {
+  return (
+    typeof client === 'object' &&
+    client !== null &&
+    typeof (client as { emit?: unknown }).emit === 'function'
+  );
+}
 
 /**
  * Interface ProblemResponse
@@ -180,7 +248,12 @@ export function toProblem(exception: unknown): Problem {
  * | Anything else                          | 500 `internal.unexpected`, with no detail             |
  *
  * A stack trace is never sent. A response from 500 hands its error to the request logger, which
- * writes it on the completion line. Outside HTTP the error is thrown again untouched.
+ * writes it on the completion line.
+ *
+ * For a WebSocket message (`@SubscribeMessage`), the same problem, with the same sanitization, is
+ * emitted to the client socket as the event `exception`, the NestJS WebSocket convention; an
+ * unexpected error is logged at `error` level, as no request logger carries it. For any other
+ * context, such as RPC, the error is thrown again untouched.
  */
 @Catch()
 export class ProblemFilter implements ExceptionFilter {
@@ -189,13 +262,19 @@ export class ProblemFilter implements ExceptionFilter {
    * Method catch
    *
    * @description
-   * Writes the problem response, unless the response already started.
+   * Writes the problem response, unless the response already started; for a WebSocket message,
+   * emits it to the client.
    *
    * @param {unknown} exception - Error thrown while handling the request.
    * @param {ArgumentsHost} host - Execution context of the request.
    * @returns {void}
+   * @throws {unknown} The exception itself, outside HTTP and WebSocket.
    */
   public catch(exception: unknown, host: ArgumentsHost): void {
+    if (host.getType() === 'ws') {
+      this.emitToSocket(exception, host);
+      return;
+    }
     if (host.getType() !== 'http') {
       throw exception;
     }
@@ -212,6 +291,28 @@ export class ProblemFilter implements ExceptionFilter {
     }
     response.setHeader('Content-Type', PROBLEM_CONTENT_TYPE);
     response.status(problem.status).json(problem);
+  }
+
+  /**
+   * Method emitToSocket
+   *
+   * @description
+   * Emits the problem of a failed WebSocket message to its client as `exception`. A client that
+   * cannot receive events gets nothing; an unexpected error is logged either way.
+   *
+   * @param {unknown} exception - Error thrown while handling the message.
+   * @param {ArgumentsHost} host - Execution context of the message.
+   * @returns {void}
+   */
+  private emitToSocket(exception: unknown, host: ArgumentsHost): void {
+    const problem: Problem = toProblem(exception);
+    if (problem.status >= 500) {
+      logger.error({ err: exception }, 'websocket message failed');
+    }
+    const client: unknown = host.switchToWs().getClient();
+    if (isProblemSocket(client)) {
+      client.emit(WS_EXCEPTION_EVENT, problem);
+    }
   }
   // #endregion
 }

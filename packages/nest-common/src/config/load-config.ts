@@ -79,10 +79,29 @@ export function loadConfig<TConfig>(
   const result: z.ZodSafeParseResult<TConfig> = schema.safeParse(present);
   if (!result.success) {
     throw new ConfigError(
-      result.error.issues.map(
-        (issue) => `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`,
-      ),
+      result.error.issues.map((issue: z.core.$ZodIssue) => describeIssue(issue, present)),
     );
   }
   return Object.freeze(result.data);
+}
+
+/**
+ * Function describeIssue
+ *
+ * @description
+ * Words one validation issue as `<NAME>: <reason>`. A variable that is not set (absent, or empty,
+ * which counts as unset) and has no default reads `required, not set`, rather than the type
+ * mismatch zod reports for `undefined`; a variable that is set keeps the message of zod, which
+ * names the expectation and never the received value.
+ *
+ * @param {z.core.$ZodIssue} issue - Issue reported by the schema.
+ * @param {Readonly<Record<string, string>>} present - Variables that are set, by name.
+ * @returns {string} The entry of `ConfigError.issues`.
+ */
+function describeIssue(issue: z.core.$ZodIssue, present: Readonly<Record<string, string>>): string {
+  const name: PropertyKey | undefined = issue.path.length === 1 ? issue.path[0] : undefined;
+  if (typeof name === 'string' && !Object.hasOwn(present, name)) {
+    return `${name}: required, not set`;
+  }
+  return `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`;
 }

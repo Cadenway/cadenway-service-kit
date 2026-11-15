@@ -56,7 +56,7 @@ export interface HealthIndicator {
  * Interface HealthModuleOptions
  *
  * @description
- * Options of `HealthModule.forRoot`.
+ * Options of `HealthModule.forRoot`, or what the factory of `HealthModule.forRootAsync` returns.
  */
 export interface HealthModuleOptions {
   // #region Properties
@@ -83,6 +83,20 @@ export interface HealthModuleOptions {
    * @readonly
    */
   readonly timeoutMs?: number;
+
+  /**
+   * Property shutdownDelayMs
+   *
+   * @description
+   * Time the shutdown waits, once readiness answers 503, before the listener closes, in
+   * milliseconds. Defaults to 0: the shutdown is not slowed. Set it to a little more than the
+   * interval at which the proxy probes readiness, so it stops routing to the instance before
+   * the instance stops listening, and keep it under the stop grace period of the container.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly shutdownDelayMs?: number;
   // #endregion
 }
 

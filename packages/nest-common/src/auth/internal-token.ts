@@ -440,6 +440,34 @@ const claimSetSchema: z.ZodType<TokenClaimSet> = z
   );
 
 /**
+ * Function assertConsistentContext
+ *
+ * @description
+ * Checks that an organization context could be carried by an internal token, with the rules the
+ * signer and the verifier apply to the claims. Internal to the package: used where an
+ * application attaches a context it established itself.
+ *
+ * @param {OrganizationContext} context - Context to check.
+ * @returns {void}
+ * @throws {Error} When the context is inconsistent; the message names no value.
+ */
+export function assertConsistentContext(context: OrganizationContext): void {
+  const result: z.ZodSafeParseResult<TokenClaimSet> = claimSetSchema.safeParse({
+    actor: { type: context.actor.type, id: context.actor.id },
+    organization_id: context.organizationId,
+    role: context.role,
+    scopes: [...context.scopes],
+  });
+  if (!result.success) {
+    throw new Error(
+      `Inconsistent organization context: ${result.error.issues
+        .map((issue) => (issue.path.length > 0 ? issue.path.join('.') : 'actor'))
+        .join(', ')}.`,
+    );
+  }
+}
+
+/**
  * Function invalidToken
  *
  * @description

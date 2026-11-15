@@ -12,11 +12,12 @@ import { Reflector } from '@nestjs/core';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { from, lastValueFrom, type Observable } from 'rxjs';
 
-import { principalOf } from '../auth/internal-token.guard.js';
-import type { InternalPrincipal } from '../auth/internal-token.js';
+import { requestOrganizationContextOf } from '../auth/internal-token.guard.js';
 import {
   getOrganizationContext,
   runWithOrganizationContext,
+  type InternalActor,
+  type OrganizationContext,
 } from '../auth/organization-context.js';
 import { ProblemException } from '../problem/problem.js';
 import idempotencyKeys from './idempotency.schema.js';
@@ -395,26 +396,18 @@ export class IdempotencyInterceptor implements NestInterceptor {
   ): Promise<unknown> {
     const transactionOptions: TransactionOptions =
       options.isolationLevel === undefined ? {} : { isolationLevel: options.isolationLevel };
-    const principal: InternalPrincipal | undefined = principalOf(request);
-    const organizationId: string | null = principal?.organizationId ?? null;
+    const identity: OrganizationContext | undefined = requestOrganizationContextOf(request);
+    const organizationId: string | null = identity?.organizationId ?? null;
     const work: (scope: TransactionScope<DatabaseSchema>) => Promise<unknown> = (
       scope: TransactionScope<DatabaseSchema>,
     ) => this.runOnce(context, next, request, key, organizationId, scope);
-    if (principal === undefined || organizationId === null) {
+    if (identity === undefined || organizationId === null) {
       return this.system.run(work, transactionOptions);
     }
     // The organization context interceptor may be registered after this one: open the context
-    // from the same verified principal rather than depend on the order.
+    // from the same identity rather than depend on the order.
     return getOrganizationContext() === undefined
-      ? runWithOrganizationContext(
-          {
-            organizationId,
-            actor: principal.actor,
-            role: principal.role,
-            scopes: principal.scopes,
-          },
-          () => this.tenant.run(work, transactionOptions),
-        )
+      ? runWithOrganizationContext(identity, () => this.tenant.run(work, transactionOptions))
       : this.tenant.run(work, transactionOptions);
   }
 
@@ -452,7 +445,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         detail: 'A request with this Idempotency-Key is still running.',
       });
     }
-    const actor: InternalPrincipal['actor'] | undefined = principalOf(request)?.actor;
+    const actor: InternalActor | undefined = requestOrganizationContextOf(request)?.actor;
     const fingerprint: string = requestFingerprint(
       request,
       actor === undefined ? 'none' : `${actor.type}:${actor.id ?? ''}`,
