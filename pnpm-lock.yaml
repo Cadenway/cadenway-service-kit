@@ -387,7 +387,7 @@ importers:
   packages/nest-jobs:
     dependencies:
       pg-boss:
-        specifier: ^12.38.2
+        specifier: 12.38.2
         version: 12.38.2(@opentelemetry/api@1.10.0)
     devDependencies:
       '@nestjs/common':
@@ -396,12 +396,21 @@ importers:
       '@nestjs/core':
         specifier: 'catalog:'
         version: 12.4.2(@nestjs/common@12.4.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@12.4.2)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@testcontainers/postgresql':
+        specifier: ^12.2.1
+        version: 12.2.1(bare-buffer@3.7.1)
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
+      '@types/pg':
+        specifier: ^8.15.6
+        version: 8.15.6
       pg:
         specifier: 'catalog:'
         version: 8.23.1
+      testcontainers:
+        specifier: ^12.2.1
+        version: 12.2.1(bare-buffer@3.7.1)
 
   packages/nest-messaging:
     dependencies:

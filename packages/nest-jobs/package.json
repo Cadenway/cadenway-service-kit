@@ -1,7 +1,7 @@
 {
   "name": "@cadenway/nest-jobs",
-  "version": "0.1.0",
-  "description": "Durable background jobs for the Cadenway NestJS services. Package shell: no implementation yet.",
+  "version": "0.2.0",
+  "description": "Durable background jobs for the Cadenway NestJS services, kept in PostgreSQL through pg-boss: transactional enqueue, occurrence keys, retries, dead letters, cron schedules.",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
@@ -23,7 +23,7 @@
     "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "pg-boss": "^12.38.2"
+    "pg-boss": "12.38.2"
   },
   "peerDependencies": {
     "@nestjs/common": "catalog:",
@@ -33,7 +33,10 @@
   "devDependencies": {
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "catalog:",
-    "pg": "catalog:"
+    "@types/pg": "^8.15.6",
+    "pg": "catalog:",
+    "testcontainers": "^12.2.1"
   }
 }
