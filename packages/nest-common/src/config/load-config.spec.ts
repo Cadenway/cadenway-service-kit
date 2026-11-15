@@ -156,6 +156,34 @@ describe('ConfigModule', () => {
     await moduleRef.close();
   });
 
+  it('provides an already validated configuration without reading the environment', async () => {
+    /**
+     * Class ValueFeatureModule
+     *
+     * @description
+     * Module that reads `CONFIG` without importing `ConfigModule`.
+     */
+    @Module({ providers: [ConfigReader], exports: [ConfigReader] })
+    class ValueFeatureModule {}
+
+    const validated: Readonly<TestConfig> = loadConfig(schema, {
+      PORT: '9090',
+      API_SECRET: 'z'.repeat(32),
+    });
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      imports: [ConfigModule.forValue(validated), ValueFeatureModule],
+    }).compile();
+    const mutable: { PORT: number } = { PORT: 1 };
+    const copied: DynamicModule = ConfigModule.forValue(mutable);
+
+    expect(moduleRef.get(ConfigReader).config).toBe(validated);
+    expect(
+      Object.isFrozen((copied.providers?.[0] as { useValue: unknown } | undefined)?.useValue),
+    ).toBe(true);
+    expect(Object.isFrozen(mutable)).toBe(false);
+    await moduleRef.close();
+  });
+
   it('throws while the module is declared when the environment is invalid', () => {
     expect(() => ConfigModule.forRoot({ schema, env: {} })).toThrow(ConfigError);
   });
