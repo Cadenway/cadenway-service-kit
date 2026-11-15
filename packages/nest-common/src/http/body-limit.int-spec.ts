@@ -163,6 +163,7 @@ describe('a malformed JSON body on an application with telemetry', () => {
   const responses: Map<string, Response> = new Map<string, Response>();
   let collector: Collector;
   let spans: ExportedSpan[];
+  let wellFormed: Response;
 
   beforeAll(async () => {
     collector = await startCollector();
@@ -196,10 +197,11 @@ describe('a malformed JSON body on an application with telemetry', () => {
           .send(body),
       );
     }
-    await request(app.getHttpServer())
+    // Over the 100 kB of the JSON parser NestJS adds after the one of the kit when telemetry
+    // wraps the handler names: that parser must find the body read and leave it alone.
+    wellFormed = await request(app.getHttpServer())
       .post('/internal/v1/samples')
-      .send({ title: 'well-formed' })
-      .expect(201);
+      .send({ title: 'well-formed', padding: 'p'.repeat(200_000) });
     // Closing the application flushes the spans to the collector.
     await app.close();
     spans = exportedSpans(collector.received.get('/v1/traces') ?? []);
@@ -222,8 +224,20 @@ describe('a malformed JSON body on an application with telemetry', () => {
     }
   });
 
+  it('still accepts a well-formed body larger than the default limit of NestJS', () => {
+    expect(wellFormed.status).toBe(201);
+    expect(wellFormed.body).toEqual({ received: true });
+  });
+
   it('writes no fragment of the bodies in the logs', () => {
-    expect(lines.length).toBeGreaterThan(0);
+    const completed: Record<string, unknown>[] = lines
+      .map((line: string) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line.msg === 'request completed' || line.msg === 'request failed');
+
+    // The capture works at `trace`: the well-formed request has its completion line. A refused
+    // body never reaches the request logger, which NestJS registers after the parser, so the
+    // malformed requests write no line of their own; every line is still searched.
+    expect(completed).toContainEqual(expect.objectContaining({ status: 201 }));
     for (const fragment of BODY_FRAGMENTS) {
       expect(lines.join('\n')).not.toContain(fragment);
     }

@@ -78,12 +78,14 @@ export interface BodyParserHost {
    * Method use
    *
    * @description
-   * Registers an Express middleware on the application.
+   * Registers an Express middleware on the application. A NestJS Express application has it;
+   * `applyJsonBodyLimit` then registers the parser of this package, which never hands on the
+   * text of a malformed body.
    *
    * @param {(request: IncomingMessage, response: ServerResponse, next: (error?: unknown) => void) => void} handler - Middleware to register.
    * @returns {unknown} Ignored.
    */
-  use(
+  use?(
     handler: (
       request: IncomingMessage,
       response: ServerResponse,
@@ -95,11 +97,11 @@ export interface BodyParserHost {
    * Method useBodyParser
    *
    * @description
-   * Registers a body parser of Express on the application. `applyJsonBodyLimit` no longer calls
-   * it; it stays in the interface so code typed against it keeps compiling.
+   * Registers a body parser of Express on the application. `applyJsonBodyLimit` calls it only on
+   * a host without `use`: the parser NestJS builds then refuses a malformed body, `ProblemFilter`
+   * answers it with the same fixed problem, but the parser error, with its text, still reaches
+   * the span of the Express instrumentation.
    *
-   * @deprecated No longer called by `applyJsonBodyLimit`, which registers its parser through
-   * `use`. Removed in the next major version.
    * @param {'json'} type - Parser to register.
    * @param {{ limit: number }} options - Options of the parser.
    * @returns {unknown} Ignored.
@@ -153,12 +155,15 @@ export function malformedJsonBody(): ProblemException {
  * Builds the JSON body parser of Express (`body-parser`, as NestJS registers it) with a size limit,
  * and replaces its refusal of a body that is not valid JSON with `malformedJsonBody()` before
  * handing it on. Everything downstream then sees the fixed problem only: the NestJS exception
- * layer and `ProblemFilter`, the request logger, and the span the Express instrumentation opens
- * around this middleware, which records the error the middleware hands on. Every other outcome,
- * a body over the limit included, is handed on unchanged.
+ * layer, `ProblemFilter`, and the span the Express instrumentation opens around this middleware,
+ * which records the error the middleware hands on. Every other outcome, a body over the limit
+ * included, is handed on unchanged.
  *
- * The middleware is named `jsonParser`, the name NestJS looks for in the router before it adds
- * its own JSON parser with a lower limit.
+ * The middleware is named `jsonParser`, like the parser of `body-parser`: NestJS looks for that
+ * name in the router before it adds its own JSON parser, with a lower limit. The Express
+ * instrumentation wraps the handler under another name, so with telemetry on NestJS adds its
+ * parser after this one anyway; it finds the body already read and hands on without parsing,
+ * and after a refusal Express skips it.
  *
  * @param {number} limitBytes - Largest accepted body, in bytes.
  * @returns {JsonBodyMiddleware} The middleware.
@@ -185,7 +190,7 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
  *
  * @description
  * Registers the JSON body parser with the Cadenway size limit. Call it before the application
- * is initialized: NestJS then skips its own JSON parser, whose limit is lower.
+ * is initialized, so the parser runs before the JSON parser NestJS adds, whose limit is lower.
  *
  * - A larger body is refused by the parser and answered 400 `request.body-too-large` by the
  *   problem filter.
@@ -193,8 +198,10 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
  *   text of the parser error, which quotes part of the body, reaches neither the response nor
  *   the logs nor the trace.
  *
- * The parser does not keep the raw body: the `rawBody` option of NestJS has no effect on JSON
- * bodies.
+ * On a host with `use`, such as a NestJS Express application, the parser is the one of this
+ * package. It does not keep the raw body: the `rawBody` option of NestJS has no effect on JSON
+ * bodies. A host without `use` gets the parser of NestJS through `useBodyParser`, as before: its
+ * response is the same, but the trace records the parser text.
  *
  * @param {BodyParserHost} app - NestJS application on the Express platform.
  * @param {number} limitBytes - Largest accepted body, in bytes; defaults to `JSON_BODY_LIMIT_BYTES`.
@@ -204,5 +211,9 @@ export function applyJsonBodyLimit(
   app: BodyParserHost,
   limitBytes: number = JSON_BODY_LIMIT_BYTES,
 ): void {
+  if (app.use === undefined) {
+    app.useBodyParser('json', { limit: limitBytes });
+    return;
+  }
   app.use(jsonBodyParser(limitBytes));
 }

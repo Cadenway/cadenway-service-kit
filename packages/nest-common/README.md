@@ -483,12 +483,16 @@ The text of the parser error quotes the characters around the faulty token, whic
 can be part of a password: the parser hands on this fixed problem instead, so neither the
 response nor the logs nor the trace carry it. The span of the parser middleware records a
 `ProblemException` with the message `request.invalid: The request body is not valid JSON.`.
-`ProblemFilter` answers the same problem for the JSON parser NestJS registers itself, in an
-application that does not call `applyJsonBodyLimit`. Every other refusal of the parser keeps its
-mapping.
+Every other refusal of the parser keeps its mapping.
 
-The parser does not keep the raw body: the `rawBody` option of NestJS has no effect on JSON
-bodies.
+In an application that does not call `applyJsonBodyLimit`, the JSON parser NestJS registers
+itself refuses the body: `ProblemFilter` answers it with the same problem, but the span of that
+parser still records the parser text. Use `createApplication`, or call `applyJsonBodyLimit`.
+
+The parser of this package does not keep the raw body: an application created with
+`{ rawBody: true }` that calls `applyJsonBodyLimit` gets no `req.rawBody` on JSON requests.
+`createApplication` never enables `rawBody`. A host without `use` still gets the parser of NestJS
+through `useBodyParser`, with the trace caveat above.
 
 ## Internal token
 

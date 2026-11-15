@@ -207,8 +207,10 @@ function externalStatus(exception: unknown): number | undefined {
  *
  * A body that is not valid JSON gets the fixed problem of `malformedJsonBody()`, never the
  * parser text, which quotes part of the body: the parser of `applyJsonBodyLimit` already hands
- * that problem on, and this also covers the JSON parser NestJS registers itself, whose refusal
- * NestJS wraps in a `BadRequestException` carrying the parser text.
+ * that problem on, and this also covers the response to the JSON parser NestJS registers itself,
+ * whose refusal NestJS wraps in a `BadRequestException` carrying the parser text. On that path
+ * the span of the Express instrumentation still records the parser text: only the parser of
+ * `applyJsonBodyLimit` keeps it out of the trace.
  *
  * @param {unknown} exception - Error caught by the filter.
  * @returns {Problem} The response body.
