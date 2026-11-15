@@ -89,9 +89,10 @@ export interface HealthModuleOptions {
    *
    * @description
    * Time the shutdown waits, once readiness answers 503, before the listener closes, in
-   * milliseconds. Defaults to 0: the shutdown is not slowed. Set it to a little more than the
-   * interval at which the proxy probes readiness, so it stops routing to the instance before
-   * the instance stops listening, and keep it under the stop grace period of the container.
+   * milliseconds. Defaults to 0: the shutdown is not slowed. Set it to the time the router in
+   * front needs to stop sending requests to a stopping instance, and keep it under the stop grace
+   * period of the container. See the README: Traefik on Docker follows container events, not the
+   * readiness route.
    *
    * @type {number | undefined}
    * @readonly

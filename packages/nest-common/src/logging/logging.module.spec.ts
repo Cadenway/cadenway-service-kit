@@ -294,6 +294,14 @@ describe('redaction helpers', () => {
     expect(maskEmails('from a.b+c@x.example to d@y.z.example')).toBe(
       `from ${REDACTED} to ${REDACTED}`,
     );
+    expect(maskEmails('Camille.Martin@AtelierNord.FR wrote')).toBe(`${REDACTED} wrote`);
+  });
+
+  it('keeps the versions of a pnpm store path readable', () => {
+    const frame: string =
+      'at file:///app/node_modules/.pnpm/@cadenway+nest-common@0.3.0_zod@4.6.7/node_modules/@cadenway/nest-common/dist/index.js:1:1';
+
+    expect(maskEmails(frame)).toBe(frame);
   });
 });
 

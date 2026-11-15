@@ -72,6 +72,8 @@ export interface ConfigModuleOptions<TConfig> {
  * an invalid environment throws a `ConfigError` before NestJS creates anything. With
  * `eager: false` it runs when NestJS creates the `CONFIG` provider, so a test can import the
  * application module statically and choose its environment before creating the application.
+ * `forValue` provides a configuration that was already validated, so `main.ts` validates the
+ * environment once.
  */
 @Module({})
 export class ConfigModule {
@@ -100,6 +102,29 @@ export class ConfigModule {
       module: ConfigModule,
       global: true,
       providers: [provider],
+      exports: [CONFIG],
+    };
+  }
+
+  /**
+   * Method forValue
+   *
+   * @description
+   * Registers an already validated configuration globally under the `CONFIG` token, without
+   * reading the environment again: the result of the `loadConfig` call of `main.ts`, or the
+   * configuration of a test. `createApplication` uses it when `provideConfig` is set. An
+   * application provides `CONFIG` once: either this or `forRoot`, never both.
+   *
+   * @param {Readonly<TConfig>} value - Configuration returned by `loadConfig`.
+   * @returns {DynamicModule} The global module providing `CONFIG`.
+   */
+  public static forValue<TConfig extends object>(value: Readonly<TConfig>): DynamicModule {
+    return {
+      module: ConfigModule,
+      global: true,
+      providers: [
+        { provide: CONFIG, useValue: Object.isFrozen(value) ? value : Object.freeze({ ...value }) },
+      ],
       exports: [CONFIG],
     };
   }

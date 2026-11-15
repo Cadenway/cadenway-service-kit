@@ -183,6 +183,18 @@ form, which injects `CONFIG`:
 export class AppModule {}
 ```
 
+`main.ts` needs the configuration before the application exists (log level, internal token keys),
+so it calls `loadConfig` itself. To validate the environment once, hand that result to the
+application instead of validating it again in `ConfigModule.forRoot`:
+
+- `createApplication(AppModule, { config, provideConfig: true, ... })` provides `config` globally
+  under `CONFIG` (`provideConfig` defaults to `false`; with `true`, `config` must be the complete
+  result of `loadConfig`);
+- `ConfigModule.forValue(config)` does the same in a module of your own, or in a test.
+
+The application module then injects `CONFIG` and imports no `ConfigModule`: provide `CONFIG` once,
+through one of the three. Its tests import `ConfigModule.forValue(testConfig)` next to it.
+
 Variables of `baseConfigShape`:
 
 | Variable     | Values                                                       | Default      |
@@ -1004,6 +1016,13 @@ the module, while liveness keeps answering 200:
 NestJS 12 closes in this order: the `onModuleDestroy` hooks, the `beforeApplicationShutdown`
 hooks, the listener, then the `onApplicationShutdown` hooks (where the database pool and telemetry
 close). Readiness turns down in `onModuleDestroy`, the first of them, and waits `shutdownDelayMs`
-there: set it a little above the interval at which the proxy probes readiness, so the proxy stops
-routing to the instance while it still serves, and keep it under the stop grace period of the
-container (10 seconds by default for Docker).
+there. Set it to the time the router in front needs to stop sending requests to a stopping
+instance, and keep it under the stop grace period of the container (10 seconds by default for
+Docker):
+
+- Traefik with its Docker provider does not probe the readiness route: it removes an instance when
+  Docker reports the container stopping or unhealthy, and applies Docker events at most every
+  `throttleDuration` (2 seconds by default; cadenway-ops keeps the default). Take that throttle plus
+  a margin: the gateways use
+  `shutdownDelayMs: 3000`.
+- A router or a load balancer that probes the readiness route: a little above its probe interval.

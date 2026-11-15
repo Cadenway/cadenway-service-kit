@@ -76,12 +76,14 @@ const SQL_ERROR_KEYS: ReadonlySet<string> = new Set<string>([
  * Constant EMAIL_PATTERN
  *
  * @description
- * Matches an e-mail address inside free text. Deliberately broad: masking a look-alike costs
- * nothing, leaking an address does.
+ * Matches an e-mail address inside free text. Deliberately broad on the local part: masking a
+ * look-alike costs nothing, leaking an address does. The last label of the domain must be
+ * letters, as every top-level domain is: a version such as `nest-common@0.3.0` in a pnpm store
+ * path of a stack trace is not an address and stays readable.
  *
  * @type {RegExp}
  */
-const EMAIL_PATTERN: RegExp = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/gu;
+const EMAIL_PATTERN: RegExp = /[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}/gu;
 
 /**
  * Constant SQL_PARAMETERS_PATTERN

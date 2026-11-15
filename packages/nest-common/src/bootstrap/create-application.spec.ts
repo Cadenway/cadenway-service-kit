@@ -4,6 +4,7 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
   Module,
   Post,
   Query,
@@ -16,6 +17,7 @@ import { z } from 'zod';
 
 import { InternalTokenSigner, type Ed25519PrivateJwk } from '../auth/internal-token.js';
 import { getOrganizationContext } from '../auth/organization-context.js';
+import { CONFIG } from '../config/config.module.js';
 import { HealthModule } from '../health/health.module.js';
 import { remainingBudgetMs } from '../http-client/request-deadline.js';
 import { pageQueryShape, type PageQuery } from '../pagination/cursor.js';
@@ -335,6 +337,83 @@ describe('createApplication', () => {
         internalToken: {},
       }),
     ).rejects.toThrow(/internalToken\.verifier is required/u);
+  });
+
+  it('provides the configuration main.ts validated, without reading the environment again', async () => {
+    /**
+     * Class ConfiguredController
+     *
+     * @description
+     * Route that answers with the injected configuration.
+     */
+    @Controller('internal/v1/configured')
+    class ConfiguredController {
+      // #region Constructor
+      /**
+       * Constructor
+       *
+       * @description
+       * Receives the configuration provided by `createApplication`.
+       *
+       * @param {{ PORT: number; SAMPLE_FLAG: string }} config - Validated configuration.
+       * @constructor
+       */
+      public constructor(
+        @Inject(CONFIG) private readonly config: { PORT: number; SAMPLE_FLAG: string },
+      ) {}
+      // #endregion
+
+      // #region Methods
+      /**
+       * Method read
+       *
+       * @description
+       * Returns two values of the configuration.
+       *
+       * @returns {{ port: number; flag: string }} The values.
+       */
+      @Get()
+      public read(): { port: number; flag: string } {
+        return { port: this.config.PORT, flag: this.config.SAMPLE_FLAG };
+      }
+      // #endregion
+    }
+
+    /**
+     * Class ConfiguredModule
+     *
+     * @description
+     * Application module that injects `CONFIG` and imports no `ConfigModule`.
+     */
+    @Module({ controllers: [ConfiguredController] })
+    class ConfiguredModule {}
+
+    const config: { LOG_LEVEL: 'silent'; PORT: number; SAMPLE_FLAG: string } = Object.freeze({
+      LOG_LEVEL: 'silent',
+      PORT: 4321,
+      SAMPLE_FLAG: 'from-main',
+    });
+    const configured: NestExpressApplication = await createApplication(ConfiguredModule, {
+      service: 'sample-service',
+      config,
+      provideConfig: true,
+      internalTokenVerification: 'off',
+    });
+    await configured.init();
+
+    const response: Response = await request(configured.getHttpServer())
+      .get('/internal/v1/configured')
+      .expect(200);
+    await configured.close();
+
+    expect(response.body).toEqual({ port: 4321, flag: 'from-main' });
+    await expect(
+      createApplication(ConfiguredModule, {
+        service: 'sample-service',
+        provideConfig: true,
+        internalTokenVerification: 'off',
+      }),
+    ).rejects.toThrow(/provideConfig needs the validated configuration/u);
   });
 
   it('ignores the timeout header of a caller when told not to accept it', async () => {

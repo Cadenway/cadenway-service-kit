@@ -10,6 +10,7 @@ import {
   type InternalTokenModuleOptions,
 } from '../auth/internal-token.module.js';
 import type { BaseConfig } from '../config/base-config.js';
+import { ConfigModule } from '../config/config.module.js';
 import { EtagInterceptor } from '../concurrency/etag.js';
 import {
   DEFAULT_REQUEST_BUDGET_MS,
@@ -147,7 +148,41 @@ export interface CreateApplicationOptions {
    * @readonly
    */
   readonly logDestination?: pino.DestinationStream;
+
+  /**
+   * Property provideConfig
+   *
+   * @description
+   * Provides `config` globally under the `CONFIG` token, so the application module injects the
+   * configuration `main.ts` already validated instead of importing `ConfigModule.forRoot`, which
+   * would read and validate the environment a second time. Defaults to `false`. With `true`,
+   * `config` must be the complete result of `loadConfig`, and the application module must not
+   * import `ConfigModule` itself.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly provideConfig?: boolean;
   // #endregion
+}
+
+/**
+ * Function configToProvide
+ *
+ * @description
+ * Returns the configuration `provideConfig` registers.
+ *
+ * @param {CreateApplicationOptions} options - Options of `createApplication`.
+ * @returns {Readonly<object>} The validated configuration.
+ * @throws {Error} When `provideConfig` is set without `config`.
+ */
+function configToProvide(options: CreateApplicationOptions): Readonly<object> {
+  if (options.config === undefined) {
+    throw new Error(
+      'createApplication: provideConfig needs the validated configuration in config.',
+    );
+  }
+  return options.config;
 }
 
 /**
@@ -195,7 +230,7 @@ function silenceNestLogger(): void {
  * @param {Type<unknown> | DynamicModule} applicationModule - Root module of the application, as a class or a dynamic module.
  * @param {CreateApplicationOptions} options - Identity of the application and optional settings.
  * @returns {Promise<NestExpressApplication>} The application, ready to listen.
- * @throws {Error} When no internal token verifier is configured and verification was not turned off, or when a provider fails while the application is created.
+ * @throws {Error} When no internal token verifier is configured and verification was not turned off, when `provideConfig` is set without `config`, or when a provider fails while the application is created.
  */
 export async function createApplication(
   applicationModule: Type<unknown> | DynamicModule,
@@ -226,6 +261,7 @@ export async function createApplication(
       ...(options.internalToken === undefined
         ? []
         : [InternalTokenModule.forRoot(options.internalToken)]),
+      ...(options.provideConfig === true ? [ConfigModule.forValue(configToProvide(options))] : []),
       applicationModule,
     ],
     // Global interceptors run in the order they are registered, the first outermost. The
