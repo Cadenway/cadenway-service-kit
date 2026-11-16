@@ -4,7 +4,7 @@ import {
   JOBS_MODULE_OPTIONS,
   type JobsModuleAsyncOptions,
   type JobsModuleOptions,
-} from './jobs-options.js';
+} from '../jobs/jobs-options.js';
 import { JobsService } from './jobs.service.js';
 
 /**

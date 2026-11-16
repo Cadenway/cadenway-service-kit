@@ -13,7 +13,7 @@ describe('expectedSchemaVersion', () => {
 
   it('goes with a pg-boss dependency pinned to one exact version', () => {
     const manifest: unknown = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
     );
 
     expect(manifest).toMatchObject({

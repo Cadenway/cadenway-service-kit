@@ -15,11 +15,11 @@ import {
   type MockInstance,
 } from 'vitest';
 
-import type { JobQueueDeclaration } from './job-queue.js';
-import type { Job, JobEnqueueResult, JobsTransaction } from './job.js';
+import type { JobQueueDeclaration } from '../jobs/job-queue.js';
+import type { Job, JobEnqueueResult, JobsTransaction } from '../jobs/job.js';
 import { JobsModule } from './jobs.module.js';
 import { JobsService } from './jobs.service.js';
-import { provisionJobs } from './provision-jobs.js';
+import { provisionJobs } from '../provisioning/provision-jobs.js';
 import {
   APP_ROLE,
   queryAs,
@@ -27,7 +27,7 @@ import {
   waitFor,
   type JobsTestDatabase,
   type JobsTestServer,
-} from './testing/jobs-database.js';
+} from '../testing/jobs-database.js';
 
 /**
  * Interface JobRow

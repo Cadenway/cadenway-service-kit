@@ -19,17 +19,15 @@ import {
   type JobQueueDeclaration,
   type ResolvedDeadLetterQueue,
   type ResolvedJobQueue,
-} from './job-queue.js';
+} from '../jobs/job-queue.js';
 import {
-  DEFAULT_JOBS_SCHEMA,
   JOBS_POOL_SIZE,
   assertConnection,
-  assertRoleName,
-  assertSchemaName,
   type JobsConnectionOptions,
-} from './jobs-options.js';
-import { describeError } from './describe-error.js';
-import { expectedSchemaVersion } from './pg-boss-schema.js';
+} from '../jobs/jobs-options.js';
+import { describeError } from '../jobs/describe-error.js';
+import { DEFAULT_JOBS_SCHEMA, assertRoleName, assertSchemaName } from '../schema/jobs-schema.js';
+import { expectedSchemaVersion } from '../schema/pg-boss-schema.js';
 import {
   assertIndexBuildClaim,
   closeMigratorInputs,

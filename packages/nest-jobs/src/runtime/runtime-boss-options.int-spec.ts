@@ -5,8 +5,8 @@ import type { QueryResult } from 'pg';
 import { PgBoss, type Job as BossJob } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { resolveJobsModuleOptions } from './jobs-options.js';
-import { provisionJobs } from './provision-jobs.js';
+import { resolveJobsModuleOptions } from '../jobs/jobs-options.js';
+import { provisionJobs } from '../provisioning/provision-jobs.js';
 import { toRuntimeBossOptions } from './runtime-boss-options.js';
 import {
   APP_ROLE,
@@ -14,7 +14,7 @@ import {
   startJobsTestServer,
   type JobsTestDatabase,
   type JobsTestServer,
-} from './testing/jobs-database.js';
+} from '../testing/jobs-database.js';
 
 /**
  * Function relationCount

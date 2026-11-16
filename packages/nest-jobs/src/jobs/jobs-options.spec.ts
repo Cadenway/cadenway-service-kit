@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { assertRoleName, assertSchemaName } from '../schema/jobs-schema.js';
 import {
   assertConnection,
-  assertRoleName,
-  assertSchemaName,
   resolveJobsModuleOptions,
   type JobsConnectionOptions,
   type JobsModuleOptions,

@@ -1,7 +1,7 @@
 import type { ConstructorOptions } from 'pg-boss';
 import { describe, expect, it } from 'vitest';
 
-import { resolveJobsModuleOptions, type JobsConnectionOptions } from './jobs-options.js';
+import { resolveJobsModuleOptions, type JobsConnectionOptions } from '../jobs/jobs-options.js';
 import { toRuntimeBossOptions } from './runtime-boss-options.js';
 
 /**

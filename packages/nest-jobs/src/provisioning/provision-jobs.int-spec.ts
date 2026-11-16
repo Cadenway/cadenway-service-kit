@@ -17,7 +17,7 @@ import {
   type HeldLock,
   type JobsTestDatabase,
   type JobsTestServer,
-} from './testing/jobs-database.js';
+} from '../testing/jobs-database.js';
 
 /**
  * Interface QueueRow
