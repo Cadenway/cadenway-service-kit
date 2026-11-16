@@ -1,102 +1,15 @@
 import { natsIndicator, type HealthIndicator, type NatsProbe } from '@cadenway/nest-common';
 import {
-  DiscardPolicy,
   jetstream,
-  JetStreamApiCodes,
-  JetStreamApiError,
   jetstreamManager,
-  RetentionPolicy,
-  StorageType,
   type JetStreamClient,
   type JetStreamManager,
 } from '@nats-io/jetstream';
-import { connect, nanos, type NatsConnection } from '@nats-io/transport-node';
+import { connect, type NatsConnection } from '@nats-io/transport-node';
 import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 
-import {
-  DUPLICATE_WINDOW_MS,
-  EVENTS_MAX_AGE_DAYS,
-  RESTRICTED_MAX_AGE_MS,
-  type ResolvedMessagingOptions,
-} from '../messaging-options.js';
-
-/**
- * Constant DAY_MS
- *
- * @description
- * Milliseconds in a day.
- *
- * @type {number}
- */
-const DAY_MS: number = 86_400_000;
-
-/**
- * Interface ManagedStream
- *
- * @description
- * What the module sets on a stream it manages.
- */
-interface ManagedStream {
-  // #region Properties
-  /**
-   * Property name
-   *
-   * @description
-   * Name of the stream.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly name: string;
-
-  /**
-   * Property subject
-   *
-   * @description
-   * Wildcard subject the stream stores, such as `evt.>`.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly subject: string;
-
-  /**
-   * Property maxAgeMs
-   *
-   * @description
-   * How long a message is kept, in milliseconds.
-   *
-   * @type {number}
-   * @readonly
-   */
-  readonly maxAgeMs: number;
-
-  /**
-   * Property maxBytes
-   *
-   * @description
-   * Byte cap of the stream, or `-1` for none.
-   *
-   * @type {number}
-   * @readonly
-   */
-  readonly maxBytes: number;
-  // #endregion
-}
-
-/**
- * Function isJetStreamApiError
- *
- * @description
- * Tells whether an error is the JetStream API answering with a given error code.
- *
- * @param {unknown} error - Error to inspect.
- * @param {number} code - JetStream error code, such as 10059 for a missing stream.
- * @returns {boolean} `true` when the error carries that code.
- */
-export function isJetStreamApiError(error: unknown, code: number): boolean {
-  return error instanceof JetStreamApiError && error.code === code;
-}
+import type { ResolvedMessagingOptions } from '../configuration/messaging-options.js';
+import { prepareStreams } from './stream-administration.js';
 
 /**
  * Class MessagingConnection
@@ -240,9 +153,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
       options.shutdownTimeoutMs,
     );
     try {
-      await (options.manageStreams
-        ? connection.ensureStreams(options)
-        : connection.checkStreams(options));
+      await prepareStreams(await connection.manager(), options, connection.logger);
     } catch (error) {
       await nats.close();
       throw error;
@@ -370,120 +281,6 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     if (!this.nats.isClosed()) {
       await this.nats.close();
     }
-  }
-
-  /**
-   * Method checkStreams
-   *
-   * @description
-   * Checks that the streams this application uses exist, with `$JS.API.STREAM.INFO.<stream>`
-   * on those streams only.
-   *
-   * @param {ResolvedMessagingOptions} options - Options of the module.
-   * @returns {Promise<void>} Resolves once every stream used was found.
-   * @throws {Error} When a stream is missing, naming every missing one.
-   */
-  private async checkStreams(options: ResolvedMessagingOptions): Promise<void> {
-    const used: string[] = [options.eventsStream];
-    if (options.restrictedEvents.length > 0 || options.deadLetterWorker) {
-      used.push(options.restrictedStream);
-    }
-    if (options.deadLetterWorker) {
-      used.push(options.deadLetterStream);
-    }
-    const manager: JetStreamManager = await this.manager();
-    const missing: string[] = [];
-    for (const stream of used) {
-      try {
-        await manager.streams.info(stream);
-      } catch (error) {
-        if (!isJetStreamApiError(error, JetStreamApiCodes.StreamNotFound)) {
-          throw error;
-        }
-        missing.push(stream);
-      }
-    }
-    if (missing.length > 0) {
-      throw new Error(
-        `The stream ${missing.join(', ')} does not exist: the streams are created by cadenway-ops, or by MessagingModule with manageStreams in local tests.`,
-      );
-    }
-  }
-
-  /**
-   * Method ensureStreams
-   *
-   * @description
-   * Creates or updates the events stream, the restricted stream and the dead-letter stream, with
-   * the limits cadenway-ops sets.
-   *
-   * @param {ResolvedMessagingOptions} options - Options of the module.
-   * @returns {Promise<void>} Resolves once the three streams match the options.
-   */
-  private async ensureStreams(options: ResolvedMessagingOptions): Promise<void> {
-    await this.ensureStream({
-      name: options.eventsStream,
-      subject: `${options.eventSubjectPrefix}.>`,
-      maxAgeMs: EVENTS_MAX_AGE_DAYS * DAY_MS,
-      maxBytes: options.eventsMaxBytes,
-    });
-    await this.ensureStream({
-      name: options.restrictedStream,
-      subject: `${options.restrictedSubjectPrefix}.>`,
-      maxAgeMs: RESTRICTED_MAX_AGE_MS,
-      maxBytes: options.restrictedMaxBytes,
-    });
-    await this.ensureStream({
-      name: options.deadLetterStream,
-      subject: `${options.deadLetterSubjectPrefix}.>`,
-      maxAgeMs: options.deadLetterMaxAgeDays * DAY_MS,
-      maxBytes: options.deadLetterMaxBytes,
-    });
-  }
-
-  /**
-   * Method ensureStream
-   *
-   * @description
-   * Creates a stream with file storage, or updates its subjects and limits when it exists.
-   *
-   * @param {ManagedStream} stream - Name, subject and limits of the stream.
-   * @returns {Promise<void>} Resolves once the stream matches.
-   */
-  private async ensureStream(stream: ManagedStream): Promise<void> {
-    const manager: JetStreamManager = await this.manager();
-    const limits: {
-      subjects: string[];
-      max_age: number;
-      max_bytes: number;
-      duplicate_window: number;
-    } = {
-      subjects: [stream.subject],
-      max_age: nanos(stream.maxAgeMs),
-      max_bytes: stream.maxBytes,
-      duplicate_window: nanos(DUPLICATE_WINDOW_MS),
-    };
-    let exists: boolean = true;
-    try {
-      await manager.streams.info(stream.name);
-    } catch (error) {
-      if (!isJetStreamApiError(error, JetStreamApiCodes.StreamNotFound)) {
-        throw error;
-      }
-      exists = false;
-    }
-    if (exists) {
-      await manager.streams.update(stream.name, limits);
-      return;
-    }
-    await manager.streams.add({
-      name: stream.name,
-      storage: StorageType.File,
-      retention: RetentionPolicy.Limits,
-      discard: DiscardPolicy.Old,
-      ...limits,
-    });
-    this.logger.log({ stream: stream.name, subject: stream.subject }, 'stream created');
   }
 
   /**

@@ -14,9 +14,25 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./consumer/postgres": {
+      "types": "./dist/consumer/postgres/index.d.ts",
+      "default": "./dist/consumer/postgres/index.js"
+    },
     "./outbox": {
       "types": "./dist/outbox/index.d.ts",
       "default": "./dist/outbox/index.js"
+    },
+    "./outbox/writer": {
+      "types": "./dist/outbox/writer/index.d.ts",
+      "default": "./dist/outbox/writer/index.js"
+    },
+    "./outbox/relay": {
+      "types": "./dist/outbox/relay/index.d.ts",
+      "default": "./dist/outbox/relay/index.js"
+    },
+    "./outbox/schema": {
+      "types": "./dist/outbox/schema/index.d.ts",
+      "default": "./dist/outbox/schema/index.js"
     }
   },
   "files": [

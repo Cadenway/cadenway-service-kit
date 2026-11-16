@@ -1,29 +1,34 @@
 import type { Logger } from '@nestjs/common';
 import type { PgBoss } from 'pg-boss';
 
-import { describeError } from '../../jobs/describe-error.js';
-import type { JobsQueryResult } from '../../jobs/job.js';
-import type { ResolvedJobsModuleOptions } from '../../jobs/jobs-options.js';
-import { fieldOf } from '../database-row.js';
+import { describeError } from '../../jobs/diagnostics/describe-error.js';
+import type { JobsQueryResult } from '../../jobs/database/jobs-transaction.js';
+import type { ResolvedJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
+import { fieldOf } from '../postgres/database-row.js';
+
+/** Largest queue size reported exactly. The query reads at most one more row per queue. */
+const DEAD_LETTER_COUNT_LIMIT: number = 1_000;
 
 /**
- * Constant DEAD_LETTER_LAG_SECONDS
- *
- * @description
- * How far behind the database clock the dead-letter watch counts, in seconds. A dead letter is
- * stamped with the start time of the statement that inserts it and becomes visible when that
- * statement commits; counting up to a few seconds ago keeps a row that commits late from falling
- * between two checks.
- *
- * @type {number}
+ * The cancellation option of pg-boss's built-in PostgreSQL adapter. Its public database
+ * interface also describes custom adapters, where this option is unavailable.
  */
-const DEAD_LETTER_LAG_SECONDS: number = 5;
+interface DeadLetterDatabase {
+  // #region Methods
+  /** Executes the count on a connection that the adapter discards when the signal aborts. */
+  executeSql(
+    text: string,
+    values: unknown[],
+    options: { readonly signal: AbortSignal },
+  ): Promise<JobsQueryResult>;
+  // #endregion
+}
 
 /**
  * Class DeadLetterWatch
  *
  * @description
- * Counts dead-letter arrivals and drains the last check before the runtime stops.
+ * Reports retained dead letters and cancels observation when the runtime stops.
  */
 export class DeadLetterWatch {
   // #region Properties
@@ -41,23 +46,11 @@ export class DeadLetterWatch {
    * Property deadLetterCheck
    *
    * @description
-   * The dead-letter count in flight, or `null`, so two counts never overlap and shutdown can wait
-   * for the last one before the pool closes.
+   * Cancels the database check in flight and prevents two counts from overlapping.
    *
-   * @type {Promise<void> | null}
+   * @type {AbortController | null}
    */
-  private deadLetterCheck: Promise<void> | null = null;
-
-  /**
-   * Property deadLetterWatermark
-   *
-   * @description
-   * Database time up to which dead-letter arrivals were counted, as the database rendered it, or
-   * `null` before the first count.
-   *
-   * @type {string | null}
-   */
-  private deadLetterWatermark: string | null = null;
+  private deadLetterCheck: AbortController | null = null;
   // #endregion
 
   // #region Constructor
@@ -67,15 +60,15 @@ export class DeadLetterWatch {
    * @description
    * Sets up observation for the dead-letter queues of this runtime.
    *
-   * @param {Pick<ResolvedJobsModuleOptions, 'schema' | 'deadLetterCheckIntervalSeconds'>} options - Schema and observation interval.
-   * @param {readonly string[]} deadLetterQueues - Queues whose arrivals are counted.
+   * @param {Pick<ResolvedJobsModuleOptions, 'schema' | 'deadLetterCheckIntervalSeconds' | 'shutdownTimeoutMs'>} options - Schema, observation interval and query deadline.
+   * @param {readonly string[]} deadLetterQueues - Queues whose retained jobs are counted.
    * @param {Logger} logger - Logger scoped to the jobs service.
    * @constructor
    */
   public constructor(
     private readonly options: Pick<
       ResolvedJobsModuleOptions,
-      'schema' | 'deadLetterCheckIntervalSeconds'
+      'schema' | 'deadLetterCheckIntervalSeconds' | 'shutdownTimeoutMs'
     >,
     private readonly deadLetterQueues: readonly string[],
     private readonly logger: Logger,
@@ -87,8 +80,8 @@ export class DeadLetterWatch {
    * Method start
    *
    * @description
-   * Arms the timer of the dead-letter watch, unless the watch is disabled or there is no queue to
-   * watch. The timer does not keep the process alive.
+   * Launches the initial check in the background and starts periodic observation. A monitoring
+   * failure is logged without affecting readiness. The timer does not keep the process alive.
    *
    * @param {PgBoss} boss - Started pg-boss instance.
    */
@@ -97,88 +90,90 @@ export class DeadLetterWatch {
     if (seconds === 0 || this.deadLetterQueues.length === 0) {
       return;
     }
-    this.deadLetterTimer = setInterval((): void => {
-      if (this.deadLetterCheck !== null) {
-        return;
-      }
-      this.deadLetterCheck = this.count(boss)
-        .catch((error: unknown): void => {
+    const check: () => void = (): void => {
+      void this.count(boss).catch((error: unknown): void => {
+        if (this.deadLetterTimer !== null) {
           this.logger.warn(`The dead-letter check failed: ${describeError(error)}`);
-        })
-        .finally((): void => {
-          this.deadLetterCheck = null;
-        });
-    }, seconds * 1_000);
+        }
+      });
+    };
+    this.deadLetterTimer = setInterval(check, seconds * 1_000);
     this.deadLetterTimer.unref();
+    check();
   }
 
   /**
-   * Method count
-   *
-   * @description
-   * Counts the jobs that arrived in each declared dead-letter queue since the previous count and
-   * logs one error per queue that received some, with the count and never a payload.
-   *
-   * This is the log of the dead letters no handler can report: an attempt failed by pg-boss
-   * supervision after its process crashed. It also counts the dead letters a worker already
-   * logged, and every replica runs it, so one dead letter can be reported more than once.
-   *
-   * pg-boss has no call that counts arrivals without returning the payloads, so this is one
-   * read-only statement on the job table, run through the database handle of pg-boss. The first
-   * count only records where to start from.
-   *
-   * @param {PgBoss} boss - Started pg-boss instance.
-   * @returns {Promise<void>} Resolves once the arrivals were counted and logged.
+   * Reports one error per non-empty queue, including jobs committed after an earlier snapshot.
+   * Each replica observes the same stock. Counts are snapshots and can repeat between checks.
    */
-  public async count(boss: PgBoss): Promise<void> {
-    if (this.options.deadLetterCheckIntervalSeconds === 0 || this.deadLetterQueues.length === 0) {
+  private async count(boss: PgBoss): Promise<void> {
+    if (this.deadLetterCheck !== null) {
       return;
     }
-    const result: JobsQueryResult = await boss.getDb().executeSql(
-      `WITH bounds AS (
-         SELECT pg_catalog.now() - interval '${String(DEAD_LETTER_LAG_SECONDS)} seconds' AS upto
-       )
-       SELECT bounds.upto::text AS upto, arrivals.name, arrivals.count
-       FROM bounds
-       LEFT JOIN LATERAL (
-         SELECT job.name, count(*)::int AS count
-         FROM "${this.options.schema}".job
-         WHERE job.name = ANY($1::text[])
-           AND job.created_on > COALESCE($2::timestamptz, bounds.upto)
-           AND job.created_on <= bounds.upto
-         GROUP BY job.name
-       ) arrivals ON true`,
-      [this.deadLetterQueues, this.deadLetterWatermark],
-    );
-    for (const row of result.rows) {
-      const name: unknown = fieldOf(row, 'name');
-      const count: unknown = fieldOf(row, 'count');
-      if (typeof name === 'string' && typeof count === 'number' && count > 0) {
-        this.logger.error(
-          `${String(count)} job(s) reached the dead-letter queue "${name}" since the previous check.`,
-        );
-      }
-    }
-    const upto: unknown = fieldOf(result.rows[0], 'upto');
-    if (typeof upto === 'string') {
-      this.deadLetterWatermark = upto;
+    const check: AbortController = new AbortController();
+    this.deadLetterCheck = check;
+    const deadlineMs: number = Math.min(this.options.shutdownTimeoutMs, 2_147_483_647);
+    const signal: AbortSignal = AbortSignal.any([check.signal, AbortSignal.timeout(deadlineMs)]);
+    try {
+      const result: JobsQueryResult = await this.readBacklog(boss.getDb(), signal);
+      signal.throwIfAborted();
+      this.reportBacklog(result);
+    } catch (error) {
+      signal.throwIfAborted();
+      throw error;
+    } finally {
+      this.deadLetterCheck = null;
     }
   }
 
   /**
-   * Method stop
-   *
-   * @description
-   * Clears the timer and waits for the in-flight database query.
-   *
-   * @returns {Promise<void>} Resolves when there are no pending checks.
+   * Clears the timer and cancels the check without waiting for its connection to settle.
+   * The pg-boss pool stays available to workers during their shutdown grace period.
    */
-  public async stop(): Promise<void> {
+  public stop(): void {
     if (this.deadLetterTimer !== null) {
       clearInterval(this.deadLetterTimer);
       this.deadLetterTimer = null;
     }
-    await this.deadLetterCheck;
+    this.deadLetterCheck?.abort();
+  }
+
+  /** Bounds each index lookup independently and never fetches job payloads. */
+  private async readBacklog(
+    database: DeadLetterDatabase,
+    signal: AbortSignal,
+  ): Promise<JobsQueryResult> {
+    return database.executeSql(
+      `SELECT watched.name, backlog.count
+       FROM pg_catalog.unnest($1::text[]) AS watched(name)
+       CROSS JOIN LATERAL (
+         SELECT count(*)::int AS count
+         FROM (
+           SELECT 1
+           FROM "${this.options.schema}".job
+           WHERE job.name = watched.name
+           LIMIT $2
+         ) retained
+       ) backlog
+       WHERE backlog.count > 0`,
+      [this.deadLetterQueues, DEAD_LETTER_COUNT_LIMIT + 1],
+      { signal },
+    );
+  }
+
+  /** Logs retained rows by queue without implying an exact count above the query limit. */
+  private reportBacklog(result: JobsQueryResult): void {
+    for (const row of result.rows) {
+      const name: unknown = fieldOf(row, 'name');
+      const count: unknown = fieldOf(row, 'count');
+      if (typeof name === 'string' && typeof count === 'number' && count > 0) {
+        const size: string =
+          count > DEAD_LETTER_COUNT_LIMIT
+            ? `More than ${String(DEAD_LETTER_COUNT_LIMIT)}`
+            : String(count);
+        this.logger.error(`${size} job(s) remain in the dead-letter queue "${name}".`);
+      }
+    }
   }
   // #endregion
 }

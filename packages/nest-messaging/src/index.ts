@@ -13,7 +13,7 @@ export {
   MessagingConnection,
   messagingHealthIndicator,
 } from './connection/messaging-connection.js';
-export type { VersionClaim } from './consumer/event-deduplicator.js';
+export type { VersionClaim } from './consumer/delivery/event-deduplicator.js';
 export {
   EventConsumers,
   type EventContext,
@@ -55,13 +55,14 @@ export {
   DEFAULT_RESTRICTED_STREAM,
   DEFAULT_RESTRICTED_SUBJECT_PREFIX,
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
-  messagingConfigShape,
-  type MessagingConfig,
-  type MessagingModuleOptions,
-  type RebuildAcknowledgement,
-  type RestrictedDeadLetterPayload,
-} from './messaging-options.js';
-export { MessagingModule, type MessagingModuleAsyncOptions } from './messaging.module.js';
+} from './configuration/messaging-defaults.js';
+export { messagingConfigShape, type MessagingConfig } from './configuration/messaging-config.js';
+export type {
+  MessagingModuleOptions,
+  RebuildAcknowledgement,
+  RestrictedDeadLetterPayload,
+} from './configuration/messaging-options.js';
+export { MessagingModule, type MessagingModuleAsyncOptions } from './wiring/messaging.module.js';
 export {
   DEAD_LETTER_CONSUMER_HEADER,
   DEAD_LETTER_DELIVERIES_HEADER,
@@ -71,7 +72,7 @@ export {
   EVENT_NAME_HEADER,
   ORGANIZATION_ID_HEADER,
   TRACEPARENT_HEADER,
-} from './publisher/event-headers.js';
+} from './transport/event-headers.js';
 export {
   EventPublisher,
   EventStreamUnavailableError,
@@ -85,6 +86,6 @@ export {
   RebuildItemError,
   RebuildRejectedError,
   type RebuildTarget,
-} from './rebuild/rebuild-emitter.js';
-export type { RebuildRejection } from './rebuild/rebuild-reply-codec.js';
-export { durableConsumerName, eventSubject } from './subjects.js';
+} from './rebuild/emitter/rebuild-emitter.js';
+export type { RebuildRejection } from './rebuild/codec/rebuild-reply-codec.js';
+export { durableConsumerName, eventSubject } from './transport/subjects.js';

@@ -52,8 +52,9 @@ export interface EventSubscription<
    *
    * @description
    * Where a consumer created by this registration starts: `all` delivers what the stream still
-   * holds, `new` only what is published afterwards. Defaults to `all`. Ignored once the consumer
-   * exists, except when it is created again after it disappeared: see the README.
+   * holds, `new` only what is published afterwards. Defaults to `all`. An existing consumer keeps
+   * its position. If the kit recreates a missing consumer during recovery, it replays from the
+   * beginning of the retained stream so it can recover deliveries made to other replicas.
    *
    * @type {'all' | 'new' | undefined}
    * @readonly

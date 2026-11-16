@@ -8,15 +8,13 @@
  *
  * @packageDocumentation
  */
+export { databaseConfigShape, type DatabaseConfig } from './connection/database-config.js';
+export { DATABASE_POOL, DEFAULT_POOL_SIZE } from './connection/database-pool.js';
 export {
-  DATABASE_POOL,
-  databaseConfigShape,
   DatabaseModule,
-  DEFAULT_POOL_SIZE,
-  type DatabaseConfig,
   type DatabaseModuleAsyncOptions,
   type DatabaseModuleOptions,
-} from './database.module.js';
+} from './wiring/database.module.js';
 export {
   Idempotent,
   IDEMPOTENCY_KEY_HEADER,
@@ -25,22 +23,23 @@ export {
   IdempotencyInterceptor,
   purgeExpiredIdempotencyKeys,
   type IdempotentOptions,
-} from './idempotency.interceptor.js';
-export { default as idempotencyKeys } from './idempotency.schema.js';
+} from './idempotency/idempotency.interceptor.js';
+export { default as idempotencyKeys } from './idempotency/idempotency.schema.js';
 export {
   ORGANIZATION_SETTING,
   organizationIsolation,
   organizationPolicy,
   SYSTEM_ACCESS_SETTING,
-} from './organization-policy.js';
-export {
-  SystemTransactionRunner,
-  TenantTransactionRunner,
-  TransactionAbortedError,
-  type DatabaseSchema,
-  type TransactionClient,
-  type TransactionDatabase,
-  type TransactionKind,
-  type TransactionOptions,
-  type TransactionScope,
-} from './transaction-runner.js';
+} from './policies/organization-policy.js';
+export { SystemTransactionRunner } from './transactions/system-transaction-runner.js';
+export { TenantTransactionRunner } from './transactions/tenant-transaction-runner.js';
+export { assertNoActiveTransaction } from './transactions/transaction-context.js';
+export type {
+  DatabaseSchema,
+  TransactionClient,
+  TransactionDatabase,
+  TransactionKind,
+  TransactionOptions,
+  TransactionScope,
+} from './transactions/transaction-contracts.js';
+export { TransactionAbortedError } from './transactions/transaction-executor.js';

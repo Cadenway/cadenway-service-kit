@@ -4,17 +4,14 @@ import {
   JetStreamApiCodes,
   JetStreamApiError,
   type Consumer,
-  type ConsumerConfig,
   type ConsumerInfo,
   type JetStreamManager,
 } from '@nats-io/jetstream';
 import { nanos } from '@nats-io/transport-node';
 import type { Logger } from '@nestjs/common';
 
-import {
-  isJetStreamApiError,
-  type MessagingConnection,
-} from '../../connection/messaging-connection.js';
+import { isJetStreamApiError } from '../../connection/jetstream-api-error.js';
+import type { MessagingConnection } from '../../connection/messaging-connection.js';
 import type {
   EventEnvelope,
   EventNameOf,
@@ -22,13 +19,15 @@ import type {
   EventSchemas,
 } from '../../events/event-envelope.js';
 import { validateEvent } from '../../events/event-validation.js';
-import { ACK_WAIT_MS, eventRoute, type ResolvedMessagingOptions } from '../../messaging-options.js';
-import type { MessagingTuning } from '../../messaging-tuning.js';
-import { durableConsumerName } from '../../subjects.js';
+import { ACK_WAIT_MS } from '../../configuration/messaging-defaults.js';
+import { eventRoute } from '../../transport/event-route.js';
+import type { ResolvedMessagingOptions } from '../../configuration/messaging-options.js';
+import type { MessagingTuning } from '../../configuration/messaging-tuning.js';
+import { durableConsumerName } from '../../transport/subjects.js';
 import type { EventContext } from '../delivery/event-context.js';
 import type { EventDelivery } from '../delivery/event-delivery.js';
 import { ConsumerRecovery } from '../recovery/consumer-recovery.js';
-import { maxDeliveriesOf } from '../retry-delays.js';
+import { maxDeliveriesOf } from '../delivery/retry-delays.js';
 import type { EventSubscription } from './event-subscription.js';
 import type { EventTarget } from './event-target.js';
 import type { RunningConsumer } from './running-consumer.js';
@@ -45,7 +44,7 @@ export class DurableSubscriptions {
    * Property consumers
    *
    * @description
-   * Durable consumers being pulled, by name.
+   * Durable consumers being opened or pulled, by name.
    *
    * @type {Map<string, RunningConsumer>}
    * @readonly
@@ -92,8 +91,7 @@ export class DurableSubscriptions {
       logger,
       shutdown,
       tuning.consumerRecoveryDelaysMs,
-      (target: EventTarget, startFrom: Date | undefined): Promise<Consumer> =>
-        this.openConsumer(target, startFrom),
+      (target: EventTarget): Promise<Consumer> => this.openConsumer(target, DeliverPolicy.All),
       delivery,
     );
   }
@@ -115,9 +113,7 @@ export class DurableSubscriptions {
   public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
     subscription: EventSubscription<TSchemas, TName>,
   ): Promise<void> {
-    if (this.shutdown.aborted) {
-      throw new Error('The application is shutting down: no handler can be registered.');
-    }
+    this.assertAcceptingRegistrations();
     const name: string = durableConsumerName(this.options.service, subscription.handler);
     if (this.consumers.has(name)) {
       throw new Error(`The handler ${subscription.handler} is already registered.`);
@@ -126,7 +122,6 @@ export class DurableSubscriptions {
       consumer: name,
       event: subscription.event,
       route: eventRoute(this.options, subscription.event),
-      deliverPolicy: subscription.deliverPolicy ?? 'all',
       validate: (candidate: unknown): EventEnvelope =>
         validateEvent(subscription.schemas, subscription.event, candidate),
       handle: (payload: EventEnvelope, eventContext: EventContext): Promise<void> =>
@@ -134,15 +129,21 @@ export class DurableSubscriptions {
     };
     const running: RunningConsumer = {
       target,
-      startedAt: Date.now(),
-      lastHandledAt: undefined,
-      retrying: new Map<number, number>(),
       messages: undefined,
       done: Promise.resolve(),
     };
-    const consumer: Consumer = await this.openConsumer(target, undefined);
+    const deliverPolicy: DeliverPolicy =
+      subscription.deliverPolicy === 'new' ? DeliverPolicy.New : DeliverPolicy.All;
+    // Reserve the name before any broker request. A pending consumer has no pull loop to close.
     this.consumers.set(name, running);
-    running.done = this.recovery.run(running, consumer);
+    try {
+      const consumer: Consumer = await this.openConsumer(target, deliverPolicy);
+      this.assertAcceptingRegistrations();
+      running.done = this.recovery.run(running, consumer);
+    } catch (error) {
+      this.consumers.delete(name);
+      throw error;
+    }
     this.logger.log(
       { consumer: name, stream: target.route.stream, subject: target.route.subject },
       'event consumer started',
@@ -166,6 +167,13 @@ export class DurableSubscriptions {
     return running;
   }
 
+  /** Checks the shutdown signal on either side of the broker request. */
+  private assertAcceptingRegistrations(): void {
+    if (this.shutdown.aborted) {
+      throw new Error('The application is shutting down: no handler can be registered.');
+    }
+  }
+
   /**
    * Method openConsumer
    *
@@ -175,15 +183,15 @@ export class DurableSubscriptions {
    * with `$JS.API.CONSUMER.INFO.<stream>.<name>` and never lists nor deletes consumers.
    *
    * @param {EventTarget} target - Registered handler.
-   * @param {Date | undefined} startFrom - Start time of a consumer created again, for `deliverPolicy: 'new'`.
+   * @param {DeliverPolicy} deliverPolicy - Start position when the durable needs to be created.
    * @returns {Promise<Consumer>} The consumer, ready to be pulled.
    */
-  private async openConsumer(target: EventTarget, startFrom: Date | undefined): Promise<Consumer> {
+  private async openConsumer(target: EventTarget, deliverPolicy: DeliverPolicy): Promise<Consumer> {
     const name: string = target.consumer;
     const stream: string = target.route.stream;
     try {
       if (this.options.manageConsumers) {
-        await this.ensureConsumer(target, startFrom);
+        await this.ensureConsumer(target, deliverPolicy);
       }
       const consumer: Consumer = await this.connection.jetstream.consumers.get(stream, name);
       const info: ConsumerInfo = await consumer.info(true);
@@ -224,11 +232,11 @@ export class DurableSubscriptions {
    * another replica uses the consumer that replica created.
    *
    * @param {EventTarget} target - Registered handler.
-   * @param {Date | undefined} startFrom - Start time of a consumer created again, for `deliverPolicy: 'new'`.
+   * @param {DeliverPolicy} deliverPolicy - Start position when the durable needs to be created.
    * @returns {Promise<void>} Resolves once the consumer exists with the expected settings.
    * @throws {Error} When the server refuses to create or update the consumer.
    */
-  private async ensureConsumer(target: EventTarget, startFrom: Date | undefined): Promise<void> {
+  private async ensureConsumer(target: EventTarget, deliverPolicy: DeliverPolicy): Promise<void> {
     const name: string = target.consumer;
     const stream: string = target.route.stream;
     const manager: JetStreamManager = await this.connection.manager();
@@ -237,13 +245,6 @@ export class DurableSubscriptions {
     const existing: ConsumerInfo | undefined = await this.consumerInfo(manager, stream, name);
     try {
       if (existing === undefined) {
-        const start: Partial<ConsumerConfig> =
-          startFrom === undefined
-            ? {
-                deliver_policy:
-                  target.deliverPolicy === 'new' ? DeliverPolicy.New : DeliverPolicy.All,
-              }
-            : { deliver_policy: DeliverPolicy.StartTime, opt_start_time: startFrom.toISOString() };
         try {
           await manager.consumers.add(stream, {
             durable_name: name,
@@ -252,7 +253,7 @@ export class DurableSubscriptions {
             ack_policy: AckPolicy.Explicit,
             ack_wait: ackWait,
             max_deliver: maxDeliver,
-            ...start,
+            deliver_policy: deliverPolicy,
           });
         } catch (error) {
           if ((await this.consumerInfo(manager, stream, name)) === undefined) {

@@ -13,6 +13,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
+    },
+    "./provisioning": {
+      "types": "./dist/provisioning/index.d.ts",
+      "default": "./dist/provisioning/index.js"
     }
   },
   "files": [

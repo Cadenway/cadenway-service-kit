@@ -7,16 +7,18 @@ outbox table, its writer and relay, and the PostgreSQL deduplicator with version
 (`/outbox` entry point).
 
 `@cadenway/nest-common`, `@nestjs/common`, `@nestjs/core`, `@opentelemetry/api` and `zod` are
-peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers,
-needed only by the `/outbox` entry point. `@cadenway/contracts` (`>=0.2.0 <1.0.0`) is an optional
+peer dependencies: the application provides them. `drizzle-orm` and `pg` are optional peers
+used by the PostgreSQL entry points. `@cadenway/contracts` (`>=0.2.0 <1.0.0`) is an optional
 peer: the kit imports nothing from it, the service passes the schemas it imports.
 
-| Entry point                       | Holds                                                                                               | Needs a database |
-| --------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------- |
-| `@cadenway/nest-messaging`        | `MessagingModule`, `EventPublisher`, `EventConsumers`, `RebuildEmitter`, `DeadLetterWorker`, health | No               |
-| `@cadenway/nest-messaging/outbox` | `OutboxModule`, `OutboxWriter`, `OutboxRelay`, `PostgresEventDeduplicator`, the three kit tables    | Yes              |
+| Entry point                                  | Holds                                                                                               | Needs a database |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------- |
+| `@cadenway/nest-messaging`                   | `MessagingModule`, `EventPublisher`, `EventConsumers`, `RebuildEmitter`, `DeadLetterWorker`, health | No               |
+| `@cadenway/nest-messaging/consumer/postgres` | `PostgresEventDeduplicationModule`, `PostgresEventDeduplicator`                                     | Yes              |
+| `@cadenway/nest-messaging/outbox`            | `OutboxModule`, `OutboxWriter`, `OutboxRelay`, `PostgresEventDeduplicator`, the three kit tables    | Yes              |
 
-A gateway imports the main entry point only. A service with a database imports both.
+A gateway without PostgreSQL imports the main entry point. Services compose the PostgreSQL
+entry points for the capabilities used in each process.
 
 What the broker enforces (users, subjects, streams, who runs the dead-letter worker) is described
 in cadenway-ops, `docs/messaging.md`; this package follows it.
@@ -111,7 +113,7 @@ and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
 | `rebuildName`                 | `user`, else `service` | Name this application receives rebuilds under: `rebuild.<rebuildName>.<entity>`                                                                                                               |
 | `rebuildAcknowledgement`      | `none`                 | How `RebuildEmitter.emit` sends an item: `none` publishes, `reply` waits for the consumer (see [Rebuild](#rebuild))                                                                           |
 | `rebuildFlushEvery`           | 100                    | Items published between two flushes in the `none` mode                                                                                                                                        |
-| `rebuildMaxPending`           | 1000                   | Items that may wait at the consumer of one entity; past it the oldest waiting ones are dropped with an error log                                                                              |
+| `rebuildMaxPending`           | 1000                   | Maximum number of waiting items per rebuild subscription. The consumer also caps the combined size of waiting payloads and reply subjects at 16 MiB.                                          |
 | `rebuildTimeoutMs`            | 30 000                 | Time `emit` waits for the consumer in the `reply` mode, and a flush waits for the server in the `none` mode                                                                                   |
 | `handlerTimeoutMs`            | 25 000                 | Time a handler may take, below the 30 s `AckWait`. Past it the attempt is abandoned and retried (see [Consuming](#consuming))                                                                 |
 | `eventsMaxBytes`              | 1 GiB                  | Byte cap of `EVENTS`, with `manageStreams`                                                                                                                                                    |
@@ -228,9 +230,10 @@ does not change.
   statement that marks it sent. A row parked after 20 failures keeps its payload until it is
   requeued and published.
 - Rows sent whole before the upgrade, or by a replica still on an older kit during the rollout,
-  are redacted by the relay at its first pass and with every purge (`purgeIntervalMs`), so the
-  table converges once every replica runs this version. With the purge disabled, that happens
-  at the start of each process only.
+  are redacted by the relay at startup and with every purge (`purgeIntervalMs`), so the table
+  converges once every replica runs this version. The initial sweep also runs with periodic
+  purges disabled. A failed maintenance transaction stays due and retries after the poll interval
+  independently of the publication backoff.
 - A redacted row is never published again by this version. `requeueOutboxEvents` skips it, and a
   relay that finds one pending (set pending by hand, or by the requeue of an older kit) marks it
   sent again with a warning instead of publishing it. A relay of an older kit would publish its
@@ -281,12 +284,14 @@ await this.consumers.subscribe({
 **A consumer that disappears.** The client reports it (`consumer_deleted`, `consumer_not_found`, `no_responders`,
 `stream_not_found`); the kit closes the pull loop, reports the consumer to readiness and recovers
 it, trying again after 0 s, 1 s, 2 s, 5 s, 10 s then every 30 s. With `manageConsumers` it creates
-the consumer again: with `deliverPolicy: 'all'` from the start of the stream (up to seven days
-delivered again, the deduplicator skipping what was handled), with `new` from the stream time of
-the oldest message this process has not answered for good (the last one it handled, or the
-registration when it handled none, and any message waiting for a redelivery) minus one minute,
-so no event published during the gap is skipped. Without `manageConsumers` it waits for the
-platform to create the consumer again.
+the consumer again from the beginning of the retained stream, including for registrations that
+start with `deliverPolicy: 'new'`. Deleting a shared durable removes the broker's delivery position
+and pending acknowledgements. Starting at the beginning includes events that need redelivery on
+other replicas. Replay can deliver retained events again. The transactional deduplicator skips
+already recorded deliveries when it is configured. Without `manageConsumers` the kit waits for
+the platform to create the consumer again. A fresh process that finds no durable uses the
+registration's start policy. It has no prior subscription state to distinguish a deletion from
+a first deployment.
 
 On each delivery the payload is parsed and validated with the schema of the event. A message that
 is not JSON or does not match can never succeed: it is terminated (`term`), so it is not
@@ -313,7 +318,10 @@ connection closed is logged at debug level; the server redelivers the message.
 
 **Deduplication.** Without a deduplicator, the handler runs for every delivery, duplicates
 included, and `claimVersion` always resolves to `true`: fine for the realtime gateway, which only
-relays. Importing `OutboxModule` registers the PostgreSQL deduplicator: each delivery then runs in
+relays. Import `PostgresEventDeduplicationModule` from `@cadenway/nest-messaging/consumer/postgres`
+alongside `MessagingModule` and `DatabaseModule` to register durable deduplication. The service
+migrations provide the `processed_events` and `event_versions` tables. The legacy `OutboxModule`
+registers the same deduplicator. With it, each delivery runs in
 one transaction (tenant runner for the organization of the event, system runner for an event
 without one) that records `(consumer, event id)` in `processed_events`, skips the handler when
 the id is already there, and otherwise runs the handler in the same transaction: a `run` of the
@@ -366,8 +374,9 @@ hold a single-use code that would otherwise sit 30 days in `EVENTS_DLQ`; set
 tried five times over about two minutes, then logged as an error naming the consumer, the stream
 and the sequence. Each dead letter is logged as an error, without the payload; a termination
 reason other than the kit's own is cut to 64 printable characters. No backend consumes
-`EVENTS_DLQ`; operators read it. On shutdown the advisory subscriptions are drained, so the
-advisories already received are copied.
+`EVENTS_DLQ`; operators read it. At shutdown the worker unsubscribes, stops retries, and gives
+in-flight copies up to `shutdownTimeoutMs` to finish. Advisories still waiting are dropped.
+The connection then drains in its own shutdown phase.
 
 **Who runs it:** the worker is off by default (`deadLetterWorker: false`) and runs in
 notification-service only: reading a message by sequence includes the restricted ones, which no
@@ -400,19 +409,70 @@ await this.rebuild.flush();
 Both sides validate the item with the schema the caller passes: an invalid item is not sent
 (`RebuildItemError`), and the consumer refuses one that does not match its own schema. Replicas
 of the consumer share the items through a queue group, and its handler always runs in a context
-without organization, whatever the context `onRebuild` was called in. When more than
-`rebuildMaxPending` items (1000) wait at the consumer, the oldest waiting ones are dropped with
-an error log. Two acknowledgement modes (`rebuildAcknowledgement`):
+without organization, whatever the context `onRebuild` was called in. Each subscription admits
+at most `rebuildMaxPending` waiting items (1000 by default) and 16 MiB of waiting payload and
+reply-subject data. These limits exclude the item being handled. Admission evicts the oldest
+waiting items as needed. An item that exceeds the byte limit by itself is rejected without
+evicting any waiting items. The consumer logs overload and replies with `overloaded` when a
+reply subject is available. Two acknowledgement modes (`rebuildAcknowledgement`):
 
-| Mode             | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `none` (default) | `emit` publishes the item and flushes every `rebuildFlushEvery` items, which paces the emitter on the server but not on the consumer: a flush not confirmed within `rebuildTimeoutMs`, as during an outage, rejects with `RebuildFlushTimeoutError`. **Lossy**: an item sent while no consumer listens, refused, or arriving while `rebuildMaxPending` items already wait is lost. The only mode the permissions of cadenway-ops allow |
-| `reply`          | `emit` sends a request and resolves once the consumer applied the item: exact back-pressure when each call is awaited. A refused item rejects with `RebuildRejectedError` (`invalid-item`, `handler-failed`, `overloaded`, or `unknown` for a reason a newer consumer sends), a missing consumer with `RebuildConsumerUnavailableError`, a slow one with a timeout. The consuming user needs `allow_responses`                         |
+| Mode             | Behavior                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `none` (default) | `emit` publishes the item and flushes every `rebuildFlushEvery` items, which paces the emitter on the server but not on the consumer: a flush not confirmed within `rebuildTimeoutMs`, as during an outage, rejects with `RebuildFlushTimeoutError`. **Lossy**: a refused or evicted item, or an item sent while no consumer listens, is lost. This is the mode supported by the permissions of cadenway-ops   |
+| `reply`          | `emit` sends a request and resolves once the consumer applied the item: exact back-pressure when each call is awaited. A refused item rejects with `RebuildRejectedError` (`invalid-item`, `handler-failed`, `overloaded`, or `unknown` for a reason a newer consumer sends), a missing consumer with `RebuildConsumerUnavailableError`, a slow one with a timeout. The consuming user needs `allow_responses` |
 
 **A rebuild is restartable and not durable:** nothing is stored, an interrupted or lossy rebuild
 is simply started again, and applying an item twice must be harmless.
 
 ## Outbox module
+
+`@cadenway/nest-messaging/outbox` is a deprecated compatibility entry point. It keeps the original
+schema type and relay behavior during migration. New deployments can compose independent entry
+points:
+
+| Entry point      | Responsibility                                  |
+| ---------------- | ----------------------------------------------- |
+| `/outbox/writer` | `OutboxWriterModule`, transactional writes      |
+| `/outbox/relay`  | `OutboxRelayModule`, publication and retention  |
+| `/outbox/schema` | Drizzle tables and lease migration finalization |
+
+Import `OutboxWriterModule.forRoot()` in a process that appends events. It registers no publication
+loop. Add `PostgresEventDeduplicationModule` explicitly to every consuming process that relied on
+the legacy deduplicator before removing `OutboxModule`. An independent relay process imports its
+own `DatabaseModule` with the application role,
+`MessagingModule` and `OutboxRelayModule.forRoot()`. It does not need `OutboxWriterModule`.
+An existing process can load both new modules to keep a combined deployment. Use
+`OutboxRelayModule.forRootAsync()` when relay options come from an injected configuration.
+
+The leased relay reserves up to `concurrency` rows (four by default) in a short PostgreSQL
+transaction, publishes the batch concurrently and commits outcomes in a second transaction.
+Each lease lasts at least 30 seconds and at least twice `publishTimeoutMs`. Set `leaseMs` to
+increase that floor. Lease checks use PostgreSQL time. A late settlement can never change a
+replacement lease. The same event id is used after a crash, including a crash after a broker ACK
+and before settlement. Consumers still need durable deduplication. Restricted rows are redacted
+in the same update that marks them sent.
+
+The relay polls every `pollIntervalMs` (1000 by default) when the queue is empty, applies broker
+backoff and runs retention independently. On shutdown it stops claiming and gives the current
+batch up to `shutdownTimeoutMs` (10 seconds by default) to settle. Unsettled rows become
+reclaimable at expiry. Set `autoStart: false` for manual operation with
+`LeasedOutboxRelay.publishPending()`. Manual calls must begin outside any active transaction.
+The relay emits `cadenway.outbox.lease.*` metrics for claim and settlement durations, queue age,
+publication duration and attempt outcomes.
+
+**Service-owned migration.** Generate an additive migration by switching the service's schema
+re-export to `/outbox/schema`. Add nullable `lease_token` and `lease_expires_at`, allow `leased`
+in the status check and add the lease-state check. The new partial index covers
+`(lease_expires_at, id) WHERE status = 'leased'`. Install and validate the migration before
+enabling the leased relay. The legacy writer still inserts `pending` and the legacy relay still
+claims only `pending`. Keep the migration applied when reverting.
+
+**Rollback.** Stop the leased relay and allow in-flight reservations to expire. Run
+`recoverExpiredOutboxLeases(tx)` in bounded system transactions to make expired rows pending
+again. Inspect the count of `leased` rows before restoring the legacy relay, including leases
+that may still be unexpired or locked. Resume legacy publication only once the count is zero.
+
+### Legacy wiring
 
 ```ts
 import { DatabaseModule } from '@cadenway/nest-common/database';
@@ -432,14 +492,14 @@ It requires `DatabaseModule` of `@cadenway/nest-common/database` and `MessagingM
 provides `OutboxWriter`, `OutboxRelay` and the deduplicator, globally. `OutboxModule.forRootAsync({
 imports, inject, useFactory })` builds the options from injected providers.
 
-| Option                   | Default | Effect                                                                                                                                                  |
-| ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `relay`                  | `true`  | Runs the relay in this process. Several replicas may run it; turn it off to run it in one replica only                                                  |
-| `pollIntervalMs`         | 1000    | Pause between two passes when nothing woke the relay                                                                                                    |
-| `batchSize`              | 100     | Rows locked and published per pass                                                                                                                      |
-| `purgeIntervalMs`        | 1 hour  | Pause between two purges by the relay, each of which also redacts restricted rows sent whole; `0` disables them (schedule the purge functions yourself) |
-| `retentionDays`          | 7       | Age of the sent outbox rows the purge deletes                                                                                                           |
-| `processedRetentionDays` | 14      | Age of the processed ids the purge deletes: seven days in the stream plus seven days of possible requeue                                                |
+| Option                   | Default | Effect                                                                                                                           |
+| ------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `relay`                  | `true`  | Runs the relay in this process. Several replicas may run it; turn it off to run it in one replica only                           |
+| `pollIntervalMs`         | 1000    | Pause between two passes when nothing woke the relay                                                                             |
+| `batchSize`              | 100     | Rows locked and published per pass                                                                                               |
+| `purgeIntervalMs`        | 1 hour  | Pause between automatic maintenance sweeps, each of which also redacts restricted rows sent whole. `0` disables periodic sweeps. |
+| `retentionDays`          | 7       | Age of the sent outbox rows the purge deletes                                                                                    |
+| `processedRetentionDays` | 14      | Age of the processed ids the purge deletes: seven days in the stream plus seven days of possible requeue                         |
 
 **The relay** starts when the application has bootstrapped and stops, after its pass in progress,
 on shutdown. Each pass is one transaction of the system runner:
@@ -447,11 +507,17 @@ on shutdown. Each pass is one transaction of the system runner:
 created_at limit <batch> for update skip locked`, publish each row on the subject and to the stream
 it stores, with `Nats-Msg-Id` set to its id, mark the published ones `sent` and, in the same
 statement, [redact the restricted ones](#restricted-events). A row locked by one replica is
-skipped by the others. A full batch is followed by another pass at once.
+skipped by the others. The relay stops starting sends five seconds after receiving the rows.
+It awaits the last send within the configured `publishTimeoutMs`, then settles the attempted rows
+and commits. The unattempted rows stay pending. A full selection or a cut-short pass is followed
+by another pass at once, subject to the backoff below. The relay records the time to enter the
+transaction callback and the time from entry to commit or rollback in the millisecond histograms
+`cadenway.outbox.relay.transaction.entry.duration` and `cadenway.outbox.relay.transaction.duration`.
 
 A publish failure of one row leaves it pending, increments `attempts`, stores the class of the
-error in `last_error` (never a message or a payload) and delays its next attempt: 1 s, doubling,
-capped at five minutes. After 20 failed attempts the row is parked (`status = 'failed'`) with one
+error in `last_error` (never a message or a payload) and delays its next attempt from the time the
+failure is recorded: 1 s, doubling, capped at five minutes. After 20 failed attempts the row is
+parked (`status = 'failed'`) with one
 error log, until `requeueOutboxEvents` gives it a new series; warnings about failing rows are
 logged at most once a minute per class of error. A failure that concerns every row (NATS or the
 stream unreachable, a timeout, a closed connection, a missing permission, the server out of
@@ -459,7 +525,12 @@ resources) stops the pass without counting against the row, and the relay backs 
 poll interval up to 30 seconds; so does a database failure. `relay.publishPending()` runs one
 pass by hand and returns `{ published, failed, interrupted }`.
 
-Maintenance functions, each taking the scope of a system transaction:
+Automatic maintenance starts alongside the relay and runs independently of publication. It
+redacts older restricted rows at startup, even when periodic sweeps are disabled. Each
+transaction processes at most 100 rows. A PostgreSQL advisory lock coordinates the automatic
+batches across replicas, and maintenance returns to skipped work on a later pass.
+
+Manual maintenance functions, each taking the scope of a system transaction:
 
 | Function                                       | Effect                                                                                                                                         |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -519,7 +590,7 @@ the application; the JetStream API prefix is the default `$JS.API`. Every reques
 | Readiness                                  | Nothing: a flush is a protocol ping                                                                                                                                          |                                                                                                                        |
 
 The kit never calls `$JS.API.INFO`, `$JS.API.STREAM.NAMES`, `$JS.API.DIRECT.GET`, nor any consumer
-delete, list or names API. The integration spec `src/messaging.module.int-spec.ts` runs it against
+delete, list or names API. The integration spec `src/wiring/messaging.module.int-spec.ts` runs it against
 a server configured like cadenway-ops.
 
 ## Limits

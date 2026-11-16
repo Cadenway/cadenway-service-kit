@@ -1,43 +1,31 @@
-import { setTimeout as sleep } from 'node:timers/promises';
-
 import { Logger } from '@nestjs/common';
 import { Client, type QueryResult } from 'pg';
-import {
-  PgBoss,
-  type BamEntry,
-  type BamStatusSummary,
-  type Queue,
-  type QueueResult,
-  type UpdateQueueOptions,
-} from 'pg-boss';
+import { PgBoss } from 'pg-boss';
 
-import {
-  DEFAULT_DELETE_AFTER_SECONDS,
-  DEFAULT_EXPIRE_IN_SECONDS,
-  deadLetterQueuesOf,
-  resolveJobQueues,
-  type JobQueueDeclaration,
-  type ResolvedDeadLetterQueue,
-  type ResolvedJobQueue,
-} from '../jobs/job-queue.js';
 import {
   JOBS_POOL_SIZE,
   assertConnection,
   type JobsConnectionOptions,
-} from '../jobs/jobs-options.js';
-import { describeError } from '../jobs/describe-error.js';
+} from '../jobs/database/jobs-connection.js';
+import { describeError } from '../jobs/diagnostics/describe-error.js';
+import { resolveJobQueues, type ResolvedJobQueue } from '../jobs/queues/job-queue.js';
 import { DEFAULT_JOBS_SCHEMA, assertRoleName, assertSchemaName } from '../schema/jobs-schema.js';
 import { expectedSchemaVersion } from '../schema/pg-boss-schema.js';
+import type { ProvisionJobsOptions } from './provision-jobs-options.js';
+import { provisionQueues } from './queues/provision-queues.js';
 import {
-  assertIndexBuildClaim,
   closeMigratorInputs,
   closeSchemaForInstall,
-  grantRuntimeAccess,
-  guardQueueRows,
   holdIndexBuilds,
+} from './schema/migration-guards.js';
+import { guardQueueRows } from './schema/queue-migration-guard.js';
+import { grantRuntimeAccess } from './schema/runtime-grants.js';
+import {
+  assertIndexBuildClaim,
   isInstalled,
   readStoredVersion,
-} from './schema-access.js';
+} from './schema/schema-inspection.js';
+import { waitForIndexBuilds } from './schema/wait-for-index-builds.js';
 
 /**
  * Constant DEFAULT_MIGRATION_TIMEOUT_MS
@@ -48,16 +36,6 @@ import {
  * @type {number}
  */
 const DEFAULT_MIGRATION_TIMEOUT_MS: number = 600_000;
-
-/**
- * Constant MIGRATION_POLL_INTERVAL_MS
- *
- * @description
- * Pause between two readings of the pending index builds, in milliseconds.
- *
- * @type {number}
- */
-const MIGRATION_POLL_INTERVAL_MS: number = 1_000;
 
 /**
  * Constant BAM_INTERVAL_SECONDS
@@ -71,17 +49,6 @@ const MIGRATION_POLL_INTERVAL_MS: number = 1_000;
 const BAM_INTERVAL_SECONDS: number = 10;
 
 /**
- * Constant STANDARD_POLICY
- *
- * @description
- * The pg-boss queue policy this package relies on: no limit on queued or active jobs, so the only
- * deduplication is the occurrence key.
- *
- * @type {string}
- */
-const STANDARD_POLICY: string = 'standard';
-
-/**
  * Constant logger
  *
  * @description
@@ -90,241 +57,6 @@ const STANDARD_POLICY: string = 'standard';
  * @type {Logger}
  */
 const logger: Logger = new Logger('JobsProvisioning');
-
-/**
- * Interface ProvisionJobsOptions
- *
- * @description
- * Options of one provisioning run. `connection`, `queues` and `appRole` are required.
- */
-export interface ProvisionJobsOptions {
-  // #region Properties
-  /**
-   * Property connection
-   *
-   * @description
-   * Connection of the migrator role. The role must be allowed to create the schema, or own it when
-   * it already exists, and to create objects in it.
-   *
-   * @type {JobsConnectionOptions}
-   * @readonly
-   */
-  readonly connection: JobsConnectionOptions;
-
-  /**
-   * Property queues
-   *
-   * @description
-   * The queues of the service, the same list given to `JobsModule`. Each is created, or updated to
-   * match its declaration, with its dead-letter queue. A queue removed from the list is left in
-   * place.
-   *
-   * @type {readonly JobQueueDeclaration[]}
-   * @readonly
-   */
-  readonly queues: readonly JobQueueDeclaration[];
-
-  /**
-   * Property appRole
-   *
-   * @description
-   * Existing role the runtime connects as: lowercase letters, digits and underscores. It is granted
-   * usage of the schema and data access to its tables, never DDL rights.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly appRole: string;
-
-  /**
-   * Property schema
-   *
-   * @description
-   * PostgreSQL schema that holds the pg-boss tables: lowercase letters, digits and underscores.
-   * Defaults to `pgboss`.
-   *
-   * @type {string}
-   * @readonly
-   */
-  readonly schema?: string;
-
-  /**
-   * Property migrationTimeoutMs
-   *
-   * @description
-   * Time the index builds of a pg-boss schema migration get to finish, in milliseconds. Past it the
-   * run fails and can be started again. Defaults to 600000 (10 minutes).
-   *
-   * @type {number}
-   * @readonly
-   */
-  readonly migrationTimeoutMs?: number;
-  // #endregion
-}
-
-/**
- * Function toCreateOptions
- *
- * @description
- * Maps a resolved queue to the options pg-boss creates it with. Every value is explicit so a
- * change of a pg-boss default cannot change a queue silently.
- *
- * @param {ResolvedJobQueue} queue - Resolved queue declaration.
- * @returns {Omit<Queue, 'name'>} Options for `createQueue`.
- */
-function toCreateOptions(queue: ResolvedJobQueue): Omit<Queue, 'name'> {
-  return {
-    policy: STANDARD_POLICY,
-    retryLimit: queue.retryLimit,
-    retryDelay: queue.retryDelaySeconds,
-    retryBackoff: queue.retryBackoff,
-    ...(queue.retryDelayMaxSeconds === null ? {} : { retryDelayMax: queue.retryDelayMaxSeconds }),
-    expireInSeconds: queue.expireInSeconds,
-    retentionSeconds: queue.retentionSeconds,
-    deleteAfterSeconds: queue.deleteAfterSeconds,
-    deadLetter: queue.deadLetter,
-  };
-}
-
-/**
- * Function toUpdateOptions
- *
- * @description
- * Maps a resolved queue to the options an existing queue is updated with, so a changed declaration
- * reaches the database at the next provisioning run. Jobs already stored keep the retry policy they
- * were enqueued with.
- *
- * @param {ResolvedJobQueue} queue - Resolved queue declaration.
- * @returns {UpdateQueueOptions} Options for `updateQueue`.
- */
-function toUpdateOptions(queue: ResolvedJobQueue): UpdateQueueOptions {
-  return {
-    retryLimit: queue.retryLimit,
-    retryDelay: queue.retryDelaySeconds,
-    retryBackoff: queue.retryBackoff,
-    retryDelayMax: queue.retryDelayMaxSeconds,
-    expireInSeconds: queue.expireInSeconds,
-    retentionSeconds: queue.retentionSeconds,
-    deleteAfterSeconds: queue.deleteAfterSeconds,
-    deadLetter: queue.deadLetter,
-  };
-}
-
-/**
- * Type DeadLetterQueueOptions
- *
- * @description
- * The options a dead-letter queue is created and updated with: the subset both pg-boss calls
- * accept unchanged.
- *
- * @type {Required<Pick<Queue, 'retryLimit' | 'retryDelay' | 'retryBackoff' | 'expireInSeconds' | 'retentionSeconds' | 'deleteAfterSeconds'>>}
- */
-type DeadLetterQueueOptions = Required<
-  Pick<
-    Queue,
-    | 'retryLimit'
-    | 'retryDelay'
-    | 'retryBackoff'
-    | 'expireInSeconds'
-    | 'retentionSeconds'
-    | 'deleteAfterSeconds'
-  >
->;
-
-/**
- * Function toDeadLetterOptions
- *
- * @description
- * Options of a dead-letter queue: a parking place. Nothing consumes it, so it has no retry and no
- * dead-letter queue of its own, and a dead letter is deleted once its retention has passed.
- *
- * @param {ResolvedDeadLetterQueue} deadLetter - Dead-letter queue derived from the declarations.
- * @returns {DeadLetterQueueOptions} Options valid for both `createQueue` and `updateQueue`.
- */
-function toDeadLetterOptions(deadLetter: ResolvedDeadLetterQueue): DeadLetterQueueOptions {
-  return {
-    retryLimit: 0,
-    retryDelay: 0,
-    retryBackoff: false,
-    expireInSeconds: DEFAULT_EXPIRE_IN_SECONDS,
-    retentionSeconds: deadLetter.retentionSeconds,
-    deleteAfterSeconds: DEFAULT_DELETE_AFTER_SECONDS,
-  };
-}
-
-/**
- * Function ensureQueue
- *
- * @description
- * Creates a queue, or updates it when it already exists. Safe to run from two containers at once:
- * pg-boss creates a queue with `ON CONFLICT DO NOTHING` under an advisory lock.
- *
- * @param {PgBoss} boss - Started pg-boss instance of the migrator role.
- * @param {string} name - Queue name.
- * @param {Omit<Queue, 'name'>} createOptions - Options used when the queue does not exist.
- * @param {UpdateQueueOptions} updateOptions - Options applied when it does.
- * @returns {Promise<void>} Resolves once the queue matches its declaration.
- * @throws {Error} When an existing queue has another policy than the one this package relies on.
- */
-async function ensureQueue(
-  boss: PgBoss,
-  name: string,
-  createOptions: Omit<Queue, 'name'>,
-  updateOptions: UpdateQueueOptions,
-): Promise<void> {
-  const existing: QueueResult | null = await boss.getQueue(name);
-  if (existing === null) {
-    await boss.createQueue(name, createOptions);
-    return;
-  }
-  if (existing.policy !== STANDARD_POLICY) {
-    throw new Error(
-      `Queue "${name}" exists with policy "${String(existing.policy)}": only "${STANDARD_POLICY}" queues are supported.`,
-    );
-  }
-  await boss.updateQueue(name, updateOptions);
-}
-
-/**
- * Function waitForIndexBuilds
- *
- * @description
- * Waits until pg-boss has run every index build a schema migration queued.
- *
- * A migration creates its indexes in the background, one `CREATE INDEX CONCURRENTLY` at a time, and
- * only an instance allowed to migrate runs them. The runtime is not, so they must finish here. A
- * failed build is retried by pg-boss; the wait only ends when none is left or the time is up. A
- * fresh install queues none.
- *
- * @param {PgBoss} boss - Started pg-boss instance of the migrator role.
- * @param {string} schema - Schema name, used in the error message.
- * @param {number} timeoutMs - Time the builds get to finish, in milliseconds.
- * @returns {Promise<void>} Resolves once no build is pending, running or failed.
- * @throws {Error} When builds are still unfinished after the timeout.
- */
-async function waitForIndexBuilds(boss: PgBoss, schema: string, timeoutMs: number): Promise<void> {
-  const deadline: number = Date.now() + timeoutMs;
-  for (;;) {
-    const statuses: BamStatusSummary[] = await boss.getBamStatus();
-    const unfinished: number = statuses
-      .filter((status: BamStatusSummary): boolean => status.status !== 'completed')
-      .reduce((total: number, status: BamStatusSummary): number => total + status.count, 0);
-    if (unfinished === 0) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      const entries: BamEntry[] = await boss.getBamEntries();
-      const details: string = entries
-        .filter((entry: BamEntry): boolean => entry.status !== 'completed')
-        .map((entry: BamEntry): string => `${entry.name} (${entry.status}): ${entry.error ?? '-'}`)
-        .join('; ');
-      throw new Error(
-        `${String(unfinished)} index build(s) of schema "${schema}" did not finish in ${String(timeoutMs)} ms: ${details}. Run the provisioning again.`,
-      );
-    }
-    await sleep(MIGRATION_POLL_INTERVAL_MS);
-  }
-}
 
 /**
  * Function stopQuietly
@@ -386,18 +118,7 @@ async function installSchemaAndQueues(
     await boss.start();
     await afterStart();
     await waitForIndexBuilds(boss, schema, migrationTimeoutMs);
-    for (const deadLetter of deadLetterQueuesOf(queues)) {
-      const options: DeadLetterQueueOptions = toDeadLetterOptions(deadLetter);
-      await ensureQueue(
-        boss,
-        deadLetter.name,
-        { ...options, policy: STANDARD_POLICY },
-        { ...options, deadLetter: null, retryDelayMax: null },
-      );
-    }
-    for (const queue of queues) {
-      await ensureQueue(boss, queue.name, toCreateOptions(queue), toUpdateOptions(queue));
-    }
+    await provisionQueues(boss, queues);
     return await boss.schemaVersion();
   } finally {
     await stopQuietly(boss);

@@ -1,11 +1,11 @@
 import type { Logger } from '@nestjs/common';
 import type { JobWithMetadata, PgBoss } from 'pg-boss';
 
-import { describeError, stackOf } from '../../jobs/describe-error.js';
-import { readJobEnvelope, type JobEnvelope } from '../../jobs/job-envelope.js';
-import type { ResolvedJobQueue } from '../../jobs/job-queue.js';
-import type { Job, JobHandler, JobWorkOptions } from '../../jobs/job.js';
-import type { ResolvedJobsModuleOptions } from '../../jobs/jobs-options.js';
+import { describeError, stackOf } from '../../jobs/diagnostics/describe-error.js';
+import { readJobEnvelope, type JobEnvelope } from '../../jobs/execution/job-envelope.js';
+import type { ResolvedJobQueue } from '../../jobs/queues/job-queue.js';
+import type { Job, JobHandler, JobWorkOptions } from '../../jobs/execution/job.js';
+import type { ResolvedJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
 
 /**
  * Constant DEFAULT_POLLING_INTERVAL_SECONDS
@@ -48,6 +48,9 @@ const EXPIRY_LOG_MARGIN_MS: number = 100;
  */
 interface RunningAttempt {
   // #region Properties
+  /** The stored job id shared by all attempts of the job. */
+  readonly id: string;
+
   /**
    * Property queue
    *
@@ -103,6 +106,9 @@ interface RunningAttempt {
    */
   readonly expiry: NodeJS.Timeout;
 
+  /** Cancellation owned by this runtime and independent of pg-boss's cleanup. */
+  readonly interruption: AbortController;
+
   /**
    * Property reported
    *
@@ -113,6 +119,27 @@ interface RunningAttempt {
    */
   reported: boolean;
   // #endregion
+}
+
+/** Lets pg-boss fail the attempt when grace expires even if the handler does not settle. */
+async function waitForHandler(work: () => Promise<void>, interruption: AbortSignal): Promise<void> {
+  let abort: () => void = (): void => undefined;
+  const interrupted: Promise<never> = new Promise<never>((_resolve, reject): void => {
+    abort = (): void => {
+      const reason: unknown = interruption.reason;
+      reject(
+        reason instanceof Error
+          ? reason
+          : new Error('The application shut down before the handler finished.'),
+      );
+    };
+    interruption.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    await Promise.race([work(), interrupted]);
+  } finally {
+    interruption.removeEventListener('abort', abort);
+  }
 }
 
 /**
@@ -138,12 +165,16 @@ export class JobWorkers {
    * Property running
    *
    * @description
-   * Attempts whose handler has not settled yet, by job id.
+   * Attempts whose handlers have not settled yet. A retry can start while its expired handler
+   * is still running, so every invocation has its own entry.
    *
-   * @type {Map<string, RunningAttempt>}
+   * @type {Set<RunningAttempt>}
    * @readonly
    */
-  private readonly running: Map<string, RunningAttempt> = new Map<string, RunningAttempt>();
+  private readonly running: Set<RunningAttempt> = new Set<RunningAttempt>();
+
+  /** Expired shutdown grace. Stops a claim that only reaches the worker after the deadline. */
+  private shutdownError: Error | undefined;
   // #endregion
 
   // #region Constructor
@@ -231,20 +262,22 @@ export class JobWorkers {
   }
 
   /**
-   * Method reportInterrupted
+   * Method interruptRunning
    *
    * @description
-   * Reports handlers in flight after pg-boss stops waiting.
+   * Aborts and reports active handlers when the runtime's shutdown grace expires.
    *
    * @param {number} timeoutMs - The configured grace period.
    */
-  public reportInterrupted(timeoutMs: number): void {
-    for (const [id, attempt] of this.running) {
-      this.reportFailedAttempt(
-        id,
-        attempt,
-        `it was still running when the shutdown timeout of ${String(timeoutMs)} ms passed`,
-      );
+  public interruptRunning(timeoutMs: number): void {
+    if (this.shutdownError !== undefined) {
+      return;
+    }
+    const reason: string = `it was still running when the shutdown timeout of ${String(timeoutMs)} ms passed`;
+    this.shutdownError = new Error(reason);
+    for (const attempt of this.running) {
+      this.reportFailedAttempt(attempt, reason);
+      attempt.interruption.abort(this.shutdownError);
     }
   }
 
@@ -256,17 +289,11 @@ export class JobWorkers {
    * and the job moves to the dead-letter queue, a warning when it will be retried. An attempt is
    * reported once, whichever of the handler, the expiration or the shutdown fails it first.
    *
-   * @param {string} id - Job id.
    * @param {RunningAttempt} attempt - The attempt that failed.
    * @param {string} reason - Why it failed: the error of the handler, or what stopped it.
    * @param {string} [stack] - Stack of the error, for the last attempt.
    */
-  private reportFailedAttempt(
-    id: string,
-    attempt: RunningAttempt,
-    reason: string,
-    stack?: string,
-  ): void {
+  private reportFailedAttempt(attempt: RunningAttempt, reason: string, stack?: string): void {
     if (attempt.reported) {
       return;
     }
@@ -275,12 +302,12 @@ export class JobWorkers {
     const progress: string = `${String(attempt.attempt)} of ${String(attempt.attempts)}`;
     if (attempt.attempt >= attempt.attempts) {
       this.logger.error(
-        `Job ${id} of queue "${attempt.queue}" failed its last attempt (${progress}) and moves to the dead-letter queue "${attempt.deadLetter}": ${reason}`,
+        `Job ${attempt.id} of queue "${attempt.queue}" failed its last attempt (${progress}) and moves to the dead-letter queue "${attempt.deadLetter}": ${reason}`,
         stack,
       );
     } else {
       this.logger.warn(
-        `Job ${id} of queue "${attempt.queue}" failed attempt ${progress} and will be retried: ${reason}`,
+        `Job ${attempt.id} of queue "${attempt.queue}" failed attempt ${progress} and will be retried: ${reason}`,
       );
     }
   }
@@ -311,6 +338,9 @@ export class JobWorkers {
     job: JobWithMetadata<unknown>,
     handler: JobHandler<TPayload>,
   ): Promise<void> {
+    if (this.shutdownError !== undefined) {
+      throw this.shutdownError;
+    }
     const expireInMs: number = job.expireInSeconds * 1_000;
     const startedAt: number = Date.now();
     const endedBecause: () => string = (): string =>
@@ -319,17 +349,19 @@ export class JobWorkers {
         : 'the application shut down before it finished';
     let failure: string | null = null;
     const attempt: RunningAttempt = {
+      id: job.id,
       queue: queue.name,
       attempt: job.retryCount + 1,
       attempts: job.retryLimit + 1,
       deadLetter: job.deadLetter,
       expiry: setTimeout((): void => {
-        this.reportFailedAttempt(job.id, attempt, endedBecause());
+        this.reportFailedAttempt(attempt, endedBecause());
       }, expireInMs + EXPIRY_LOG_MARGIN_MS),
+      interruption: new AbortController(),
       reported: false,
     };
     attempt.expiry.unref();
-    this.running.set(job.id, attempt);
+    this.running.add(attempt);
     try {
       const envelope: JobEnvelope = readJobEnvelope(job.data);
       const context: Job<TPayload> = {
@@ -338,19 +370,24 @@ export class JobWorkers {
         payload: envelope.payload as TPayload,
         organizationId: envelope.organizationId,
         attempt: attempt.attempt,
-        signal: job.signal,
+        signal: AbortSignal.any([job.signal, attempt.interruption.signal]),
       };
-      await this.options.runInOrganization(envelope.organizationId, (): Promise<void> =>
-        handler(context),
+      await waitForHandler(
+        (): Promise<void> =>
+          this.options.runInOrganization(envelope.organizationId, (): Promise<void> => {
+            context.signal.throwIfAborted();
+            return handler(context);
+          }),
+        attempt.interruption.signal,
       );
+      attempt.interruption.signal.throwIfAborted();
       if (job.signal.aborted) {
         // pg-boss aborts the signal when it fails the attempt itself. A handler that stopped on
         // the signal and returned did not complete the job: the attempt is already failed.
-        this.reportFailedAttempt(job.id, attempt, endedBecause());
+        this.reportFailedAttempt(attempt, endedBecause());
       }
     } catch (error) {
       this.reportFailedAttempt(
-        job.id,
         attempt,
         job.signal.aborted ? `${endedBecause()} (${describeError(error)})` : describeError(error),
         stackOf(error),
@@ -358,7 +395,7 @@ export class JobWorkers {
       failure = describeError(error);
     } finally {
       clearTimeout(attempt.expiry);
-      this.running.delete(job.id);
+      this.running.delete(attempt);
     }
     if (failure !== null) {
       // Thrown outside the catch, and without the original error as its cause, on purpose: pg-boss

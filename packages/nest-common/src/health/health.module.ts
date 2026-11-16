@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
 
-import { HEALTH_OPTIONS, type HealthModuleOptions } from './health-indicators.js';
-import { HealthController } from './health.controller.js';
+import { HEALTH_OPTIONS, type HealthModuleOptions } from './checks/health-indicators.js';
+import { HealthController } from './endpoints/health.controller.js';
 
 /**
  * Interface HealthModuleAsyncOptions

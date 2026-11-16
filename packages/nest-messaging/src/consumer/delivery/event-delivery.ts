@@ -14,7 +14,7 @@ import {
   type Span,
 } from '@opentelemetry/api';
 
-import { errorClassOf } from '../../error-class.js';
+import { errorClassOf } from '../../observability/error-class.js';
 import {
   EVENT_ACTOR_TYPES,
   type EventActor,
@@ -22,15 +22,15 @@ import {
   type EventEnvelope,
 } from '../../events/event-envelope.js';
 import { EventValidationError } from '../../events/event-validation.js';
-import { contextFromTraceparent, TRACEPARENT_HEADER } from '../../publisher/event-headers.js';
+import { contextFromTraceparent } from '../../observability/trace-context.js';
+import { TRACEPARENT_HEADER } from '../../transport/event-headers.js';
 import type {
   DeduplicationOutcome,
   EventDeduplicator,
   VersionClaim,
-} from '../event-deduplicator.js';
-import { retryDelayMs } from '../retry-delays.js';
+} from './event-deduplicator.js';
+import { retryDelayMs } from './retry-delays.js';
 import type { EventTarget } from '../subscriptions/event-target.js';
-import type { RunningConsumer } from '../subscriptions/running-consumer.js';
 import type { EventContext } from './event-context.js';
 
 /**
@@ -107,19 +107,6 @@ function untilAborted<TResult>(work: Promise<TResult>, signal: AbortSignal): Pro
       );
     },
   );
-}
-
-/**
- * Function streamTimeOf
- *
- * @description
- * Reads the instant a message was stored in its stream.
- *
- * @param {JsMsg} message - Message delivered by JetStream.
- * @returns {number} The instant, in milliseconds.
- */
-function streamTimeOf(message: JsMsg): number {
-  return Math.floor(message.info.timestampNanos / 1_000_000);
 }
 
 /**
@@ -214,12 +201,11 @@ export class EventDelivery {
    * at once, which makes the server report the delivery limit. The span records the class of
    * the error only, never its message.
    *
-   * @param {RunningConsumer} running - Consumer being run.
+   * @param {EventTarget} target - Registered handler.
    * @param {JsMsg} message - Message delivered by JetStream.
    * @returns {Promise<void>} Resolves once the message was answered; it never rejects.
    */
-  public async deliver(running: RunningConsumer, message: JsMsg): Promise<void> {
-    const target: EventTarget = running.target;
+  public async deliver(target: EventTarget, message: JsMsg): Promise<void> {
     const deliveryCount: number = message.info.deliveryCount;
     const streamSequence: number = message.info.streamSequence;
     const fields: {
@@ -234,7 +220,7 @@ export class EventDelivery {
       payload = target.validate(decoded);
     } catch (error) {
       const invalid: boolean = error instanceof EventValidationError;
-      this.answer(running, message, 'term', invalid ? 'invalid-payload' : 'invalid-json');
+      this.answer(target, message, 'term', invalid ? 'invalid-payload' : 'invalid-json');
       this.logger.error(
         { ...fields, issues: error instanceof EventValidationError ? error.issues : undefined },
         invalid ? 'event does not match its contract: terminated' : 'event is not JSON: terminated',
@@ -272,7 +258,7 @@ export class EventDelivery {
           untilAborted(this.handle(target, payload, eventContext), deadline.signal),
         ),
       );
-      this.answer(running, message, 'ack');
+      this.answer(target, message, 'ack');
       if (outcome === 'duplicate') {
         this.logger.debug({ ...fields, eventId: payload.id }, 'duplicate event skipped');
       }
@@ -283,13 +269,13 @@ export class EventDelivery {
       const timedOut: boolean = error instanceof HandlerTimeoutError;
       const delayMs: number | undefined = retryDelayMs(deliveryCount, this.retryDelaysMs);
       if (delayMs === undefined) {
-        this.answer(running, message, 'nak');
+        this.answer(target, message, 'nak');
         this.logger.error(
           { ...fields, eventId: payload.id, err: error },
           'event handler failed on the last delivery: dead letter',
         );
       } else {
-        this.answer(running, message, 'nak', delayMs);
+        this.answer(target, message, 'nak', delayMs);
         this.logger.warn(
           { ...fields, eventId: payload.id, retryInMs: delayMs, err: error },
           timedOut ? 'event handler timed out: will retry' : 'event handler failed: will retry',
@@ -305,28 +291,20 @@ export class EventDelivery {
    * Method answer
    *
    * @description
-   * Sends the answer to a message and records what recovery needs: a message waiting for a
-   * redelivery, or the stream time of the last one answered for good.
+   * Sends the delivery outcome to JetStream.
    *
-   * @param {RunningConsumer} running - Consumer being run.
+   * @param {EventTarget} target - Registered handler.
    * @param {JsMsg} message - Message delivered by JetStream.
    * @param {'ack' | 'term' | 'nak'} answer - Answer to send.
    * @param {string | number | undefined} detail - Reason of a `term`; delay of a `nak`, in milliseconds, none asking for an immediate redelivery.
    * @returns {void}
    */
   private answer(
-    running: RunningConsumer,
+    target: EventTarget,
     message: JsMsg,
     answer: 'ack' | 'term' | 'nak',
     detail?: string | number,
   ): void {
-    const sequence: number = message.info.streamSequence;
-    if (answer === 'nak' && typeof detail === 'number') {
-      running.retrying.set(sequence, streamTimeOf(message));
-    } else {
-      running.retrying.delete(sequence);
-      running.lastHandledAt = Math.max(running.lastHandledAt ?? 0, streamTimeOf(message));
-    }
     answerSafely(
       () => {
         if (answer === 'ack') {
@@ -339,7 +317,7 @@ export class EventDelivery {
       },
       (error: unknown) => {
         this.logger.debug(
-          { consumer: running.target.consumer, streamSequence: sequence, err: error },
+          { consumer: target.consumer, streamSequence: message.info.streamSequence, err: error },
           'the answer to a message could not be sent: it will be redelivered',
         );
       },
@@ -378,8 +356,8 @@ export class EventDelivery {
    * Method handle
    *
    * @description
-   * Calls the handler, through the deduplicator when the application has one. The handler is
-   * abandoned at the deadline even inside the deduplicator, whose transaction then rolls back.
+   * Calls the handler, through the deduplicator when the application has one. The deadline
+   * prevents a late start and abandons a running handler so the transaction rolls back.
    *
    * @param {EventTarget} target - Registered handler.
    * @param {EventEnvelope} payload - Validated payload.
@@ -397,11 +375,13 @@ export class EventDelivery {
     }
     return this.deduplicator.run(
       { consumer: target.consumer, event: target.event, envelope: payload },
-      (claimVersion: VersionClaim): Promise<void> =>
-        untilAborted(
+      async (claimVersion: VersionClaim): Promise<void> => {
+        eventContext.signal.throwIfAborted();
+        await untilAborted(
           target.handle(payload, { ...eventContext, claimVersion }),
           eventContext.signal,
-        ),
+        );
+      },
     );
   }
   // #endregion

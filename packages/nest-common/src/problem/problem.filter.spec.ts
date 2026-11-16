@@ -24,8 +24,8 @@ import {
   EtagInterceptor,
   IfMatch,
   type IfMatchCondition,
-} from '../concurrency/etag.js';
-import { applyJsonBodyLimit } from '../http/body-limit.js';
+} from '../http/concurrency/etag.js';
+import { applyJsonBodyLimit } from '../http/body/body-limit.js';
 import { pageQueryShape, type PageQuery } from '../pagination/cursor.js';
 import { zodDto, ZodValidationPipe } from '../validation/zod-validation.pipe.js';
 import { ProblemFilter, toProblem, WS_EXCEPTION_EVENT } from './problem.filter.js';

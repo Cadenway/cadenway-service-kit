@@ -18,13 +18,13 @@ import type {
   EventSchemas,
 } from '../events/event-envelope.js';
 import { validateEvent } from '../events/event-validation.js';
+import { eventRoute, type EventRoute } from '../transport/event-route.js';
 import {
-  eventRoute,
   MESSAGING_OPTIONS,
-  type EventRoute,
   type ResolvedMessagingOptions,
-} from '../messaging-options.js';
-import { buildEventHeaders, currentTraceparent } from './event-headers.js';
+} from '../configuration/messaging-options.js';
+import { buildEventHeaders } from '../transport/event-headers.js';
+import { currentTraceparent } from '../observability/trace-context.js';
 import { uuidv7 } from './uuid-v7.js';
 
 /**

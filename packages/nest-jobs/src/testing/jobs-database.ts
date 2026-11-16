@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Client, type QueryResult, type QueryResultRow } from 'pg';
 
-import type { JobsConnectionOptions } from '../jobs/jobs-options.js';
+import type { JobsConnectionOptions } from '../jobs/database/jobs-connection.js';
 
 /**
  * Constant POSTGRES_IMAGE

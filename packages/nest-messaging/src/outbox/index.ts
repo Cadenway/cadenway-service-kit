@@ -6,21 +6,22 @@
  * gateway without a database never imports this file.
  *
  * @packageDocumentation
+ * @deprecated Use the writer, relay, schema and PostgreSQL consumer subpaths to compose new deployments.
  */
-export { default as eventVersions } from './event-versions.schema.js';
-export { default as outboxEvents } from './outbox-events.schema.js';
+export { default as eventVersions } from './schema/event-versions.schema.js';
+export { default as outboxEvents } from './schema/outbox-events.schema.js';
 export {
   purgeProcessedEvents,
   purgeSentOutboxEvents,
   requeueOutboxEvents,
-} from './outbox-maintenance.js';
+} from './maintenance/outbox-maintenance.js';
 export {
   DEFAULT_OUTBOX_RETENTION_DAYS,
   DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS,
   type OutboxModuleOptions,
-} from './outbox-options.js';
-export { OutboxRelay, type RelayPass } from './outbox-relay.js';
-export { OutboxWriter, type AppendedEvent } from './outbox-writer.js';
-export { OutboxModule, type OutboxModuleAsyncOptions } from './outbox.module.js';
-export { PostgresEventDeduplicator } from './postgres-event-deduplicator.js';
-export { default as processedEvents } from './processed-events.schema.js';
+} from './wiring/outbox-options.js';
+export { OutboxRelay, type RelayPass } from './relay/outbox-relay.js';
+export { OutboxWriter, type AppendedEvent } from './writer/outbox-writer.js';
+export { OutboxModule, type OutboxModuleAsyncOptions } from './wiring/outbox.module.js';
+export { PostgresEventDeduplicator } from '../consumer/postgres/postgres-event-deduplicator.js';
+export { default as processedEvents } from './schema/processed-events.schema.js';

@@ -11,7 +11,7 @@ import type { TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { EventConsumers } from '../consumer/event-consumers.js';
-import { MessagingModule } from '../messaging.module.js';
+import { MessagingModule } from '../wiring/messaging.module.js';
 import {
   DEAD_LETTER_CONSUMER_HEADER,
   DEAD_LETTER_DELIVERIES_HEADER,
@@ -20,7 +20,7 @@ import {
   DEAD_LETTER_SEQUENCE_HEADER,
   EVENT_NAME_HEADER,
   ORGANIZATION_ID_HEADER,
-} from '../publisher/event-headers.js';
+} from '../transport/event-headers.js';
 import { EventPublisher, type PublishedEvent } from '../publisher/event-publisher.js';
 import { isolatedNames, messagingOptions, startApplication } from '../testing/application.js';
 import { ATELIER_NORD, eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';

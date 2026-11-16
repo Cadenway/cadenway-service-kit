@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { EventValidationError } from '../events/event-validation.js';
-import { MessagingModule } from '../messaging.module.js';
+import { MessagingModule } from '../wiring/messaging.module.js';
 import {
   disableTracePropagation,
   enableTracePropagation,
@@ -26,7 +26,11 @@ import {
   type TaskUpdatedV1,
 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
-import { EVENT_NAME_HEADER, ORGANIZATION_ID_HEADER, TRACEPARENT_HEADER } from './event-headers.js';
+import {
+  EVENT_NAME_HEADER,
+  ORGANIZATION_ID_HEADER,
+  TRACEPARENT_HEADER,
+} from '../transport/event-headers.js';
 import { EventPublisher, type PublishedEvent } from './event-publisher.js';
 
 describe('event publisher on a real NATS server', () => {

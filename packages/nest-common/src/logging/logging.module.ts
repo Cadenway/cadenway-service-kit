@@ -14,14 +14,14 @@ import {
   type OrganizationContext,
 } from '../auth/context/organization-context.js';
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
-import { readPackageVersion } from '../bootstrap/package-version.js';
+import { readPackageVersion } from '../bootstrap/application/package-version.js';
 import {
   maskEmails,
   redactedKeySet,
   sanitizeLogValue,
   sanitizeSerializedError,
 } from './redaction.js';
-import { routePatternOf } from '../http/route.js';
+import { routePatternOf } from '../http/routing/route.js';
 import { REQUEST_ID_HEADER, resolveRequestId } from './request-id.js';
 
 /**
