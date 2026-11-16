@@ -1,6 +1,6 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 
-import type { JobsModuleOptions } from '../jobs/jobs-options.js';
+import type { JobsModuleOptions } from '../jobs/configuration/jobs-options.js';
 
 /**
  * Constant CONFIGURATION

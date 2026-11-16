@@ -11,7 +11,7 @@
   },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
-    "build": "tsc -b",
+    "build": "node scripts/build.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
@@ -20,6 +20,7 @@
     "test": "vitest run --project unit",
     "test:architecture": "node --test tests/architecture/project.test.mjs",
     "test:packaging": "node --test tests/packaging/archives.test.mjs",
+    "test:packaging:published": "node --test tests/packaging/published.test.mjs",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
     "quality": "pnpm format:check && pnpm test:lint && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build && pnpm test:packaging",

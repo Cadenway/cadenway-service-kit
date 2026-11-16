@@ -12,6 +12,7 @@ The checkout contains the runtime packages and their build and release workflows
 - [Hexagonal architecture for NestJS](hexagonal-architecture.md): module template, dependency rules and architecture checks.
 - [Development and checks](development.md): prerequisites, commands and verification.
 - [Domain and integration](integration.md): repository-specific contracts, behavior and dependencies.
+- [Leased outbox rollout](outbox-rollout.md): expand the service database, activate the relay and roll back safely.
 
 ## Sources and policy
 

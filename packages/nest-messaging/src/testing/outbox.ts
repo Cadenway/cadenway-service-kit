@@ -7,15 +7,15 @@ import {
 } from '@cadenway/nest-common/database';
 import type { TestingModule } from '@nestjs/testing';
 
-import type { MessagingModuleOptions } from '../messaging-options.js';
-import type { MessagingTuning } from '../messaging-tuning.js';
-import { MessagingModule } from '../messaging.module.js';
-import eventVersions from '../outbox/event-versions.schema.js';
-import outboxEvents from '../outbox/outbox-events.schema.js';
-import type { OutboxModuleOptions } from '../outbox/outbox-options.js';
-import { OutboxWriter, type AppendedEvent } from '../outbox/outbox-writer.js';
-import { OutboxModule } from '../outbox/outbox.module.js';
-import processedEvents from '../outbox/processed-events.schema.js';
+import type { MessagingModuleOptions } from '../configuration/messaging-options.js';
+import type { MessagingTuning } from '../configuration/messaging-tuning.js';
+import { MessagingModule } from '../wiring/messaging.module.js';
+import eventVersions from '../outbox/schema/event-versions.schema.js';
+import outboxEvents from '../outbox/schema/outbox-events.schema.js';
+import type { OutboxModuleOptions } from '../outbox/wiring/outbox-options.js';
+import { OutboxWriter, type AppendedEvent } from '../outbox/writer/outbox-writer.js';
+import { OutboxModule } from '../outbox/wiring/outbox.module.js';
+import processedEvents from '../outbox/schema/processed-events.schema.js';
 import { messagingOptions, startApplication } from './application.js';
 import { ATELIER_NORD, CAMILLE, eventSchemas, taskUpdated, type TaskUpdatedV1 } from './events.js';
 import type { TestNats } from './nats.js';

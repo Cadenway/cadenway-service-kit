@@ -59,13 +59,13 @@ export {
 export {
   createApplication,
   type CreateApplicationOptions,
-} from './bootstrap/create-application.js';
-export { readPackageVersion } from './bootstrap/package-version.js';
+} from './bootstrap/application/create-application.js';
+export { readPackageVersion } from './bootstrap/application/package-version.js';
 export {
   runApplication,
   type RunApplicationOptions,
   type StartupErrorStream,
-} from './bootstrap/run-application.js';
+} from './bootstrap/lifecycle/run-application.js';
 export {
   assertVersionMatch,
   EtagInterceptor,
@@ -74,7 +74,7 @@ export {
   parseIfMatch,
   type IfMatchCondition,
   type VersionCheckOptions,
-} from './concurrency/etag.js';
+} from './http/concurrency/etag.js';
 export { CONFIG, ConfigModule, type ConfigModuleOptions } from './config/config.module.js';
 export { ConfigError, loadConfig, type ConfigEnvironment } from './config/load-config.js';
 export {
@@ -87,14 +87,14 @@ export {
   type NatsProbe,
   type PostgresProbe,
   type RedisProbe,
-} from './health/health-indicators.js';
+} from './health/checks/health-indicators.js';
 export { HealthModule, type HealthModuleAsyncOptions } from './health/health.module.js';
 export {
   InternalHttpClient,
   MAX_CALL_TIMEOUT_MS,
   type InternalHttpClientOptions,
   type InternalRequestInit,
-} from './http-client/internal-http-client.js';
+} from './http/client/internal-http-client.js';
 export {
   DEFAULT_REQUEST_BUDGET_MS,
   remainingBudgetMs,
@@ -102,13 +102,13 @@ export {
   requestDeadlineMiddleware,
   runWithDeadline,
   type RequestDeadlineOptions,
-} from './http-client/request-deadline.js';
+} from './http/deadline/request-deadline.js';
 export {
   applyJsonBodyLimit,
   JSON_BODY_LIMIT_BYTES,
   type BodyParserHost,
-} from './http/body-limit.js';
-export { routePatternOf } from './http/route.js';
+} from './http/body/body-limit.js';
+export { routePatternOf } from './http/routing/route.js';
 export { LoggingModule, type LoggingModuleOptions } from './logging/logging.module.js';
 export {
   buildPage,
@@ -132,8 +132,8 @@ export {
 } from './problem/problem.js';
 export { DEFAULT_REDACTED_KEYS, maskEmails, REDACTED } from './logging/redaction.js';
 export { REQUEST_ID_HEADER, requestIdOf } from './logging/request-id.js';
-export { nameHttpSpan, RouteNameInterceptor } from './telemetry/route-name.interceptor.js';
-export { shutdownTelemetry } from './telemetry/telemetry-handle.js';
+export { nameHttpSpan, RouteNameInterceptor } from './telemetry/http/route-name.interceptor.js';
+export { shutdownTelemetry } from './telemetry/sdk/telemetry-handle.js';
 export {
   zodDto,
   ZodValidationPipe,

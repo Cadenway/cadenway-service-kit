@@ -29,7 +29,7 @@ import {
   MessagingConnection,
   messagingHealthIndicator,
 } from '../connection/messaging-connection.js';
-import { MessagingModule } from '../messaging.module.js';
+import { MessagingModule } from '../wiring/messaging.module.js';
 import { EventPublisher, type PublishedEvent } from '../publisher/event-publisher.js';
 import {
   disableTracePropagation,
@@ -359,27 +359,65 @@ describe('event consumers on a real NATS server, without a database', () => {
     expect(second).toBeLessThan(2000);
   });
 
-  it('refuses to register the same handler twice', async () => {
+  it('refuses concurrent registrations of the same handler', async () => {
     const application: TestingModule = await startApplication([
       MessagingModule.forRoot(messagingOptions(nats, isolatedNames('twice'))),
     ]);
     const consumers: EventConsumers = application.get(EventConsumers);
-    await consumers.subscribe({
+    const register = (): Promise<void> =>
+      consumers.subscribe({
+        handler: 'notify',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.resolve(),
+      });
+    const initial: Promise<void> = register();
+    try {
+      const duplicate = expect(register()).rejects.toThrow(/already registered/u);
+      await Promise.all([initial, duplicate]);
+    } finally {
+      await application.close();
+    }
+  });
+
+  it('rejects a pending registration if shutdown starts while opening the consumer', async () => {
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('register-stop'))),
+    ]);
+    const consumers: EventConsumers = application.get(EventConsumers);
+    const connection: MessagingConnection = application.get(MessagingConnection);
+    let release: () => void = (): void => undefined;
+    const gate: Promise<void> = new Promise<void>((resolve: () => void) => {
+      release = resolve;
+    });
+    // The build removes the internal manager method from the public declaration.
+    const lookup = vi
+      .spyOn(
+        connection as MessagingConnection & { manager(): Promise<JetStreamManager> },
+        'manager',
+      )
+      .mockImplementationOnce(async () => {
+        await gate;
+        return manager;
+      });
+    const registering: Promise<void> = consumers.subscribe({
       handler: 'notify',
       schemas: eventSchemas,
       event: 'task.updated.v1',
       handle: (): Promise<void> => Promise.resolve(),
     });
 
-    await expect(
-      consumers.subscribe({
-        handler: 'notify',
-        schemas: eventSchemas,
-        event: 'task.updated.v1',
-        handle: (): Promise<void> => Promise.resolve(),
-      }),
-    ).rejects.toThrow(/already registered/u);
-    await application.close();
+    try {
+      expect(lookup).toHaveBeenCalledOnce();
+      const stopped = expect(registering).rejects.toThrow(/application is shutting down/u);
+      await consumers.beforeApplicationShutdown();
+      release();
+      await stopped;
+    } finally {
+      release();
+      lookup.mockRestore();
+      await application.close();
+    }
   });
 
   it('refuses to turn the consumer of a handler towards another event', async () => {
@@ -580,13 +618,19 @@ describe('event consumers on a real NATS server, without a database', () => {
     );
   });
 
-  it('creates a deleted consumer again from before the gap, and receives the events published meanwhile', async () => {
+  it('skips existing history on first registration and replays retained events after durable deletion', async () => {
     const application: TestingModule = await startApplication([
       MessagingModule.forRoot(
         messagingOptions(nats, { ...isolatedNames('deleted'), service: 'search-service' }),
       ),
     ]);
     const received: string[] = [];
+    const publisher: EventPublisher = application.get(EventPublisher);
+    await publisher.publish(
+      eventSchemas,
+      'task.updated.v1',
+      taskUpdated({ taskId: 'CAD-HISTORY' }),
+    );
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
       schemas: eventSchemas,
@@ -597,7 +641,6 @@ describe('event consumers on a real NATS server, without a database', () => {
         return Promise.resolve();
       },
     });
-    const publisher: EventPublisher = application.get(EventPublisher);
     await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-BEFORE' }));
     await waitFor(async () => {
       const consumer: ConsumerInfo = await manager.consumers.info(
@@ -607,6 +650,7 @@ describe('event consumers on a real NATS server, without a database', () => {
       return consumer.ack_floor.stream_seq >= 1 && consumer.num_waiting > 0;
     });
 
+    expect(received).toEqual(['CAD-BEFORE']);
     await manager.consumers.delete('EVENTS_deleted', 'search-service__index-task');
     await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-GAP' }));
     await waitFor(() => received.includes('CAD-GAP'), 15_000);
@@ -620,12 +664,11 @@ describe('event consumers on a real NATS server, without a database', () => {
     await application.close();
 
     expect(recreated.config).toMatchObject({
-      deliver_policy: 'by_start_time',
+      deliver_policy: 'all',
       filter_subject: 'evt-deleted.task.updated.v1',
       max_deliver: 5,
     });
-    expect(received[0]).toBe('CAD-BEFORE');
-    expect(received).toContain('CAD-GAP');
+    expect(received).toEqual(['CAD-BEFORE', 'CAD-HISTORY', 'CAD-BEFORE', 'CAD-GAP']);
   });
 
   it('reports a missing consumer to readiness until it exists again, then resumes', async () => {

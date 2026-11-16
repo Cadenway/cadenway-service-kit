@@ -8,18 +8,21 @@ import {
 
 import { MessagingConnection } from '../connection/messaging-connection.js';
 import type { EventNameOf, EventSchemas } from '../events/event-envelope.js';
-import { MESSAGING_OPTIONS, type ResolvedMessagingOptions } from '../messaging-options.js';
-import { MESSAGING_TUNING, type MessagingTuning } from '../messaging-tuning.js';
-import type { RebuildSubscription } from '../rebuild/rebuild-subscription.js';
-import { RebuildSubscriptions } from '../rebuild/rebuild-subscriptions.js';
+import {
+  MESSAGING_OPTIONS,
+  type ResolvedMessagingOptions,
+} from '../configuration/messaging-options.js';
+import { MESSAGING_TUNING, type MessagingTuning } from '../configuration/messaging-tuning.js';
+import type { RebuildSubscription } from '../rebuild/subscriptions/rebuild-subscription.js';
+import { RebuildSubscriptions } from '../rebuild/subscriptions/rebuild-subscriptions.js';
 import { EventDelivery } from './delivery/event-delivery.js';
-import { EVENT_DEDUPLICATOR, type EventDeduplicator } from './event-deduplicator.js';
+import { EVENT_DEDUPLICATOR, type EventDeduplicator } from './delivery/event-deduplicator.js';
 import { DurableSubscriptions } from './subscriptions/durable-subscriptions.js';
 import type { EventSubscription } from './subscriptions/event-subscription.js';
 
 export type { EventContext } from './delivery/event-context.js';
 export type { EventSubscription } from './subscriptions/event-subscription.js';
-export type { RebuildSubscription } from '../rebuild/rebuild-subscription.js';
+export type { RebuildSubscription } from '../rebuild/subscriptions/rebuild-subscription.js';
 
 /**
  * Class EventConsumers
@@ -35,8 +38,9 @@ export type { RebuildSubscription } from '../rebuild/rebuild-subscription.js';
  * message is handled at a time per handler and per replica.
  *
  * A consumer that disappears from the server (deleted, or lost with its stream) is reported to
- * readiness and recovered: created again when the module manages consumers, waited for
- * otherwise. Without an `EventDeduplicator` the handler runs for every delivery, duplicates
+ * readiness and recovered. When the module manages consumers, a missing consumer is created
+ * again from the beginning of the retained stream. Otherwise, the kit waits for the platform.
+ * Without an `EventDeduplicator` the handler runs for every delivery, duplicates
  * included; the outbox entry point provides the PostgreSQL deduplicator. Registration is
  * explicit: call `subscribe` from `onApplicationBootstrap` of a provider.
  */
@@ -152,8 +156,9 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * Registers the handler of a rebuilt entity: items the owner of the entity emits on
    * `rebuild.<rebuildName>.<entity>` (the NATS user of this application by default) are
    * validated and applied one at a time, in a context without organization; an item sent as a
-   * request is answered. Replicas share the items through a queue group. When more than
-   * `rebuildMaxPending` items wait, the oldest ones are dropped with an error log.
+   * request is answered. Replicas share the items through a queue group. The oldest waiting
+   * items are dropped when the queue exceeds `rebuildMaxPending` items or 16 MiB. An item that
+   * cannot fit within the byte budget is refused. Both cases are logged and reject requests.
    *
    * @param {RebuildSubscription<TItem>} registration - Entity, item schema and handler.
    * @returns {Promise<void>} Resolves once the server knows the subscription: an emitter that starts afterwards finds the consumer.

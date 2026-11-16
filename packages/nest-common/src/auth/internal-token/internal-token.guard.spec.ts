@@ -19,8 +19,8 @@ import type { Observable } from 'rxjs';
 import request, { type Response } from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createApplication } from '../../bootstrap/create-application.js';
-import { InternalHttpClient } from '../../http-client/internal-http-client.js';
+import { createApplication } from '../../bootstrap/application/create-application.js';
+import { InternalHttpClient } from '../../http/client/internal-http-client.js';
 import { ProblemException } from '../../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import type { InternalPrincipal } from '../context/internal-principal.js';

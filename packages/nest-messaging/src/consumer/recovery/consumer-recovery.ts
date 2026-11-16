@@ -2,27 +2,16 @@ import type { Consumer, ConsumerMessages } from '@nats-io/jetstream';
 import type { Logger } from '@nestjs/common';
 
 import type { MessagingConnection } from '../../connection/messaging-connection.js';
+import { waitForRetry } from '../../retry/wait-for-retry.js';
 import type { EventDelivery } from '../delivery/event-delivery.js';
 import type { EventTarget } from '../subscriptions/event-target.js';
 import type { RunningConsumer } from '../subscriptions/running-consumer.js';
 
 /**
- * Constant RECOVERY_MARGIN_MS
- *
- * @description
- * How far before the last message this process handled a consumer created again with
- * `deliverPolicy: 'new'` starts, in milliseconds: the events published around the loss are
- * delivered again rather than skipped.
- *
- * @type {number}
- */
-const RECOVERY_MARGIN_MS: number = 60_000;
-
-/**
  * Class ConsumerRecovery
  *
  * @description
- * Owns the pull loop and reopens a missing consumer from its recorded delivery progress.
+ * Owns the pull loop and reopens a missing durable consumer.
  */
 export class ConsumerRecovery {
   // #region Constructor
@@ -36,7 +25,7 @@ export class ConsumerRecovery {
    * @param {Logger} logger - Shared consumer logger.
    * @param {AbortSignal} shutdown - Stops recovery once the application is shutting down.
    * @param {readonly number[]} delaysMs - Delays between attempts to recover, in milliseconds.
-   * @param {(target: EventTarget, startFrom: Date | undefined) => Promise<Consumer>} openConsumer - Opens a durable for the given registration.
+   * @param {(target: EventTarget) => Promise<Consumer>} openConsumer - Opens a durable for the given registration.
    * @param {EventDelivery} delivery - Processes each message before the loop pulls another.
    * @constructor
    */
@@ -45,10 +34,7 @@ export class ConsumerRecovery {
     private readonly logger: Logger,
     private readonly shutdown: AbortSignal,
     private readonly delaysMs: readonly number[],
-    private readonly openConsumer: (
-      target: EventTarget,
-      startFrom: Date | undefined,
-    ) => Promise<Consumer>,
+    private readonly openConsumer: (target: EventTarget) => Promise<Consumer>,
     private readonly delivery: EventDelivery,
   ) {}
   // #endregion
@@ -70,8 +56,8 @@ export class ConsumerRecovery {
     let consumer: Consumer | undefined = first;
     let quickLosses: number = 0;
     while (!this.stopped()) {
-      consumer ??= await this.recover(running);
-      if (consumer === undefined) {
+      consumer ??= await this.recover(running.target);
+      if (consumer === undefined || this.stopped()) {
         return;
       }
       const pulledAt: number = Date.now();
@@ -85,6 +71,10 @@ export class ConsumerRecovery {
         this.connection.reportConsumer(name, 'stopped');
         consumer = undefined;
         continue;
+      }
+      if (this.stopped()) {
+        await messages.close().catch(() => undefined);
+        return;
       }
       running.messages = messages;
       this.connection.reportConsumer(name, null);
@@ -139,36 +129,28 @@ export class ConsumerRecovery {
    *
    * @description
    * Opens a consumer that disappeared again, retrying with a growing pause until it works or the
-   * application stops. With `manageConsumers` it is created again: with `deliverPolicy: 'all'`
-   * from the start of the stream, with `new` from the stream time of the oldest message this
-   * process has not answered for good (the last one it handled, or the registration when it
-   * handled none, and any message waiting for a redelivery), minus a minute.
+   * application stops. A durable recreated by the kit starts at the beginning of the retained
+   * stream because local progress cannot account for unacknowledged deliveries to other replicas.
    *
-   * @param {RunningConsumer} running - Consumer to recover.
+   * @param {EventTarget} target - Consumer to recover.
    * @returns {Promise<Consumer | undefined>} The consumer, or `undefined` once the application stops.
    */
-  private async recover(running: RunningConsumer): Promise<Consumer | undefined> {
+  private async recover(target: EventTarget): Promise<Consumer | undefined> {
     const delays: readonly number[] = this.delaysMs;
     for (let attempt: number = 0; !this.stopped(); attempt += 1) {
       await this.pause(delays[Math.min(attempt, delays.length - 1)] ?? 0);
       if (this.stopped()) {
         return undefined;
       }
-      const startFrom: number =
-        Math.min(running.lastHandledAt ?? running.startedAt, ...running.retrying.values()) -
-        RECOVERY_MARGIN_MS;
       try {
-        const consumer: Consumer = await this.openConsumer(
-          running.target,
-          running.target.deliverPolicy === 'new' ? new Date(startFrom) : undefined,
-        );
-        this.logger.log({ consumer: running.target.consumer }, 'event consumer recovered');
+        const consumer: Consumer = await this.openConsumer(target);
+        this.logger.log({ consumer: target.consumer }, 'event consumer recovered');
         return consumer;
       } catch (error) {
-        this.connection.reportConsumer(running.target.consumer, 'missing');
+        this.connection.reportConsumer(target.consumer, 'missing');
         if (attempt % 10 === 0) {
           this.logger.warn(
-            { consumer: running.target.consumer, attempt: attempt + 1, err: error },
+            { consumer: target.consumer, attempt: attempt + 1, err: error },
             'event consumer could not be recovered yet',
           );
         }
@@ -199,25 +181,10 @@ export class ConsumerRecovery {
    * @returns {Promise<void>} Resolves after the pause or on shutdown.
    */
   private async pause(delayMs: number): Promise<void> {
-    if (delayMs <= 0 || this.stopped()) {
+    if (delayMs <= 0) {
       return;
     }
-    await new Promise<void>((resolve: () => void) => {
-      const timer: NodeJS.Timeout = setTimeout(done, delayMs);
-      this.shutdown.addEventListener('abort', done, { once: true });
-      /**
-       * Function done
-       *
-       * @description
-       * Ends the pause.
-       *
-       * @returns {void}
-       */
-      function done(): void {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
+    await waitForRetry(delayMs, this.shutdown);
   }
 
   /**
@@ -233,7 +200,7 @@ export class ConsumerRecovery {
   private async pump(running: RunningConsumer, messages: ConsumerMessages): Promise<void> {
     try {
       for await (const message of messages) {
-        await this.delivery.deliver(running, message);
+        await this.delivery.deliver(running.target, message);
       }
     } catch (error) {
       this.logger.error({ consumer: running.target.consumer, err: error }, 'event consumer failed');

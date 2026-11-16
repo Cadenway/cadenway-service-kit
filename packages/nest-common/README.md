@@ -805,7 +805,8 @@ await this.tenant.run(async (tx) => {
   never changes its own access.
 - `run(work, { isolationLevel, readOnly })`: `read committed` and read-write by default. A joined
   transaction must already be at least as strict as what the nested `run` asks: otherwise it
-  throws rather than drop the guarantee.
+  throws before starting the nested work. A nested `readOnly: true` requires a read-only outer
+  transaction.
 - `tx.db` is the Drizzle database without `transaction`: on one connection Drizzle would issue its
   own `COMMIT` and end the transaction of the runner. Type a repository with
   `TransactionDatabase<typeof schema>`.
@@ -821,6 +822,17 @@ await this.tenant.run(async (tx) => {
   tenant runner. A request without an organization (sign-up, sign-in, a route with an anonymous
   or system subject, a user acting outside any organization) is served in a system transaction,
   as the `Idempotency-Key` interceptor does.
+
+With OpenTelemetry metrics enabled, `cadenway.postgres.pool.acquire.duration` measures checkout
+latency, including failed acquisitions. `cadenway.postgres.transaction.duration` measures the time
+the executor holds the connection, including transaction setup and commit or rollback. Both
+histograms use milliseconds and report only `kind` (`tenant` or `system`) and `outcome`
+(`success` or `error`) as attributes. A call joining an existing transaction opens no connection
+and adds no samples.
+
+Use `assertNoActiveTransaction()` before work that must avoid holding an ambient PostgreSQL
+connection during external I/O. The guard rejects a live runner-owned transaction in the current
+asynchronous call chain.
 
 ### Row-level security
 
@@ -1015,6 +1027,11 @@ is handed over by `@cadenway/nest-messaging`, which owns it.
 | `shutdownDelayMs` | 0       | Time the stop waits, readiness at 503, before the listener closes; 0 does not slow it |
 
 `forRootAsync` also takes `imports` (default `[]`) and `inject` (default `[]`).
+
+Concurrent readiness requests share one running check per indicator. Each request waits up to
+`timeoutMs`. The next check starts once the previous driver operation settles. Configure
+connection and command timeouts on the driver to bound the underlying operation; the readiness
+timeout bounds the HTTP response.
 
 When a dependency is down, readiness answers 503 with the Terminus body, not a problem, because
 orchestrators and dashboards read it:

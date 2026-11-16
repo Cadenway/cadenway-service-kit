@@ -17,16 +17,15 @@ rules it implements are the "Background Jobs" section of the
 A service has two PostgreSQL roles. pg-boss needs DDL to install its schema, so the package is
 split along the same line.
 
-The package root exports the Nest providers and the provisioning function. Internally, `jobs/`
-holds the declarations shared by both paths, `schema/` holds the schema contract, and
-`provisioning/` owns DDL. `runtime/` owns the application connection, worker registrations and
-dead-letter monitoring. It uses the shared declarations and schema contract. Nest calls the
-`JobsService` lifecycle hooks, which start and stop the runtime in order.
+Use `@cadenway/nest-jobs/provisioning` from migration processes and
+`@cadenway/nest-jobs/runtime` from application processes. Internally, `jobs/` holds the
+declarations shared by both paths and `schema/` holds the schema contract. The package root
+remains the compatibility entry for `JobsModule`, `JobsService`, and `provisionJobs`.
 
-| Entry point     | Role                               | Runs                                                                                                              | Where it is called                        |
-| --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `provisionJobs` | `<service>_migrator` (DDL)         | Every DDL statement: schema install and migration, index builds, queue creation and update, grants to the runtime | The one-off `src/migrate.ts` container    |
-| `JobsModule`    | `<service>_app` (no DDL, with RLS) | Only DML: enqueue, fetch, complete, fail, schedules, supervision                                                  | The application, once, in the root module |
+| Entry point         | Role                               | Runs                                                                                                              | Where it is called                                               |
+| ------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `provisionJobs`     | `<service>_migrator` (DDL)         | Every DDL statement: schema install and migration, index builds, queue creation and update, grants to the runtime | The one-off `src/migrate.ts` container                           |
+| `JobsRuntimeModule` | `<service>_app` (no DDL, with RLS) | Only DML for the selected capabilities: enqueue, work, schedules and supervision                                  | The application or a dedicated process, once, in the root module |
 
 The runtime starts pg-boss with `migrate: false` and `createSchema: false`: at start-up it only
 reads the installed schema version. It never creates, alters or drops an object, and its
@@ -46,7 +45,7 @@ deploy.
 ## Connection
 
 Both entry points take the same `connection` object: the migrator role for `provisionJobs`, the
-application role for `JobsModule`.
+application role for `JobsRuntimeModule`.
 
 | Field              | Default                                       | Meaning                                               |
 | ------------------ | --------------------------------------------- | ----------------------------------------------------- |
@@ -67,7 +66,7 @@ back on the same variables: write the user and the database in it.
 
 ```ts
 // src/migrate.ts
-import { provisionJobs } from '@cadenway/nest-jobs';
+import { provisionJobs } from '@cadenway/nest-jobs/provisioning';
 
 import { jobQueues } from './infrastructure/jobs/job-queues.js';
 
@@ -178,7 +177,7 @@ closed until the next successful run.
 Queues are declared once and the list is shared by `provisionJobs` and `JobsModule`.
 
 ```ts
-import type { JobQueueDeclaration } from '@cadenway/nest-jobs';
+import type { JobQueueDeclaration } from '@cadenway/nest-jobs/provisioning';
 
 export const jobQueues: readonly JobQueueDeclaration[] = [
   { name: 'reminder.send' },
@@ -207,15 +206,17 @@ runtime was given, start-up logs a warning that names the differing settings.
 
 ```ts
 import { Module } from '@nestjs/common';
-import { JobsModule } from '@cadenway/nest-jobs';
+import { JobsRuntimeModule } from '@cadenway/nest-jobs/runtime';
 
 @Module({
   imports: [
-    JobsModule.forRootAsync({
+    JobsRuntimeModule.forRootAsync({
       inject: [Configuration],
       useFactory: (configuration: Configuration) => ({
         connection: { connectionString: configuration.databaseUrl },
         queues: jobQueues,
+        capabilities: ['producer', 'scheduler'],
+        poolSize: 2,
       }),
     }),
   ],
@@ -223,23 +224,47 @@ import { JobsModule } from '@cadenway/nest-jobs';
 export class AppModule {}
 ```
 
-`JobsModule.forRoot(options)` takes the same options directly. The module is global: inject
-`JobsService` anywhere. Import it once.
+`JobsRuntimeModule.forRoot(options)` takes the same options directly. Import the global module
+once per process and select the capabilities that process owns. For a combined process use
+`['producer', 'worker', 'scheduler']`. For a dedicated worker use `['worker']`, with the same
+queue declarations as the application and the migrator.
+
+| Capability  | Injectable API      | Responsibility                                                                                                                              |
+| ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `producer`  | `JobProducer`       | `enqueue` inserts through the use case's transaction. On its own it holds no persistent jobs connections and starts no pg-boss loop.        |
+| `worker`    | `JobWorkerRegistry` | `work` starts acquisition for a declared queue and runs its handlers.                                                                       |
+| `scheduler` | `JobScheduler`      | `schedule` and `unschedule` change durable cron declarations. The runtime evaluates crons, supervises jobs and monitors dead-letter queues. |
+
+The injectable APIs are classes that can be passed as Nest tokens. Calling an operation outside
+the selected capabilities fails explicitly. Run a scheduler in the deployment even when all
+workers are separate. It handles expired attempts and cron events. Worker-only replicas leave
+supervision and dead-letter monitoring to the scheduler.
 
 | Option                           | Default           | Meaning                                                                                                            |
 | -------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `connection`                     | required          | Connection of the application role, see above.                                                                     |
 | `queues`                         | required          | The queue declarations. Only declared queues accept jobs, workers and schedules.                                   |
+| `capabilities`                   | required          | Distinct process capabilities. At least one is required.                                                           |
+| `poolSize`                       | required          | Maximum persistent jobs connections per process, at least 1. Worker and scheduler share a pool when combined.      |
 | `schema`                         | `pgboss`          | Schema of the pg-boss tables, the one given to `provisionJobs`.                                                    |
 | `runInOrganization`              | calls the handler | `(organizationId, work) => Promise<void>`: wraps each handler call in the organization context of its job.         |
 | `shutdownTimeoutMs`              | `30000`           | Time running handlers get to finish at shutdown, at least 1000.                                                    |
-| `deadLetterCheckIntervalSeconds` | `60`              | Whole seconds between two counts of the jobs that arrived in the dead-letter queues. `0` turns the watch off.      |
+| `deadLetterCheckIntervalSeconds` | `60`              | Whole seconds between checks for jobs retained in the dead-letter queues. `0` turns the watch off.                 |
 | `allowPrivilegedRole`            | `false`           | Lets the runtime start as a role that can create objects in the schema. For a local stack with a single role only. |
 
 A default never changes without a major release.
 
-**Connections.** pg-boss owns a pool of two connections, apart from the application pool. The size
-is fixed on purpose: jobs must not take connections away from requests.
+**Connections.** The worker and scheduler use one pg-boss pool apart from the application pool.
+Size it per replica and include it in the deployment's aggregate PostgreSQL budget. Worker
+`concurrency` and `pollingIntervalSeconds` control processing and polling separately from connection
+capacity. A producer-only process uses one temporary connection to verify its schema and role at
+start-up, then uses only the caller's transaction, including for pg-boss queue metadata queries.
+
+**Compatibility.** The root `JobsModule` and `JobsService` still combine the three capabilities,
+with their original two-connection pool. Replace each `JobsService` injection by the relevant
+capability, change the module declaration to `JobsRuntimeModule`, and switch the migration script
+to `/provisioning`. Queue names, occurrence keys and the stored job format remain compatible when
+the first updated replica starts beside an older replica.
 
 **Start-up.** The service starts with the module and fails fast, with a `JobsNotProvisionedError`,
 when the schema is missing or at another version, when the connected role lacks a right on it, or
@@ -247,10 +272,17 @@ when a declared queue or its dead-letter queue does not exist. The message says 
 The fix is always to run `provisionJobs`. It also fails, with a plain error, when the connected
 role can create objects in the pg-boss schema: that is the migrator role, an owner or a superuser,
 not the application role. Invalid options are refused before any connection opens. A stored
-schedule whose queue is not declared is logged as a warning.
+schedule whose queue is not declared is logged as a warning. Dead-letter monitoring starts in
+the background. A failed check is logged and retried on the configured interval.
 
-**Shutdown.** In `beforeApplicationShutdown` the module stops fetching, waits `shutdownTimeoutMs`
-for running handlers, fails and logs the attempts still running after that, and closes its pool.
+**Shutdown.** In `beforeApplicationShutdown` the module asks pg-boss to stop fetching and cancels
+the dead-letter check in flight. The `shutdownTimeoutMs` grace starts immediately. At expiry the
+runtime aborts the signals of its running handlers, reports their attempts, and rejects their worker
+callbacks so pg-boss can apply the retry policy. A handler should honor its signal to stop its own
+work. The shutdown hook waits for pg-boss to settle attempts and close its pool. A slow or blocked
+PostgreSQL operation can extend that cleanup past the handler grace. During normal operation, the
+dead-letter check uses the same timeout to cancel its query. A checkout waiting for a pool connection
+follows the driver's checkout timeout and skips the query if its signal expired in the meantime.
 Call `app.enableShutdownHooks()` so a termination signal reaches it.
 
 ## Enqueue in the use case transaction
@@ -329,7 +361,7 @@ key, every enqueue creates a job.
 ```ts
 @Injectable()
 export class ReminderWorker implements OnApplicationBootstrap {
-  public constructor(private readonly jobs: JobsService) {}
+  public constructor(private readonly jobs: JobWorkerRegistry) {}
 
   public async onApplicationBootstrap(): Promise<void> {
     await this.jobs.work<ReminderPayload>('reminder.send', async (job) => {
@@ -396,21 +428,21 @@ Every line goes through the NestJS `Logger`, context `JobsService`. It carries t
 queue, the attempt count and the reason, **never the payload**. pg-boss errors and warnings are
 logged with their message only, without the SQL values attached to them.
 
-| How the attempt ends                                               | Logged by                              | Line                                                                               |
-| ------------------------------------------------------------------ | -------------------------------------- | ---------------------------------------------------------------------------------- |
-| The handler rejects                                                | The worker process, at once            | Warning when the job will be retried, error on the last attempt                    |
-| The handler is still running at `expireInSeconds`                  | The worker process, at the expiration  | Same                                                                               |
-| The handler is still running at shutdown, past `shutdownTimeoutMs` | The process that shuts down            | Same                                                                               |
-| The process crashed; supervision fails the attempt in SQL          | Nobody, for the attempt                | None: a retry after a crash is silent                                              |
-| Any of the above was the last attempt: the job is a dead letter    | The dead-letter watch of every replica | Error: `N job(s) reached the dead-letter queue "<name>" since the previous check.` |
+| How the attempt ends                                               | Logged by                              | Line                                                            |
+| ------------------------------------------------------------------ | -------------------------------------- | --------------------------------------------------------------- |
+| The handler rejects                                                | The worker process, at once            | Warning when the job will be retried, error on the last attempt |
+| The handler is still running at `expireInSeconds`                  | The worker process, at the expiration  | Same                                                            |
+| The handler is still running at shutdown, past `shutdownTimeoutMs` | The process that shuts down            | Same                                                            |
+| The process crashed; supervision fails the attempt in SQL          | Nobody, for the attempt                | None: a retry after a crash is silent                           |
+| A dead-letter queue has retained jobs                              | The dead-letter watch of every replica | Error with the observed count per non-empty queue               |
 
-The error of a last attempt names the dead-letter queue the job moves to. The dead-letter watch is
-the line for what no live handler can report: every `deadLetterCheckIntervalSeconds` each replica
-counts, with one read-only statement on the job table, the rows that arrived in each declared
-dead-letter queue since its previous count, and logs one error per queue that received some. A
-dead letter is counted 5 seconds after it arrived at the earliest. The watch counts every arrival,
-so a dead letter already logged by its worker is counted too, and each replica logs it: read the
-count as "at least one job needs attention", not as a sum across lines.
+The error of a last attempt names the dead-letter queue the job moves to. At startup and then
+every `deadLetterCheckIntervalSeconds`, each replica checks the currently retained rows in each
+declared dead-letter queue. Each check uses a read-only statement and returns at most one count
+per queue. Counts are exact up to 1,000, with larger queues reported as having more than 1,000
+jobs. The same retained job can appear in successive checks and on several replicas. A failed
+attempt committed after a check can appear on the next one even if it has an older timestamp.
+Jobs removed before a successful check do not appear in its snapshot.
 
 ## Schedules
 

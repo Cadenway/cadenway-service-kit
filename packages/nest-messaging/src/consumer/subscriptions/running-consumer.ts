@@ -5,7 +5,7 @@ import type { EventTarget } from './event-target.js';
  * Interface RunningConsumer
  *
  * @description
- * A durable consumer being pulled, with what its recovery needs.
+ * A durable consumer being pulled by the application.
  */
 export interface RunningConsumer {
   // #region Properties
@@ -19,38 +19,6 @@ export interface RunningConsumer {
    * @readonly
    */
   readonly target: EventTarget;
-
-  /**
-   * Property startedAt
-   *
-   * @description
-   * Instant the handler was registered, in milliseconds.
-   *
-   * @type {number}
-   * @readonly
-   */
-  readonly startedAt: number;
-
-  /**
-   * Property lastHandledAt
-   *
-   * @description
-   * Stream time of the last message this process answered for good, in milliseconds.
-   *
-   * @type {number | undefined}
-   */
-  lastHandledAt: number | undefined;
-
-  /**
-   * Property retrying
-   *
-   * @description
-   * Stream time of the messages waiting for a redelivery, by stream sequence, in milliseconds.
-   *
-   * @type {Map<number, number>}
-   * @readonly
-   */
-  readonly retrying: Map<number, number>;
 
   /**
    * Property messages

@@ -1,5 +1,5 @@
 import type { EventEnvelope } from '../../events/event-envelope.js';
-import type { EventRoute } from '../../messaging-options.js';
+import type { EventRoute } from '../../transport/event-route.js';
 import type { EventContext } from '../delivery/event-context.js';
 
 /**
@@ -42,17 +42,6 @@ export interface EventTarget {
    * @readonly
    */
   readonly route: EventRoute;
-
-  /**
-   * Property deliverPolicy
-   *
-   * @description
-   * Start position of a consumer created by this registration.
-   *
-   * @type {'all' | 'new'}
-   * @readonly
-   */
-  readonly deliverPolicy: 'all' | 'new';
 
   /**
    * Property validate

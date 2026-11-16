@@ -6,7 +6,7 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 
-import { isJsonParseFailure, malformedJsonBody } from '../http/body-limit.js';
+import { isJsonParseFailure, malformedJsonBody } from '../http/body/body-limit.js';
 import { PROBLEM_CONTENT_TYPE, ProblemException, statusTitle, type Problem } from './problem.js';
 
 /**

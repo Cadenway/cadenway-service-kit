@@ -10,9 +10,13 @@ import {
 import { z } from 'zod';
 
 import { MessagingConnection } from '../connection/messaging-connection.js';
-import { errorClassOf } from '../error-class.js';
-import { MESSAGING_OPTIONS, type ResolvedMessagingOptions } from '../messaging-options.js';
-import { MESSAGING_TUNING, type MessagingTuning } from '../messaging-tuning.js';
+import { errorClassOf } from '../observability/error-class.js';
+import {
+  MESSAGING_OPTIONS,
+  type ResolvedMessagingOptions,
+} from '../configuration/messaging-options.js';
+import { MESSAGING_TUNING, type MessagingTuning } from '../configuration/messaging-tuning.js';
+import { waitForRetry } from '../retry/wait-for-retry.js';
 import {
   DEAD_LETTER_CONSUMER_HEADER,
   DEAD_LETTER_DELIVERIES_HEADER,
@@ -20,13 +24,13 @@ import {
   DEAD_LETTER_REASON_HEADER,
   DEAD_LETTER_SEQUENCE_HEADER,
   EVENT_NAME_HEADER,
-} from '../publisher/event-headers.js';
+} from '../transport/event-headers.js';
 import {
   deadLetterMessageId,
   deadLetterSubject,
   maxDeliveriesAdvisorySubject,
   terminatedAdvisorySubject,
-} from '../subjects.js';
+} from '../transport/subjects.js';
 
 /**
  * Type DeadLetterReason
@@ -255,12 +259,15 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
    * Property stop
    *
    * @description
-   * Aborted on shutdown: a copy waiting for its next attempt gives up.
+   * Aborted on shutdown to stop admission and cancel waits for another attempt.
    *
    * @type {AbortController}
    * @readonly
    */
   private readonly stop: AbortController = new AbortController();
+
+  /** Aborted when the grace period for active copies expires. */
+  private readonly abandon: AbortController = new AbortController();
   // #endregion
 
   // #region Constructor
@@ -317,17 +324,41 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
    * Method beforeApplicationShutdown
    *
    * @description
-   * Drains the advisory subscriptions, so the advisories already received are copied, and stops
-   * waiting between attempts: a copy still failing then gives up with an error log.
+   * Unsubscribes without a broker round trip and stops retrying. Active copies may finish
+   * within the shutdown budget. The connection's later shutdown hook owns the final drain.
    *
    * @returns {Promise<void>} Resolves once the worker stopped.
    */
   public async beforeApplicationShutdown(): Promise<void> {
     this.stop.abort();
-    await Promise.allSettled(
-      this.subscriptions.map((subscription: Subscription) => subscription.drain()),
-    );
-    await Promise.allSettled(this.running);
+    for (const subscription of this.subscriptions) {
+      subscription.unsubscribe();
+    }
+    if (this.running.length === 0) {
+      return;
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout');
+      }, this.options.shutdownTimeoutMs);
+    });
+    try {
+      const outcome: 'stopped' | 'timeout' = await Promise.race([
+        Promise.allSettled(this.running).then((): 'stopped' => 'stopped'),
+        deadline,
+      ]);
+      if (outcome === 'timeout') {
+        this.abandon.abort();
+        this.logger.warn(
+          { timeoutMs: this.options.shutdownTimeoutMs },
+          'dead-letter copies still running at shutdown were abandoned',
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -348,6 +379,9 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
   ): Promise<void> {
     try {
       for await (const message of subscription as AsyncIterable<Msg>) {
+        if (this.stop.signal.aborted) {
+          break;
+        }
         const advisory: ConsumerAdvisory | undefined = this.parse(stream, message);
         if (advisory !== undefined) {
           await this.copyWithRetries({ reason, advisory });
@@ -408,45 +442,19 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
           attempt: attempt + 1,
           errorClass: errorClassOf(error),
         };
+        if (delayMs !== undefined && !this.stop.signal.aborted) {
+          this.logger.warn(
+            { ...fields, retryInMs: delayMs },
+            'dead letter copy failed: will retry',
+          );
+          await waitForRetry(delayMs, this.stop.signal);
+        }
         if (delayMs === undefined || this.stop.signal.aborted) {
           this.logger.error({ ...fields, err: error }, 'dead letter could not be copied');
           return;
         }
-        this.logger.warn({ ...fields, retryInMs: delayMs }, 'dead letter copy failed: will retry');
-        await this.pause(delayMs);
       }
     }
-  }
-
-  /**
-   * Method pause
-   *
-   * @description
-   * Waits, unless the application stops first.
-   *
-   * @param {number} delayMs - Pause, in milliseconds.
-   * @returns {Promise<void>} Resolves after the pause or on shutdown.
-   */
-  private async pause(delayMs: number): Promise<void> {
-    if (this.stop.signal.aborted) {
-      return;
-    }
-    await new Promise<void>((resolve: () => void) => {
-      const timer: NodeJS.Timeout = setTimeout(done, delayMs);
-      this.stop.signal.addEventListener('abort', done, { once: true });
-      /**
-       * Function done
-       *
-       * @description
-       * Ends the pause.
-       *
-       * @returns {void}
-       */
-      function done(): void {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
   }
 
   /**
@@ -466,9 +474,11 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
     const consumer: string = advisory.consumer;
     const streamSequence: number = advisory.stream_seq;
     const manager: JetStreamManager = await this.connection.manager();
+    this.abandon.signal.throwIfAborted();
     const original: StoredMsg | null = await manager.streams.getMessage(stream, {
       seq: streamSequence,
     });
+    this.abandon.signal.throwIfAborted();
     if (original === null) {
       this.logger.error(
         { reason, stream, consumer, streamSequence },

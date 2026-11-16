@@ -1,0 +1,63 @@
+{
+  "mode": "baseline",
+  "config": {
+    "runs": 3,
+    "events": 120,
+    "simulatedAckMs": 50,
+    "poolSize": 4,
+    "postgresImage": "postgres:18.6-alpine",
+    "postgresCpu": 1,
+    "postgresMemoryBytes": 536870912,
+    "httpConcurrency": 1
+  },
+  "machine": {
+    "platform": "win32",
+    "cpus": 32,
+    "cpu": "Intel(R) Core(TM) i9-14900K",
+    "totalMemoryBytes": 34028097536,
+    "node": "v24.18.0"
+  },
+  "freeMemoryBytes": 10376376320,
+  "sourceHash": "b4d0d9d6320584f9d83c1500a818efd5adbf7fcff4d6225160dc989611f849c7",
+  "runs": [
+    {
+      "run": 1,
+      "elapsedMs": 7437.7388,
+      "eventsPerSecond": 16.133935760153342,
+      "httpP95Ms": 17.53440000000046,
+      "httpP99Ms": 18.23359999999957,
+      "httpSamples": 163,
+      "transactionP95Ms": 5090.7648,
+      "peakWaiting": 0,
+      "peakActive": 2,
+      "peakBacklogAgeMs": 5102.815,
+      "maxRssBytes": 370085888
+    },
+    {
+      "run": 2,
+      "elapsedMs": 7430.649800000001,
+      "eventsPerSecond": 16.149327882468633,
+      "httpP95Ms": 17.504800000002433,
+      "httpP99Ms": 17.73280000000159,
+      "httpSamples": 162,
+      "transactionP95Ms": 5020.336999999998,
+      "peakWaiting": 0,
+      "peakActive": 2,
+      "peakBacklogAgeMs": 5028.194,
+      "maxRssBytes": 182259712
+    },
+    {
+      "run": 3,
+      "elapsedMs": 7414.225200000001,
+      "eventsPerSecond": 16.18510319864576,
+      "httpP95Ms": 17.52929999999833,
+      "httpP99Ms": 17.926799999997456,
+      "httpSamples": 163,
+      "transactionP95Ms": 5062.384000000002,
+      "peakWaiting": 0,
+      "peakActive": 1,
+      "peakBacklogAgeMs": 5069.714,
+      "maxRssBytes": 186773504
+    }
+  ]
+}

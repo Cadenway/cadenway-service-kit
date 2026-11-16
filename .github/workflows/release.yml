@@ -48,10 +48,17 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        id: changesets
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           publish-script: pnpm release
           commit-message: 'chore: version packages'
           pr-title: 'chore: version packages'
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify published package installation
+        if: steps.changesets.outputs.published == 'true'
+        run: pnpm test:packaging:published
+        env:
+          KIT_PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

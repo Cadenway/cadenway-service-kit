@@ -1,14 +1,14 @@
 import { jetstreamManager, type JetStreamManager, type StreamInfo } from '@nats-io/jetstream';
-import type { NatsConnection } from '@nats-io/transport-node';
+import { RequestError, type NatsConnection } from '@nats-io/transport-node';
 import type { TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { z } from 'zod';
 
 import { EventConsumers } from '../consumer/event-consumers.js';
-import { MessagingModule } from '../messaging.module.js';
+import { MessagingModule } from '../wiring/messaging.module.js';
 import { EventPublisher, EventStreamUnavailableError } from '../publisher/event-publisher.js';
-import { RebuildEmitter, RebuildFlushTimeoutError } from '../rebuild/rebuild-emitter.js';
+import { RebuildEmitter, RebuildFlushTimeoutError } from '../rebuild/emitter/rebuild-emitter.js';
 import { isolatedNames, messagingOptions, startApplication } from '../testing/application.js';
 import { eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
@@ -224,7 +224,12 @@ describe('messaging connection on a real NATS server', () => {
     await expect(
       emitter.emit({ consumer: 'search', entity: 'task', schema: taskItemSchema }, { taskId: 'A' }),
     ).resolves.toBeUndefined();
-    await expect(emitter.flush()).rejects.toThrow(RebuildFlushTimeoutError);
+    // The client may detect the disconnect before the kit's flush timer expires.
+    const failure: unknown = await emitter.flush().catch((error: unknown) => error);
+    expect(
+      failure instanceof RebuildFlushTimeoutError ||
+        (failure instanceof RequestError && failure.message === 'connection disconnected'),
+    ).toBe(true);
     const flushTook: number = Date.now() - flushStarted;
     const closeStarted: number = Date.now();
     await application.close();

@@ -1,4 +1,4 @@
-import type { VersionClaim } from '../event-deduplicator.js';
+import type { VersionClaim } from './event-deduplicator.js';
 
 /**
  * Interface EventContext

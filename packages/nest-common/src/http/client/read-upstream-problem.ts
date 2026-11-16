@@ -1,0 +1,52 @@
+/** Largest upstream error document accepted, measured before UTF-8 decoding. */
+const MAX_PROBLEM_BYTES: number = 65_536;
+
+/** Reads a bounded JSON error document and cancels a rejected or timed-out body. */
+export async function readUpstreamProblem(
+  response: Response,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const body: ReadableStream<Uint8Array> | null = response.body;
+  if (body === null) {
+    return {};
+  }
+
+  try {
+    if (signal.aborted || Number(response.headers.get('content-length')) > MAX_PROBLEM_BYTES) {
+      void body.cancel().catch(() => undefined);
+      return {};
+    }
+
+    const reader: ReadableStreamDefaultReader<Uint8Array> = body.getReader();
+    const cancel: () => void = () => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    try {
+      const decoder: TextDecoder = new TextDecoder();
+      let bytes: number = 0;
+      let text: string = '';
+      for (;;) {
+        const { done, value }: ReadableStreamReadResult<Uint8Array> = await reader.read();
+        signal.throwIfAborted();
+        if (done) {
+          const parsed: unknown = JSON.parse(text + decoder.decode());
+          return typeof parsed === 'object' && parsed !== null
+            ? (parsed as Record<string, unknown>)
+            : {};
+        }
+        bytes += value.byteLength;
+        if (bytes > MAX_PROBLEM_BYTES) {
+          cancel();
+          return {};
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      reader.releaseLock();
+    }
+  } catch {
+    return {};
+  }
+}

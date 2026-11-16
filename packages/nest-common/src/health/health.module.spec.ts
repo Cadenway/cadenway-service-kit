@@ -13,7 +13,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import type { HealthCheckResult } from '@nestjs/terminus';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ProblemFilter } from '../problem/problem.filter.js';
 import {
@@ -22,7 +22,7 @@ import {
   redisIndicator,
   type HealthIndicator,
   type HealthModuleOptions,
-} from './health-indicators.js';
+} from './checks/health-indicators.js';
 import { HealthModule } from './health.module.js';
 
 /**
@@ -250,6 +250,37 @@ describe('HealthModule.forRoot', () => {
       error: { redis: { status: 'down', message: 'timeout' } },
     });
     expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('shares a running check across requests even after their readiness deadlines', async () => {
+    let settle: () => void = (): void => undefined;
+    const first: Promise<void> = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const check: ReturnType<typeof vi.fn<() => Promise<void>>> = vi
+      .fn<() => Promise<void>>()
+      .mockReturnValueOnce(first)
+      .mockResolvedValue(undefined);
+    const app: INestApplication<App> = await startApp({
+      timeoutMs: 20,
+      indicators: [{ name: 'redis', check }],
+    });
+
+    try {
+      await app.listen(0, '127.0.0.1');
+      const url: string = `${urlOf(app)}/health/ready`;
+      const failed: globalThis.Response[] = await Promise.all([fetch(url), fetch(url)]);
+      expect(failed.map((response) => response.status)).toEqual([503, 503]);
+      expect((await fetch(url)).status).toBe(503);
+      expect(check).toHaveBeenCalledTimes(1);
+
+      settle();
+      expect((await fetch(url)).status).toBe(200);
+      expect(check).toHaveBeenCalledTimes(2);
+    } finally {
+      settle();
+      await app.close();
+    }
   });
 
   it('logs the changes of readiness only, never the per-probe error of Terminus', async () => {

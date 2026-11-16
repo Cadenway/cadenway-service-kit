@@ -4,12 +4,12 @@ import { context, propagation } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 
-import type { MessagingModuleOptions } from '../messaging-options.js';
+import type { MessagingModuleOptions } from '../configuration/messaging-options.js';
 import {
   DEFAULT_MESSAGING_TUNING,
   MESSAGING_TUNING,
   type MessagingTuning,
-} from '../messaging-tuning.js';
+} from '../configuration/messaging-tuning.js';
 import type { TestNats } from './nats.js';
 
 /**
