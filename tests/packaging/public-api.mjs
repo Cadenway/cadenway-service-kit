@@ -33,6 +33,40 @@ function publicDeclaration(node) {
   );
 }
 
+function normalizeOptionalParameters(context) {
+  function visit(node) {
+    if (ts.isParameter(node) && node.questionToken && node.type && ts.isUnionTypeNode(node.type)) {
+      // An optional parameter accepts undefined implicitly. Optional object properties can
+      // distinguish it under exactOptionalPropertyTypes, so leave their unions intact.
+      const types = node.type.types.filter(({ kind }) => kind !== ts.SyntaxKind.UndefinedKeyword);
+      if (types.length && types.length !== node.type.types.length) {
+        node = factory.updateParameterDeclaration(
+          node,
+          node.modifiers,
+          node.dotDotDotToken,
+          node.name,
+          node.questionToken,
+          types.length === 1 ? types[0] : factory.createUnionTypeNode(types),
+          node.initializer,
+        );
+      }
+    }
+    return ts.visitEachChild(node, visit, context);
+  }
+  return (node) => ts.visitNode(node, visit);
+}
+
+function signature(node) {
+  const result = ts.transform(publicDeclaration(node), [normalizeOptionalParameters]);
+  try {
+    return printer
+      .printNode(ts.EmitHint.Unspecified, result.transformed[0], node.getSourceFile())
+      .trim();
+  } finally {
+    result.dispose();
+  }
+}
+
 /** Reads public declarations through an installed package's export map. */
 export function readPublicApi(directory, entryPoints) {
   const importer = join(directory, 'consumer.mts');
@@ -80,15 +114,7 @@ export function readPublicApi(directory, entryPoints) {
           target.declarations?.length,
           `Unresolved declaration for ${entryPoint}#${symbol.name}`,
         );
-        return [
-          symbol.name,
-          target.declarations.map((node) => {
-            const source = node.getSourceFile();
-            return printer
-              .printNode(ts.EmitHint.Unspecified, publicDeclaration(node), source)
-              .trim();
-          }),
-        ];
+        return [symbol.name, target.declarations.map(signature)];
       });
       return [entryPoint, new Map(declarations)];
     }),
