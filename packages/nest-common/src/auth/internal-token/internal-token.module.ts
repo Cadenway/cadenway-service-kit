@@ -3,12 +3,11 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { OrganizationContextInterceptor } from '../context/organization-context.interceptor.js';
 import { InternalTokenGuard } from './internal-token.guard.js';
+import { InternalTokenSigner, type InternalTokenSignerOptions } from './internal-token-signer.js';
 import {
-  InternalTokenSigner,
   InternalTokenVerifier,
-  type InternalTokenSignerOptions,
   type InternalTokenVerifierOptions,
-} from './internal-token.js';
+} from './internal-token-verifier.js';
 
 /**
  * Interface InternalTokenModuleOptions

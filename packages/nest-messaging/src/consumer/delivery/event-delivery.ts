@@ -14,14 +14,14 @@ import {
   type Span,
 } from '@opentelemetry/api';
 
-import { errorClassOf } from '../../observability/error-class.js';
+import { errorCategoryOf } from '../../observability/error-class.js';
 import {
   EVENT_ACTOR_TYPES,
   type EventActor,
   type EventActorType,
   type EventEnvelope,
 } from '../../events/event-envelope.js';
-import { EventValidationError } from '../../events/event-validation.js';
+import { EventValidationError } from '../../events/event-validation-error.js';
 import { contextFromTraceparent } from '../../observability/trace-context.js';
 import { TRACEPARENT_HEADER } from '../../transport/event-headers.js';
 import type {
@@ -30,33 +30,9 @@ import type {
   VersionClaim,
 } from './event-deduplicator.js';
 import { retryDelayMs } from './retry-delays.js';
-import type { EventTarget } from '../subscriptions/event-target.js';
+import type { EventTarget, PreparedEvent } from '../subscriptions/event-target.js';
 import type { EventContext } from './event-context.js';
-
-/**
- * Class HandlerTimeoutError
- *
- * @description
- * Reason of the `signal` of a handler aborted at `handlerTimeoutMs`, and error of the abandoned
- * attempt.
- */
-class HandlerTimeoutError extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error.
-   *
-   * @param {number} timeoutMs - Deadline that was reached, in milliseconds.
-   * @constructor
-   */
-  public constructor(timeoutMs: number) {
-    super(`The event handler did not finish within ${String(timeoutMs)} ms.`);
-    this.name = 'HandlerTimeoutError';
-  }
-  // #endregion
-}
+import { HandlerTimeoutError } from './handler-timeout-error.js';
 
 /**
  * Function alwaysApply
@@ -102,7 +78,7 @@ function untilAborted<TResult>(work: Promise<TResult>, signal: AbortSignal): Pro
         },
         (error: unknown) => {
           signal.removeEventListener('abort', onAbort);
-          reject(error instanceof Error ? error : new Error(String(error)));
+          reject(error instanceof Error ? error : new Error('The event work failed.'));
         },
       );
     },
@@ -119,7 +95,6 @@ function untilAborted<TResult>(work: Promise<TResult>, signal: AbortSignal): Pro
  *
  * @param {() => void} answer - Sends the answer.
  * @param {(error: unknown) => void} onError - Called when the answer could not be sent.
- * @returns {void}
  */
 export function answerSafely(answer: () => void, onError: (error: unknown) => void): void {
   try {
@@ -176,6 +151,7 @@ export class EventDelivery {
    * @param {number} handlerTimeoutMs - Handler deadline in milliseconds.
    * @param {readonly number[]} retryDelaysMs - Delays by failed attempt, in milliseconds.
    * @param {EventDeduplicator | undefined} deduplicator - Optional transaction around the handler.
+   * @param {AbortSignal | undefined} abandon - Signal triggered when the shutdown grace period expires.
    * @constructor
    */
   public constructor(
@@ -183,6 +159,7 @@ export class EventDelivery {
     private readonly handlerTimeoutMs: number,
     private readonly retryDelaysMs: readonly number[],
     private readonly deduplicator?: EventDeduplicator,
+    private readonly abandon?: AbortSignal,
   ) {}
   // #endregion
 
@@ -191,21 +168,19 @@ export class EventDelivery {
    * Method deliver
    *
    * @description
-   * Processes one delivery: validates the message, runs the handler inside the organization
-   * context of the event and a consumer span, within `handlerTimeoutMs`, then acknowledges,
-   * retries or terminates.
+   * Validates one delivery and runs the handler in its organization context. A success is
+   * acknowledged after deduplication commits, invalid input is terminated, and handler failure
+   * uses the configured retry delays. Once shutdown grace expires, the delivery is left unsettled
+   * for JetStream to redeliver.
    *
-   * A message that is not valid JSON or does not match its contract can never succeed: it is
-   * terminated, which makes it a dead letter at once. A handler failure or timeout asks for a
-   * redelivery after the delay of that attempt; on the last attempt the redelivery is asked for
-   * at once, which makes the server report the delivery limit. The span records the class of
-   * the error only, never its message.
-   *
-   * @param {EventTarget} target - Registered handler.
-   * @param {JsMsg} message - Message delivered by JetStream.
-   * @returns {Promise<void>} Resolves once the message was answered; it never rejects.
+   * @param {EventTarget} target - Registered durable handler and its validation boundary.
+   * @param {JsMsg} message - JetStream delivery whose settlement is decided here.
+   * @returns {Promise<void>} Resolves when settlement is attempted or shutdown leaves the delivery unacknowledged.
    */
   public async deliver(target: EventTarget, message: JsMsg): Promise<void> {
+    if (this.isAbandoned()) {
+      return;
+    }
     const deliveryCount: number = message.info.deliveryCount;
     const streamSequence: number = message.info.streamSequence;
     const fields: {
@@ -214,10 +189,10 @@ export class EventDelivery {
       streamSequence: number;
       deliveryCount: number;
     } = { event: target.event, consumer: target.consumer, streamSequence, deliveryCount };
-    let payload: EventEnvelope;
+    let prepared: PreparedEvent;
     try {
       const decoded: unknown = JSON.parse(message.string());
-      payload = target.validate(decoded);
+      prepared = target.prepare(decoded);
     } catch (error) {
       const invalid: boolean = error instanceof EventValidationError;
       this.answer(target, message, 'term', invalid ? 'invalid-payload' : 'invalid-json');
@@ -227,6 +202,7 @@ export class EventDelivery {
       );
       return;
     }
+    const payload: EventEnvelope = prepared.envelope;
     const parent: Context = contextFromTraceparent(message.headers?.get(TRACEPARENT_HEADER));
     const span: Span = trace.getTracer('@cadenway/nest-messaging').startSpan(
       `process ${target.event}`,
@@ -250,34 +226,42 @@ export class EventDelivery {
       deliveryCount,
       streamSequence,
       redelivered: message.redelivered,
-      signal: deadline.signal,
+      signal:
+        this.abandon === undefined
+          ? deadline.signal
+          : AbortSignal.any([deadline.signal, this.abandon]),
     };
     try {
       const outcome: DeduplicationOutcome = await context.with(trace.setSpan(parent, span), () =>
         runWithOrganizationContext(this.organizationContextOf(target, payload), () =>
-          untilAborted(this.handle(target, payload, eventContext), deadline.signal),
+          untilAborted(this.handle(target, prepared, eventContext), eventContext.signal),
         ),
       );
+      eventContext.signal.throwIfAborted();
       this.answer(target, message, 'ack');
       if (outcome === 'duplicate') {
         this.logger.debug({ ...fields, eventId: payload.id }, 'duplicate event skipped');
       }
     } catch (error) {
-      const errorClass: string = errorClassOf(error);
+      if (this.isAbandoned()) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'ShutdownAbandoned' });
+        return;
+      }
+      const timedOut: boolean = error instanceof HandlerTimeoutError;
+      const errorClass: string = timedOut ? 'HandlerTimeoutError' : errorCategoryOf(error);
       span.setAttribute('error.type', errorClass);
       span.setStatus({ code: SpanStatusCode.ERROR, message: errorClass });
-      const timedOut: boolean = error instanceof HandlerTimeoutError;
       const delayMs: number | undefined = retryDelayMs(deliveryCount, this.retryDelaysMs);
       if (delayMs === undefined) {
         this.answer(target, message, 'nak');
         this.logger.error(
-          { ...fields, eventId: payload.id, err: error },
+          { ...fields, eventId: payload.id, errorClass },
           'event handler failed on the last delivery: dead letter',
         );
       } else {
         this.answer(target, message, 'nak', delayMs);
         this.logger.warn(
-          { ...fields, eventId: payload.id, retryInMs: delayMs, err: error },
+          { ...fields, eventId: payload.id, retryInMs: delayMs, errorClass },
           timedOut ? 'event handler timed out: will retry' : 'event handler failed: will retry',
         );
       }
@@ -285,6 +269,18 @@ export class EventDelivery {
       clearTimeout(timer);
       span.end();
     }
+  }
+
+  /**
+   * Method isAbandoned
+   *
+   * @description
+   * Reads the current shutdown deadline, which can expire while awaiting a handler.
+   *
+   * @returns {boolean} Whether in-flight deliveries are past the shutdown grace period.
+   */
+  private isAbandoned(): boolean {
+    return this.abandon?.aborted === true;
   }
 
   /**
@@ -297,7 +293,6 @@ export class EventDelivery {
    * @param {JsMsg} message - Message delivered by JetStream.
    * @param {'ack' | 'term' | 'nak'} answer - Answer to send.
    * @param {string | number | undefined} detail - Reason of a `term`; delay of a `nak`, in milliseconds, none asking for an immediate redelivery.
-   * @returns {void}
    */
   private answer(
     target: EventTarget,
@@ -317,7 +312,11 @@ export class EventDelivery {
       },
       (error: unknown) => {
         this.logger.debug(
-          { consumer: target.consumer, streamSequence: message.info.streamSequence, err: error },
+          {
+            consumer: target.consumer,
+            streamSequence: message.info.streamSequence,
+            errorClass: errorCategoryOf(error),
+          },
           'the answer to a message could not be sent: it will be redelivered',
         );
       },
@@ -356,32 +355,29 @@ export class EventDelivery {
    * Method handle
    *
    * @description
-   * Calls the handler, through the deduplicator when the application has one. The deadline
-   * prevents a late start and abandons a running handler so the transaction rolls back.
+   * Makes the transaction roll back when an active handler exceeds its deadline.
    *
-   * @param {EventTarget} target - Registered handler.
-   * @param {EventEnvelope} payload - Validated payload.
-   * @param {Omit<EventContext, 'claimVersion'>} eventContext - Delivery details and deadline signal.
-   * @returns {Promise<DeduplicationOutcome>} `handled`, or `duplicate` when the deduplicator skipped the handler.
+   * @param {EventTarget} target - Durable target used to scope deduplication.
+   * @param {PreparedEvent} prepared - Validated event and the callback bound to its typed data.
+   * @param {Omit<EventContext, 'claimVersion'>} eventContext - Delivery metadata and cancellation signal passed to the handler.
+   * @returns {Promise<DeduplicationOutcome>} Resolves to the deduplication outcome after the handler or duplicate check succeeds.
    */
   private async handle(
     target: EventTarget,
-    payload: EventEnvelope,
+    prepared: PreparedEvent,
     eventContext: Omit<EventContext, 'claimVersion'>,
   ): Promise<DeduplicationOutcome> {
+    const handle = async (claimVersion: VersionClaim): Promise<void> => {
+      eventContext.signal.throwIfAborted();
+      await untilAborted(prepared.handle({ ...eventContext, claimVersion }), eventContext.signal);
+    };
     if (this.deduplicator === undefined) {
-      await target.handle(payload, { ...eventContext, claimVersion: alwaysApply });
+      await handle(alwaysApply);
       return 'handled';
     }
     return this.deduplicator.run(
-      { consumer: target.consumer, event: target.event, envelope: payload },
-      async (claimVersion: VersionClaim): Promise<void> => {
-        eventContext.signal.throwIfAborted();
-        await untilAborted(
-          target.handle(payload, { ...eventContext, claimVersion }),
-          eventContext.signal,
-        );
-      },
+      { consumer: target.consumer, event: target.event, envelope: prepared.envelope },
+      handle,
     );
   }
   // #endregion

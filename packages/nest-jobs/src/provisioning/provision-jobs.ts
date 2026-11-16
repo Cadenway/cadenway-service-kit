@@ -90,7 +90,7 @@ async function stopQuietly(boss: PgBoss): Promise<void> {
  * @param {readonly ResolvedJobQueue[]} queues - Resolved queues of the service.
  * @param {number} migrationTimeoutMs - Time the index builds get to finish, in milliseconds.
  * @param {() => Promise<void>} afterStart - Runs once the schema is installed or migrated, before
- * the wait for the index builds; a rejection ends the run.
+ *   the wait for the index builds; a rejection ends the run.
  * @returns {Promise<number | null>} The installed pg-boss schema version.
  */
 async function installSchemaAndQueues(
@@ -149,11 +149,11 @@ async function installSchemaAndQueues(
  *
  * @param {ProvisionJobsOptions} options - Migrator connection, queue declarations and target role.
  * @returns {Promise<void>} Resolves once the schema, the queues and the grants are in place and
- * every connection is closed.
+ *   every connection is closed.
  * @throws {Error} When an option is invalid, the application role does not exist, the stored
- * schema is newer than this package or older than its index builds, the queue table holds foreign
- * rows, a role that can use the schema can write `bam` or `version`, the migrator role lacks a
- * right, or the index builds do not finish in time.
+ *   schema is newer than this package or older than its index builds, the queue table holds foreign
+ *   rows, a role that can use the schema can write `bam` or `version`, the migrator role lacks a
+ *   right, or the index builds do not finish in time.
  */
 export async function provisionJobs(options: ProvisionJobsOptions): Promise<void> {
   const connection: unknown = options.connection;

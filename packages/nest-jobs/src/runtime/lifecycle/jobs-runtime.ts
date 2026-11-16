@@ -13,7 +13,6 @@ import type {
   JobEnqueueOptions,
   JobEnqueueResult,
 } from '../../jobs/enqueue/job-enqueue-options.js';
-import type { ResolvedJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
 import type {
   JobsCapability,
   ResolvedJobsRuntimeOptions,
@@ -34,7 +33,8 @@ import { JobWorkers } from '../workers/job-workers.js';
  * Class JobsRuntime
  *
  * @description
- * Owns the application-role pg-boss instance and orders its start-up and shutdown.
+ * Validates the application-role session before activating any job capabilities and owns
+ * their shutdown.
  */
 export class JobsRuntime {
   // #region Properties
@@ -42,7 +42,7 @@ export class JobsRuntime {
    * Property queues
    *
    * @description
-   * Declared queues by name. Only these accept jobs, workers and schedules.
+   * Only declared queues accept jobs, workers and new schedules.
    *
    * @type {ReadonlyMap<string, ResolvedJobQueue>}
    * @readonly
@@ -53,7 +53,7 @@ export class JobsRuntime {
    * Property deadLetterQueues
    *
    * @description
-   * Distinct dead-letter queues derived from the declarations, including their expected retention.
+   * Distinct dead-letter queues and their expected retention.
    *
    * @type {readonly ResolvedDeadLetterQueue[]}
    * @readonly
@@ -64,7 +64,7 @@ export class JobsRuntime {
    * Property boss
    *
    * @description
-   * The started pg-boss instance, or `null` before start-up and after shutdown.
+   * Started instance for workers and schedules, absent in a producer-only process.
    *
    * @type {PgBoss | null}
    */
@@ -85,17 +85,32 @@ export class JobsRuntime {
    * Property deadLetterWatch
    *
    * @description
-   * Dead-letter monitoring cancelled when the runtime stops.
+   * Runs only in processes that supervise jobs.
    *
    * @type {DeadLetterWatch | null}
    * @readonly
    */
   private readonly deadLetterWatch: DeadLetterWatch | null;
 
-  /** Producer-only sender that never starts a pg-boss instance. */
+  /**
+   * Property transactionalSender
+   *
+   * @description
+   * Producer-only sender that never starts a pg-boss instance.
+   *
+   * @type {TransactionalJobSender | null}
+   * @readonly
+   */
   private readonly transactionalSender: TransactionalJobSender | null;
 
-  /** True after a successful start and until shutdown begins. */
+  /**
+   * Property running
+   *
+   * @description
+   * True after a successful start until the runtime has stopped.
+   *
+   * @type {boolean}
+   */
   private running: boolean = false;
   // #endregion
 
@@ -104,14 +119,14 @@ export class JobsRuntime {
    * Constructor
    *
    * @description
-   * Shares the validated queue declarations and logger across the runtime.
+   * Selects the components for the validated capabilities before opening a connection.
    *
-   * @param {ResolvedJobsModuleOptions} options - Validated module options.
+   * @param {ResolvedJobsRuntimeOptions} options - Validated module options.
    * @param {Logger} logger - Logger scoped to the jobs service.
    * @constructor
    */
   public constructor(
-    private readonly options: ResolvedJobsModuleOptions | ResolvedJobsRuntimeOptions,
+    private readonly options: ResolvedJobsRuntimeOptions,
     private readonly logger: Logger,
   ) {
     this.queues = new Map<string, ResolvedJobQueue>(
@@ -121,14 +136,14 @@ export class JobsRuntime {
       ]),
     );
     this.deadLetterQueues = deadLetterQueuesOf(options.queues);
-    this.workers = this.has('worker') ? new JobWorkers(options, logger) : null;
+    this.workers = options.capabilities.has('worker') ? new JobWorkers(options, logger) : null;
     const deadLetterNames: string[] = this.deadLetterQueues.map(
       (queue: ResolvedDeadLetterQueue): string => queue.name,
     );
-    const scheduler: boolean = this.has('scheduler');
+    const scheduler: boolean = options.capabilities.has('scheduler');
     this.deadLetterWatch = scheduler ? new DeadLetterWatch(options, deadLetterNames, logger) : null;
     this.transactionalSender =
-      this.workers === null && !scheduler ? new TransactionalJobSender(options) : null;
+      this.workers === null && !scheduler ? new TransactionalJobSender(options.schema) : null;
   }
   // #endregion
 
@@ -137,22 +152,21 @@ export class JobsRuntime {
    * Method start
    *
    * @description
-   * Starts pg-boss with the application role, refuses a role that can create objects in the
-   * pg-boss schema, checks that the schema and every declared queue were provisioned, warns about
-   * stored schedules of queues that are no longer declared, and starts the dead-letter watch. The
-   * module is global, so this runs before the `onModuleInit` of the modules that register workers.
+   * Verifies provisioning before creating a pool or starting a worker, scheduler or watch.
+   * A producer-only runtime uses the caller's transactions after the check.
    *
-   * @returns {Promise<void>} Resolves once jobs can be enqueued and workers registered.
+   * @returns {Promise<void>} Resolves once the provisioning checks pass and the selected
+   * capabilities are active.
    * @throws {JobsNotProvisionedError} When the schema, a grant or a declared queue is missing.
    * @throws {Error} When the connected role can create objects in the schema and
-   * `allowPrivilegedRole` is not set.
+   *   `allowPrivilegedRole` is not set.
    */
   public async start(): Promise<void> {
     if (this.running) {
       return;
     }
+    await verifyJobsDatabase(this.options, this.deadLetterQueues, this.logger);
     if (this.transactionalSender !== null) {
-      await this.transactionalSender.verify(this.deadLetterQueues, this.logger);
       this.running = true;
       return;
     }
@@ -165,13 +179,6 @@ export class JobsRuntime {
     });
     try {
       await boss.start();
-      await verifyJobsDatabase(
-        boss,
-        this.options,
-        this.deadLetterQueues,
-        this.logger,
-        this.has('scheduler'),
-      );
     } catch (error) {
       try {
         await boss.stop({ graceful: false });
@@ -220,7 +227,7 @@ export class JobsRuntime {
    * Method work
    *
    * @description
-   * Registers a worker against the started runtime and a declared queue.
+   * Registers one handler per declared queue in a running worker process.
    *
    * @param {string} queue - Declared queue to consume.
    * @param {JobHandler<TPayload>} handler - Handler of one job.
@@ -243,7 +250,7 @@ export class JobsRuntime {
    * Method enqueue
    *
    * @description
-   * Sends a job to a declared queue through the caller's transaction.
+   * Enqueues a job using the caller's transaction in either runtime mode.
    *
    * @param {JobsTransaction} tx - Caller transaction and its organization.
    * @param {string} queue - Declared queue to enqueue in.
@@ -270,7 +277,7 @@ export class JobsRuntime {
    * Method schedule
    *
    * @description
-   * Stores a cron schedule for a declared queue.
+   * Allows a scheduler process to store a cron for a declared queue.
    *
    * @param {string} queue - Declared queue to schedule.
    * @param {string} cron - Cron expression.
@@ -297,19 +304,27 @@ export class JobsRuntime {
     await unscheduleJob(this.requireBoss(), queue, options);
   }
 
-  /** Preserves the combined capabilities of the legacy module. */
-  private has(capability: JobsCapability): boolean {
-    return !('capabilities' in this.options) || this.options.capabilities.has(capability);
-  }
-
-  /** Refuses an operation outside the process capability set. */
+  /**
+   * Method requireCapability
+   *
+   * @description
+   * Refuses an operation outside the process capability set.
+   *
+   * @param {JobsCapability} capability - Capability required to perform the operation.
+   * @throws {Error} When the capability was omitted from the process configuration.
+   */
   private requireCapability(capability: JobsCapability): void {
-    if (!this.has(capability)) {
+    if (!this.options.capabilities.has(capability)) {
       throw new Error(`The ${capability} jobs capability is not enabled in this process.`);
     }
   }
 
-  /** Refuses operations before initialization and after shutdown begins. */
+  /**
+   * Method assertRunning
+   *
+   * @description
+   * Refuses operations before initialization or after shutdown completes.
+   */
   private assertRunning(): void {
     if (!this.running) {
       throw new Error(

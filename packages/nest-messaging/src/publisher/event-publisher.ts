@@ -25,6 +25,7 @@ import {
 } from '../configuration/messaging-options.js';
 import { buildEventHeaders } from '../transport/event-headers.js';
 import { currentTraceparent } from '../observability/trace-context.js';
+import { EventStreamUnavailableError } from './event-stream-unavailable-error.js';
 import { uuidv7 } from './uuid-v7.js';
 
 /**
@@ -152,38 +153,6 @@ export interface PublishedEvent {
 }
 
 /**
- * Class EventStreamUnavailableError
- *
- * @description
- * Raised by a publish when no stream stores the subject: the events stream does not exist, or
- * JetStream is disabled on the server. The streams are created by the platform, or by
- * `MessagingModule` when `manageStreams` is on.
- */
-export class EventStreamUnavailableError extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error.
-   *
-   * @param {string} subject - Subject that no stream stores.
-   * @param {string} stream - Stream expected to store it.
-   * @param {unknown} cause - Error of the NATS client.
-   * @constructor
-   */
-  public constructor(subject: string, stream: string, cause: unknown) {
-    super(
-      `No JetStream stream stores the subject ${subject}: the stream ${stream} is missing or JetStream is disabled. ` +
-        'The streams are created by the platform, or by MessagingModule with manageStreams.',
-      { cause },
-    );
-    this.name = 'EventStreamUnavailableError';
-  }
-  // #endregion
-}
-
-/**
  * Function isNoResponders
  *
  * @description
@@ -242,10 +211,10 @@ export class EventPublisher {
    * Constructor
    *
    * @description
-   * Stores the connection and the options.
+   * Binds publishing to the module's connection, routing and acknowledgement timeout.
    *
-   * @param {MessagingConnection} connection - NATS connection of the application.
-   * @param {ResolvedMessagingOptions} options - Options of the module.
+   * @param {MessagingConnection} connection - Connection that sends events to JetStream.
+   * @param {ResolvedMessagingOptions} options - Stream routes and acknowledgement deadline.
    * @constructor
    */
   public constructor(

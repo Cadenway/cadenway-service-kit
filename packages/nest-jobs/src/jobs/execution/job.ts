@@ -89,6 +89,8 @@ export interface Job<TPayload = unknown> {
  * is retried per the queue's policy. Delivery is at least once, so a handler must be idempotent.
  *
  * @type {(job: Job<TPayload>) => Promise<void>}
+ * @param {Job<TPayload>} job - Job and cancellation signal for the current attempt.
+ * @returns {Promise<void>} Resolves to complete the attempt or rejects to fail it.
  */
 export type JobHandler<TPayload = unknown> = (job: Job<TPayload>) => Promise<void>;
 

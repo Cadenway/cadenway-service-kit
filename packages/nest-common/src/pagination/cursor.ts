@@ -148,7 +148,7 @@ export interface Page<TItem> {
  * Zod shape of the `cursor` and `limit` query parameters. Spread it into the query schema of a
  * list route written by hand; a schema generated from the contracts already declares them.
  *
- * @type {{ readonly cursor: z.ZodType<string | undefined>; readonly limit: z.ZodType<number> }}
+ * @type {{ readonly cursor: z.ZodType<string | undefined>; readonly limit: z.ZodType<number>; }}
  */
 export const pageQueryShape: {
   readonly cursor: z.ZodType<string | undefined>;
@@ -164,7 +164,7 @@ export const pageQueryShape: {
  * @description
  * Shape of a decoded cursor: sort values, id and filter fingerprint, under short keys.
  *
- * @type {z.ZodType<{ s: CursorValue[]; i: string; f: string }>}
+ * @type {z.ZodType<{ s: CursorValue[]; i: string; f: string; }>}
  */
 const positionSchema: z.ZodType<{ s: CursorValue[]; i: string; f: string }> = z.strictObject({
   s: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).max(8),

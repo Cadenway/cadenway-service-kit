@@ -48,7 +48,15 @@ const EXPIRY_LOG_MARGIN_MS: number = 100;
  */
 interface RunningAttempt {
   // #region Properties
-  /** The stored job id shared by all attempts of the job. */
+  /**
+   * Property id
+   *
+   * @description
+   * The stored job id shared by all attempts of the job.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly id: string;
 
   /**
@@ -99,21 +107,29 @@ interface RunningAttempt {
    * Property expiry
    *
    * @description
-   * Timer that fires once the attempt has run for the queue's `expireInSeconds`.
+   * Diagnostic timer that reports a handler still running just after expiry.
    *
    * @type {NodeJS.Timeout}
    * @readonly
    */
   readonly expiry: NodeJS.Timeout;
 
-  /** Cancellation owned by this runtime and independent of pg-boss's cleanup. */
+  /**
+   * Property interruption
+   *
+   * @description
+   * Cancellation owned by this runtime and independent of pg-boss's cleanup.
+   *
+   * @type {AbortController}
+   * @readonly
+   */
   readonly interruption: AbortController;
 
   /**
    * Property reported
    *
    * @description
-   * Whether the failure of the attempt was already logged, so one attempt gives one log line.
+   * Prevents expiry, shutdown and handler rejection from logging the same failure twice.
    *
    * @type {boolean}
    */
@@ -121,7 +137,16 @@ interface RunningAttempt {
   // #endregion
 }
 
-/** Lets pg-boss fail the attempt when grace expires even if the handler does not settle. */
+/**
+ * Function waitForHandler
+ *
+ * @description
+ * Lets pg-boss fail the attempt when grace expires even if the handler does not settle.
+ *
+ * @param {() => Promise<void>} work - Handler invocation whose settlement normally completes the attempt.
+ * @param {AbortSignal} interruption - Signal that ends the attempt when the shutdown grace expires.
+ * @returns {Promise<void>} Settles with the handler or rejects when shutdown interrupts it.
+ */
 async function waitForHandler(work: () => Promise<void>, interruption: AbortSignal): Promise<void> {
   let abort: () => void = (): void => undefined;
   const interrupted: Promise<never> = new Promise<never>((_resolve, reject): void => {
@@ -173,7 +198,14 @@ export class JobWorkers {
    */
   private readonly running: Set<RunningAttempt> = new Set<RunningAttempt>();
 
-  /** Expired shutdown grace. Stops a claim that only reaches the worker after the deadline. */
+  /**
+   * Property shutdownError
+   *
+   * @description
+   * Expired shutdown grace. Stops a claim that only reaches the worker after the deadline.
+   *
+   * @type {Error | undefined}
+   */
   private shutdownError: Error | undefined;
   // #endregion
 
@@ -206,8 +238,8 @@ export class JobWorkers {
    * A handler that rejects, or runs longer than the queue's `expireInSeconds`, fails the attempt.
    * The job is retried after the queue's delay, with exponential backoff when enabled, up to
    * `retryLimit` times; then it is copied to the dead-letter queue. A failed attempt is logged as a
-   * warning, the last one as an error, with the job id and never the payload. Only the name and
-   * the message of the error are stored with the job.
+   * warning and the last one as an error. Logs identify the job by id. The failure stored with
+   * the job is a fresh error whose message carries the original name and message.
    *
    * @param {PgBoss} boss - Running pg-boss instance.
    * @param {ResolvedJobQueue} declared - Declared queue to consume.

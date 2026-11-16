@@ -138,7 +138,7 @@ interface IdempotentRequest {
    * @description
    * Parsed request body.
    *
-   * @type {unknown}
+   * @type {unknown | undefined}
    * @readonly
    */
   readonly body?: unknown;

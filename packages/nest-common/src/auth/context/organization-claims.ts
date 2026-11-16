@@ -108,7 +108,6 @@ export const claimSetSchema: z.ZodType<TokenClaimSet> = z
  * application attaches a context it established itself.
  *
  * @param {OrganizationContext} context - Context to check.
- * @returns {void}
  * @throws {Error} When the context is inconsistent; the message names no value.
  */
 export function assertConsistentContext(context: OrganizationContext): void {

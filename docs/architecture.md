@@ -56,9 +56,9 @@ cadenway-service-kit publishes the three runtime packages shared by NestJS servi
   workers, active attempts, dead-letter monitoring and graceful shutdown.
 
 Keep the declared public entry files as named export façades. Put implementation files in the
-folder that owns their responsibility and keep focused specs next to them. Add a subfolder when
-it separates a distinct responsibility with its own dependencies or tests. A small cohesive
-folder can stay flat.
+folder that owns their responsibility and give each production class its own file. Keep small
+supporting types and functions with the behavior they serve and focused specs next to that behavior.
+Add a subfolder when it separates a distinct responsibility with its own dependencies or tests.
 
 ## Boundaries
 
@@ -73,8 +73,9 @@ and runtime entry points. Exercise root imports with mandatory peers and exercis
 entry points with their optional peers installed. Keep architecture checks independent of containers.
 Keep validation of transactions, redelivery and PostgreSQL roles in the integration suites.
 
-`pnpm build` clears the generated package outputs before compiling. The archive tests compare
-the packed output inventory with the TypeScript build configuration.
+`pnpm build` clears the generated package outputs with `rimraf` before compiling the TypeScript
+project references. The archive tests compare the packed output inventory with the TypeScript
+build configuration.
 
 After Changesets publishes, the release workflow runs `pnpm test:packaging:published`. This
 installs the exact registry tarballs in clean consumers and checks that Common and Messaging

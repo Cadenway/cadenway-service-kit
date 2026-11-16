@@ -122,6 +122,7 @@ not to find another way around it.
 - Prefer inline commands or a task-specific temporary directory for one-off diagnostics; clean up
   disposable files before delivery.
 - Keep a permanent script only when it provides a reusable capability that existing tooling cannot.
+  Place it with the technology or workflow that owns it. Do not create a generic `scripts/` directory.
 - Add permanent tests for meaningful behavior or regressions, in the existing test structure.
 - Before delivery, inspect untracked files and remove only the disposable artifacts of the current
   task. Report every new permanent tooling file and why it needs to stay.

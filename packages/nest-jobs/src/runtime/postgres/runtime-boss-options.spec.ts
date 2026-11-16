@@ -1,8 +1,11 @@
 import type { ConstructorOptions } from 'pg-boss';
 import { describe, expect, it } from 'vitest';
 
-import { resolveJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
-import { resolveJobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
+import {
+  resolveJobsRuntimeOptions,
+  resolveLegacyJobsRuntimeOptions,
+  type JobsCapability,
+} from '../../jobs/configuration/jobs-runtime-options.js';
 import type { JobsConnectionOptions } from '../../jobs/database/jobs-connection.js';
 import { toRuntimeBossOptions } from './runtime-boss-options.js';
 
@@ -22,9 +25,11 @@ const connection: JobsConnectionOptions = {
 
 describe('toRuntimeBossOptions', () => {
   it('never lets the runtime run DDL and keeps its pool at two connections', () => {
-    const options: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsModuleOptions({ connection, queues: [], schema: 'jobs' }),
+    const resolved = resolveLegacyJobsRuntimeOptions({ connection, queues: [], schema: 'jobs' });
+    expect(resolved.capabilities).toEqual(
+      new Set<JobsCapability>(['producer', 'worker', 'scheduler']),
     );
+    const options: ConstructorOptions = toRuntimeBossOptions(resolved);
 
     expect(options).toEqual({
       host: 'database.internal',
@@ -46,7 +51,7 @@ describe('toRuntimeBossOptions', () => {
     const hostile: unknown = { ...connection, migrate: true, max: 50, schema: 'public' };
 
     const options: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsModuleOptions({ connection: hostile as JobsConnectionOptions, queues: [] }),
+      resolveLegacyJobsRuntimeOptions({ connection: hostile as JobsConnectionOptions, queues: [] }),
     );
 
     expect(options.migrate).toBe(false);
@@ -54,27 +59,29 @@ describe('toRuntimeBossOptions', () => {
     expect(options.schema).toBe('pgboss');
   });
 
-  it('gives workers a separate pool limit and leaves cron and supervision to the scheduler', () => {
-    const worker: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsRuntimeOptions({
+  it.each<{ capability: JobsCapability; scheduler: boolean }>([
+    { capability: 'producer', scheduler: false },
+    { capability: 'worker', scheduler: false },
+    { capability: 'scheduler', scheduler: true },
+  ])(
+    'only enables cron and supervision for a scheduler with $capability',
+    ({ capability, scheduler }) => {
+      const resolved = resolveJobsRuntimeOptions({
         connection,
         queues: [],
-        capabilities: ['worker'],
+        capabilities: [capability],
         poolSize: 3,
-      }),
-    );
-    const scheduler: ConstructorOptions = toRuntimeBossOptions(
-      resolveJobsRuntimeOptions({
-        connection,
-        queues: [],
-        capabilities: ['producer', 'scheduler'],
-        poolSize: 1,
-      }),
-    );
+      });
 
-    expect(worker).toMatchObject({ max: 3, schedule: false, supervise: false, migrate: false });
-    expect(scheduler).toMatchObject({ max: 1, schedule: true, supervise: true, migrate: false });
-  });
+      expect(resolved.capabilities).toEqual(new Set<JobsCapability>([capability]));
+      expect(toRuntimeBossOptions(resolved)).toMatchObject({
+        max: 3,
+        schedule: scheduler,
+        supervise: scheduler,
+        migrate: false,
+      });
+    },
+  );
 
   it('fails fast for absent or duplicate capabilities and invalid pool budgets', () => {
     expect(() =>

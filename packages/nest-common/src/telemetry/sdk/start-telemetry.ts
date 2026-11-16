@@ -128,7 +128,7 @@ const HEALTH_PATH_PREFIX: string = '/health/';
  * @description
  * Telemetry already started in this process, so a second call does not register twice.
  *
- * @type {{ handle: TelemetryHandle | undefined }}
+ * @type {{ handle: TelemetryHandle | undefined; }}
  */
 const state: { handle: TelemetryHandle | undefined } = { handle: undefined };
 

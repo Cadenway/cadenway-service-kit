@@ -6,16 +6,36 @@ import type { JobsQueryResult } from '../../jobs/database/jobs-transaction.js';
 import type { ResolvedJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
 import { fieldOf } from '../postgres/database-row.js';
 
-/** Largest queue size reported exactly. The query reads at most one more row per queue. */
+/**
+ * Constant DEAD_LETTER_COUNT_LIMIT
+ *
+ * @description
+ * Largest queue size reported exactly. The query reads at most one more row per queue.
+ *
+ * @type {number}
+ */
 const DEAD_LETTER_COUNT_LIMIT: number = 1_000;
 
 /**
+ * Interface DeadLetterDatabase
+ *
+ * @description
  * The cancellation option of pg-boss's built-in PostgreSQL adapter. Its public database
  * interface also describes custom adapters, where this option is unavailable.
  */
 interface DeadLetterDatabase {
   // #region Methods
-  /** Executes the count on a connection that the adapter discards when the signal aborts. */
+  /**
+   * Method executeSql
+   *
+   * @description
+   * Executes the count on a connection that the adapter discards when the signal aborts.
+   *
+   * @param {string} text - Parameterized SQL statement used to count the backlog.
+   * @param {unknown[]} values - Values bound to the statement placeholders.
+   * @param {{ readonly signal: AbortSignal; }} options - Cancellation signal for the check.
+   * @returns {Promise<JobsQueryResult>} Rows obtained by the monitoring query.
+   */
   executeSql(
     text: string,
     values: unknown[],
@@ -103,8 +123,14 @@ export class DeadLetterWatch {
   }
 
   /**
+   * Method count
+   *
+   * @description
    * Reports one error per non-empty queue, including jobs committed after an earlier snapshot.
    * Each replica observes the same stock. Counts are snapshots and can repeat between checks.
+   *
+   * @param {PgBoss} boss - Running pg-boss instance that owns the monitoring connection.
+   * @returns {Promise<void>} Resolves when the check is skipped, completes or reports a failure.
    */
   private async count(boss: PgBoss): Promise<void> {
     if (this.deadLetterCheck !== null) {
@@ -127,6 +153,9 @@ export class DeadLetterWatch {
   }
 
   /**
+   * Method stop
+   *
+   * @description
    * Clears the timer and cancels the check without waiting for its connection to settle.
    * The pg-boss pool stays available to workers during their shutdown grace period.
    */
@@ -138,7 +167,16 @@ export class DeadLetterWatch {
     this.deadLetterCheck?.abort();
   }
 
-  /** Bounds each index lookup independently and never fetches job payloads. */
+  /**
+   * Method readBacklog
+   *
+   * @description
+   * Bounds each index lookup independently and never fetches job payloads.
+   *
+   * @param {DeadLetterDatabase} database - Database adapter of the running pg-boss instance.
+   * @param {AbortSignal} signal - Signal that bounds the query and interrupts it during shutdown.
+   * @returns {Promise<JobsQueryResult>} One bounded count for every non-empty monitored queue.
+   */
   private async readBacklog(
     database: DeadLetterDatabase,
     signal: AbortSignal,
@@ -161,7 +199,14 @@ export class DeadLetterWatch {
     );
   }
 
-  /** Logs retained rows by queue without implying an exact count above the query limit. */
+  /**
+   * Method reportBacklog
+   *
+   * @description
+   * Logs retained rows by queue without implying an exact count above the query limit.
+   *
+   * @param {JobsQueryResult} result - Rows returned by the bounded backlog count.
+   */
   private reportBacklog(result: JobsQueryResult): void {
     for (const row of result.rows) {
       const name: unknown = fieldOf(row, 'name');

@@ -86,14 +86,23 @@ const SQL_ERROR_KEYS: ReadonlySet<string> = new Set<string>([
 const EMAIL_PATTERN: RegExp = /[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}/gu;
 
 /**
- * Constant SQL_PARAMETERS_PATTERN
+ * Constant SQLSTATE
  *
  * @description
- * Matches the `params: ...` line Drizzle appends to the message of a failed query.
+ * Recognizes five-character SQLSTATE codes without copying arbitrary error codes to the log.
  *
  * @type {RegExp}
  */
-const SQL_PARAMETERS_PATTERN: RegExp = /\nparams: [^\n]*/gu;
+const SQLSTATE: RegExp = /^[0-9A-Z]{5}$/u;
+/**
+ * Constant DATABASE_ERROR_MESSAGE
+ *
+ * @description
+ * Replaces database diagnostics in the log without quoting query inputs.
+ *
+ * @type {string}
+ */
+const DATABASE_ERROR_MESSAGE: string = 'Database operation failed.';
 
 /**
  * Function normalizeKey
@@ -178,31 +187,111 @@ export function sanitizeLogValue(
 }
 
 /**
+ * Function isRecord
+ *
+ * @description
+ * Distinguishes a non-null object from primitive serialized values.
+ *
+ * @param {unknown} value - Value to inspect before reading its fields.
+ * @returns {value is Record<string, unknown>} True for a non-null object that can be inspected by field name.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Function databaseErrorOf
+ *
+ * @description
+ * Keeps the PostgreSQL adapters optional by recognizing their error shapes.
+ *
+ * @param {Record<string, unknown>} error - Database error fields available without importing an optional adapter.
+ * @returns {boolean} True for a recognized PostgreSQL or Drizzle error shape.
+ */
+function databaseErrorOf(error: Record<string, unknown>): boolean {
+  const type: unknown = error instanceof Error ? error.constructor.name : error.type;
+  return (
+    type === 'DatabaseError' ||
+    type === 'DrizzleQueryError' ||
+    (typeof error.query === 'string' && Array.isArray(error.params)) ||
+    (typeof error.code === 'string' &&
+      SQLSTATE.test(error.code) &&
+      typeof error.severity === 'string')
+  );
+}
+
+/**
+ * Function databaseStack
+ *
+ * @description
+ * Removes the entire error heading, whose message can span multiple lines.
+ *
+ * @param {Record<string, unknown>} error - Error record whose heading may contain query inputs.
+ * @returns {string} The safe heading and available stack frames, or only the heading.
+ */
+function databaseStack(error: Record<string, unknown>): string {
+  const { stack, message } = error;
+  const name: unknown = error.name ?? error.type;
+  if (typeof stack === 'string' && typeof message === 'string' && typeof name === 'string') {
+    const heading: string = `${name}: ${message}\n`;
+    if (stack.startsWith(heading)) {
+      return `${DATABASE_ERROR_MESSAGE}\n${stack.slice(heading.length)}`;
+    }
+  }
+  return DATABASE_ERROR_MESSAGE;
+}
+
+/**
  * Function sanitizeSerializedError
  *
  * @description
- * Makes a serialized error safe to write. SQL values never reach the logs: the statement and
- * parameters of a failed Drizzle query and the `detail` and `where` of a PostgreSQL error are
- * dropped, and the `params:` line is cut from the message and the stack. The rest goes through
- * `sanitizeLogValue`.
+ * Redacts SQL errors, including causes that Pino folds into the outer message and stack.
  *
- * @param {Record<string, unknown>} serialized - Error as serialized by pino.
- * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
- * @returns {Record<string, unknown>} The sanitized error.
+ * @param {unknown} serialized - Raw Pino serialized error, which may retain the original error as a cause source.
+ * @param {ReadonlySet<string>} keys - Normalized field names to mask in the log.
+ * @returns {Record<string, unknown>} The sanitized fields suitable for serialization to the log.
  */
 export function sanitizeSerializedError(
-  serialized: Record<string, unknown>,
+  serialized: unknown,
   keys: ReadonlySet<string>,
 ): Record<string, unknown> {
+  if (!isRecord(serialized)) {
+    return {};
+  }
+  const original: Record<string, unknown> = isRecord(serialized.raw) ? serialized.raw : serialized;
+  const visited: Set<object> = new Set<object>();
+  let databaseError: boolean = false;
+  let sqlState: string | undefined;
+  for (let cause: unknown = original; isRecord(cause) && !visited.has(cause); cause = cause.cause) {
+    visited.add(cause);
+    if (databaseErrorOf(cause)) {
+      databaseError = true;
+      if (typeof cause.code === 'string' && SQLSTATE.test(cause.code)) {
+        sqlState ??= cause.code;
+      }
+    }
+  }
   const kept: Record<string, unknown> = {};
   for (const [key, member] of Object.entries(serialized)) {
     if (SQL_ERROR_KEYS.has(key)) {
       continue;
     }
-    kept[key] =
-      typeof member === 'string' && (key === 'message' || key === 'stack')
-        ? member.replace(SQL_PARAMETERS_PATTERN, '')
-        : member;
+    if (typeof member === 'string' && databaseError && key === 'message') {
+      kept[key] = DATABASE_ERROR_MESSAGE;
+    } else if (typeof member === 'string' && databaseError && key === 'stack') {
+      kept[key] = databaseStack(original);
+    } else if (isRecord(member) && member.raw instanceof Error) {
+      kept[key] = sanitizeSerializedError(member, keys);
+    } else if (key === 'aggregateErrors' && Array.isArray(member)) {
+      kept[key] = member.map((item: unknown) =>
+        isRecord(item) ? sanitizeSerializedError(item, keys) : item,
+      );
+    } else {
+      kept[key] = member;
+    }
+  }
+  if (sqlState !== undefined) {
+    kept.code = sqlState;
   }
   return sanitizeLogValue(kept, keys) as Record<string, unknown>;
 }

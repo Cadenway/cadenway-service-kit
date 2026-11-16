@@ -24,8 +24,25 @@ import {
   type JobsRuntimeOptions,
 } from '../index.js';
 
+/**
+ * Constant queues
+ *
+ * @description
+ * Queue shared by the producer, worker and scheduler integration scenarios.
+ *
+ * @type {readonly JobQueueDeclaration[]}
+ */
 const queues: readonly JobQueueDeclaration[] = [{ name: 'digests' }];
 
+/**
+ * Function start
+ *
+ * @description
+ * Starts an isolated Nest application with configuration and startup errors exposed to the test.
+ *
+ * @param {JobsRuntimeOptions} options - Connection, queues and process capabilities under test.
+ * @returns {Promise<INestApplicationContext>} Started application whose lifecycle the test owns.
+ */
 function start(options: JobsRuntimeOptions): Promise<INestApplicationContext> {
   return NestFactory.createApplicationContext(JobsRuntimeModule.forRoot(options), {
     logger: false,
@@ -33,6 +50,15 @@ function start(options: JobsRuntimeOptions): Promise<INestApplicationContext> {
   });
 }
 
+/**
+ * Function appConnections
+ *
+ * @description
+ * Observes PostgreSQL sessions owned by the application role in the test database.
+ *
+ * @param {JobsTestDatabase} database - Disposable database whose application sessions are counted.
+ * @returns {Promise<number>} Current application connection count.
+ */
 async function appConnections(database: JobsTestDatabase): Promise<number> {
   const result: QueryResult<{ count: number }> = await queryAs<{ count: number }>(
     database.admin,
@@ -130,13 +156,76 @@ describe('JobsRuntimeModule', () => {
     await waitFor(async (): Promise<boolean> => (await appConnections(database)) === 0, 5_000);
   });
 
+  it.each([
+    { firstResult: 'COMMIT', duplicate: true },
+    { firstResult: 'ROLLBACK', duplicate: false },
+  ])(
+    'resolves concurrent occurrence claims after the first transaction ends with $firstResult',
+    async ({ firstResult, duplicate }) => {
+      const database: JobsTestDatabase = await server.createDatabase();
+      await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+      const app: INestApplicationContext = await start({
+        connection: database.app,
+        queues,
+        capabilities: ['producer'],
+        poolSize: 1,
+      });
+      const first: Client = new Client(database.app);
+      const second: Client = new Client(database.app);
+      try {
+        await first.connect();
+        await second.connect();
+        const firstPid = (await first.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+          .rows[0]?.pid;
+        const secondPid = (await second.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+          .rows[0]?.pid;
+        const producer: JobProducer = app.get(JobProducer);
+        const payload = { entry: 'digest' };
+        const options = { occurrenceKey: 'digest:concurrent' };
+        await first.query('BEGIN');
+        const winner: JobEnqueueResult = await producer.enqueue(
+          { client: first, organizationId: null },
+          'digests',
+          payload,
+          options,
+        );
+        expect(winner.duplicate).toBe(false);
+        await second.query('BEGIN');
+        const contender: Promise<JobEnqueueResult> = producer.enqueue(
+          { client: second, organizationId: null },
+          'digests',
+          payload,
+          options,
+        );
+        void contender.catch(() => undefined);
+        await waitFor(async () => {
+          const result = await queryAs<{ blocked: boolean }>(
+            database.admin,
+            'SELECT $1 = ANY(pg_catalog.pg_blocking_pids($2)) AS blocked',
+            [firstPid, secondPid],
+          );
+          return result.rows[0]?.blocked === true;
+        }, 5_000);
+
+        await first.query(firstResult);
+        await expect(contender).resolves.toEqual({ jobId: winner.jobId, duplicate });
+        await second.query('COMMIT');
+        expect(
+          (await second.query('SELECT id FROM pgboss.job WHERE name = $1', ['digests'])).rows,
+        ).toEqual([{ id: winner.jobId }]);
+      } finally {
+        await Promise.all([first.end(), second.end(), app.close()]);
+      }
+    },
+  );
+
   it('fires a stored cron after scheduler replacement and delivers it to a separate worker', async () => {
     const database: JobsTestDatabase = await server.createDatabase();
     await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
     const schedulerOptions: JobsRuntimeOptions = {
       connection: database.app,
       queues,
-      capabilities: ['producer', 'scheduler'],
+      capabilities: ['scheduler'],
       poolSize: 1,
     };
     const first: INestApplicationContext = await start(schedulerOptions);

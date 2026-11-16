@@ -32,25 +32,112 @@ import { LeasedBatchPublisher, type RelayState } from './leased-batch-publisher.
 import { hasOutboxLeaseSchema } from './outbox-lease-store.js';
 import type { ResolvedOutboxRelayOptions } from './outbox-relay-options.js';
 
-/** Dependency injection token for the lease-based relay configuration. */
+/**
+ * Constant LEASED_OUTBOX_OPTIONS
+ *
+ * @description
+ * Dependency injection token for the lease-based relay configuration.
+ *
+ * @type {unique symbol}
+ */
 export const LEASED_OUTBOX_OPTIONS: unique symbol = Symbol('cadenway.messaging.leased-outbox');
 
-/** Relays committed outbox events without holding database connections during broker waits. */
+/**
+ * Class LeasedOutboxRelay
+ *
+ * @description
+ * Relays committed outbox events without holding database connections during broker waits.
+ */
 @Injectable()
 export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicationShutdown {
   // #region Properties
-  /** Logs lifecycle and temporary infrastructure failures. */
+  /**
+   * Property logger
+   *
+   * @description
+   * Logs lifecycle and temporary infrastructure failures.
+   *
+   * @type {Logger}
+   * @readonly
+   */
   private readonly logger = new Logger(LeasedOutboxRelay.name);
+
+  /**
+   * Property batch
+   *
+   * @description
+   * Publisher that keeps broker acknowledgement outside the claim and settlement transactions.
+   *
+   * @type {LeasedBatchPublisher}
+   * @readonly
+   */
   private readonly batch: LeasedBatchPublisher;
+
+  /**
+   * Property maintenance
+   *
+   * @description
+   * Independent scheduler for redaction and retention transactions.
+   *
+   * @type {OutboxMaintenanceRunner}
+   * @readonly
+   */
   private readonly maintenance: OutboxMaintenanceRunner;
+
+  /**
+   * Property state
+   *
+   * @description
+   * Current admission and settlement permissions during shutdown.
+   *
+   * @type {RelayState}
+   */
   private state: RelayState = 'open';
+
+  /**
+   * Property timer
+   *
+   * @description
+   * Next polling wake-up, canceled when shutdown starts.
+   *
+   * @type {NodeJS.Timeout | undefined}
+   */
   private timer: NodeJS.Timeout | undefined;
+
+  /**
+   * Property activeBatch
+   *
+   * @description
+   * In-flight batch shared by callers until its publication and settlement finish.
+   *
+   * @type {Promise<RelayBatch> | undefined}
+   */
   private activeBatch: Promise<RelayBatch> | undefined;
+
+  /**
+   * Property failedPasses
+   *
+   * @description
+   * Consecutive relay-wide failures used to calculate the next polling delay.
+   *
+   * @type {number}
+   */
   private failedPasses: number = 0;
   // #endregion
 
   // #region Constructor
-  /** Shares the runtime publisher and uses its timeout to size the lease. */
+  /**
+   * Constructor
+   *
+   * @description
+   * Shares the runtime publisher and uses its timeout to size the lease.
+   *
+   * @param {SystemTransactionRunner<DatabaseSchema>} system - Runs claim, settlement and maintenance transactions.
+   * @param {EventPublisher} publisher - Publishes using the route stored by the writer.
+   * @param {ResolvedOutboxRelayOptions} options - Resolved lease, polling, retention and shutdown configuration.
+   * @param {ResolvedMessagingOptions | undefined} messaging - Messaging configuration supplying the publish timeout and restricted route names.
+   * @constructor
+   */
   public constructor(
     private readonly system: SystemTransactionRunner<DatabaseSchema>,
     publisher: EventPublisher,
@@ -79,14 +166,23 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
   // #endregion
 
   // #region Methods
-  /** Requires the service-owned additive migration before starting the background relay. */
+  /**
+   * Method onApplicationBootstrap
+   *
+   * @description
+   * Requires both validated lease checks and the expected expiry index before polling.
+   *
+   * @returns {Promise<void>} Resolves once checks have completed and polling is scheduled when enabled.
+   */
   public async onApplicationBootstrap(): Promise<void> {
     if (!this.options.autoStart) {
       return;
     }
     const migrated: boolean = await this.system.run((tx) => hasOutboxLeaseSchema(tx.client));
     if (!migrated) {
-      throw new Error('Apply the service outbox lease migration before enabling the relay.');
+      throw new Error(
+        'Apply the service outbox lease migration before enabling the relay. Both checks and the expiry index must be valid and the index must match the expected definition.',
+      );
     }
     if (this.state === 'open') {
       this.schedule(0);
@@ -94,7 +190,14 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
     }
   }
 
-  /** Stops taking reservations and gives the current pass its shutdown grace to finish. */
+  /**
+   * Method beforeApplicationShutdown
+   *
+   * @description
+   * Stops taking reservations and gives the current pass its shutdown grace to finish.
+   *
+   * @returns {Promise<void>} Resolves when active work settles or the shutdown grace expires.
+   */
   public async beforeApplicationShutdown(): Promise<void> {
     if (this.state !== 'open') {
       return;
@@ -119,7 +222,16 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
     }
   }
 
-  /** Publishes and settles one pass, including when automatic polling is disabled. */
+  /**
+   * Method publishPending
+   *
+   * @description
+   * Publishes and settles one pass with the migrated schema, even without automatic polling.
+   * Callers in the same process share a pass until it settles.
+   *
+   * @returns {Promise<RelayPass>} Shared pass outcome after the current batch settles.
+   * @throws When shutdown has started or the caller holds an active database transaction.
+   */
   public async publishPending(): Promise<RelayPass> {
     if (this.state !== 'open') {
       throw new Error('The outbox relay is shutting down.');
@@ -128,6 +240,14 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
     return (await this.runBatch()).result;
   }
 
+  /**
+   * Method runBatch
+   *
+   * @description
+   * Starts a batch only when no concurrent caller is already running one in this process.
+   *
+   * @returns {Promise<RelayBatch>} Shared promise for the current or newly created batch.
+   */
   private runBatch(): Promise<RelayBatch> {
     this.activeBatch ??= this.batch
       .run(() => this.state)
@@ -137,6 +257,14 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
     return this.activeBatch;
   }
 
+  /**
+   * Method schedule
+   *
+   * @description
+   * Schedules the next poll only while admission remains open.
+   *
+   * @param {number} delayMs - Milliseconds before the next automatic pass.
+   */
   private schedule(delayMs: number): void {
     if (this.state !== 'open') {
       return;
@@ -147,6 +275,14 @@ export class LeasedOutboxRelay implements OnApplicationBootstrap, BeforeApplicat
     }, delayMs);
   }
 
+  /**
+   * Method tick
+   *
+   * @description
+   * Runs a shared batch and chooses the next polling interval from its outcome.
+   *
+   * @returns {Promise<void>} Resolves after recording the outcome and scheduling the next permitted poll.
+   */
   private async tick(): Promise<void> {
     let batch: RelayBatch | undefined;
     try {

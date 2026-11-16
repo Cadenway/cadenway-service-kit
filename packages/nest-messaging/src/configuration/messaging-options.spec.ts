@@ -177,6 +177,33 @@ describe('messaging options', () => {
     ]);
   });
 
+  describe.each(['publishTimeoutMs', 'shutdownTimeoutMs', 'rebuildTimeoutMs'] as const)(
+    '%s',
+    (option) => {
+      it.each([1, 2_147_483_647])('accepts %s ms', (delay) => {
+        const options = resolveMessagingOptions({
+          service: 'task-service',
+          servers: 'nats://nats:4222',
+          [option]: delay,
+        });
+        expect(options[option]).toBe(delay);
+      });
+
+      it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+        'rejects %s ms',
+        (delay) => {
+          expect(() =>
+            resolveMessagingOptions({
+              service: 'task-service',
+              servers: 'nats://nats:4222',
+              [option]: delay,
+            }),
+          ).toThrow(`The ${option} of MessagingModule must be an integer`);
+        },
+      );
+    },
+  );
+
   it('refuses a missing service name, a missing server and a pending limit below one', () => {
     expect(() => resolveMessagingOptions({ service: '', servers: 'nats://nats:4222' })).toThrow(
       /service name/u,

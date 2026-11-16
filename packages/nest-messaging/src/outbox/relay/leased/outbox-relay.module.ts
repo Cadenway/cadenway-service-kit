@@ -12,27 +12,69 @@ import {
   type ResolvedOutboxRelayOptions,
 } from './outbox-relay-options.js';
 
-/** Dependencies and factory for injected lease relay settings. */
+/**
+ * Interface OutboxRelayModuleAsyncOptions
+ *
+ * @description
+ * Dependencies and factory for injected lease relay settings.
+ */
 export interface OutboxRelayModuleAsyncOptions {
   // #region Properties
-  /** Modules exporting the factory's non-global dependencies. */
+  /**
+   * Property imports
+   *
+   * @description
+   * Modules exporting the factory's non-global dependencies.
+   *
+   * @type {ModuleMetadata['imports'] | undefined}
+   * @readonly
+   */
   readonly imports?: ModuleMetadata['imports'];
 
-  /** Provider injection tokens for the factory. */
+  /**
+   * Property inject
+   *
+   * @description
+   * Provider injection tokens for the factory.
+   *
+   * @type {FactoryProvider['inject'] | undefined}
+   * @readonly
+   */
   readonly inject?: FactoryProvider['inject'];
 
-  /** Builds options with the injected dependencies. */
+  /**
+   * Property useFactory
+   *
+   * @description
+   * Builds options with the injected dependencies.
+   *
+   * @type {(...dependencies: never[]) => OutboxRelayOptions | Promise<OutboxRelayOptions>}
+   * @readonly
+   */
   readonly useFactory: (
     ...dependencies: never[]
   ) => OutboxRelayOptions | Promise<OutboxRelayOptions>;
   // #endregion
 }
 
-/** Wires only the lease-based relay and its retention work. */
+/**
+ * Class OutboxRelayModule
+ *
+ * @description
+ * Wires only the lease-based relay and its retention work.
+ */
 @Module({})
 export class OutboxRelayModule {
   // #region Methods
-  /** Installs the relay with literal configuration. */
+  /**
+   * Method forRoot
+   *
+   * @description
+   * Installs the relay with literal configuration.
+   *
+   * @param {OutboxRelayOptions} options - Explicit relay settings with component defaults for omitted fields.
+   * @returns {DynamicModule} Global module exposing the lease-based relay.
+   */
   public static forRoot(options: OutboxRelayOptions = {}): DynamicModule {
     return {
       module: OutboxRelayModule,
@@ -45,7 +87,15 @@ export class OutboxRelayModule {
     };
   }
 
-  /** Installs the relay with injected configuration. */
+  /**
+   * Method forRootAsync
+   *
+   * @description
+   * Installs the relay with injected configuration.
+   *
+   * @param {OutboxRelayModuleAsyncOptions} options - Factory and dependency tokens used to resolve relay settings.
+   * @returns {DynamicModule} Global module resolving relay settings from the injected dependencies.
+   */
   public static forRootAsync(options: OutboxRelayModuleAsyncOptions): DynamicModule {
     return {
       module: OutboxRelayModule,

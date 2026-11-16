@@ -61,7 +61,7 @@ const logger: Logger = new Logger('ProblemFilter');
  * Tells whether a WebSocket client can receive an event.
  *
  * @param {unknown} client - Client of the message.
- * @returns {boolean} `true` when it has an `emit` method.
+ * @returns {client is ProblemSocket} `true` when it has an `emit` method.
  */
 function isProblemSocket(client: unknown): client is ProblemSocket {
   return (
@@ -96,7 +96,7 @@ interface ProblemResponse {
    * @description
    * Error read by the request logger, which then writes it on the completion line.
    *
-   * @type {unknown}
+   * @type {unknown | undefined}
    */
   err?: unknown;
   // #endregion
@@ -282,7 +282,6 @@ export class ProblemFilter implements ExceptionFilter {
    *
    * @param {unknown} exception - Error thrown while handling the request.
    * @param {ArgumentsHost} host - Execution context of the request.
-   * @returns {void}
    * @throws {unknown} The exception itself, outside HTTP and WebSocket.
    */
   public catch(exception: unknown, host: ArgumentsHost): void {
@@ -317,7 +316,6 @@ export class ProblemFilter implements ExceptionFilter {
    *
    * @param {unknown} exception - Error thrown while handling the message.
    * @param {ArgumentsHost} host - Execution context of the message.
-   * @returns {void}
    */
   private emitToSocket(exception: unknown, host: ArgumentsHost): void {
     const problem: Problem = toProblem(exception);

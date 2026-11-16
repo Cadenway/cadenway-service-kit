@@ -17,14 +17,7 @@ export function waitForRetry(delayMs: number, stop: AbortSignal): Promise<void> 
     const timer: NodeJS.Timeout = setTimeout(done, delayMs);
     stop.addEventListener('abort', done, { once: true });
 
-    /**
-     * Function done
-     *
-     * @description
-     * Disposes of the wait before resolving.
-     *
-     * @returns {void}
-     */
+    /** Disposes of the wait before resolving. */
     function done(): void {
       clearTimeout(timer);
       stop.removeEventListener('abort', done);

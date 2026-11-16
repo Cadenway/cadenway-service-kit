@@ -12,6 +12,14 @@ import type {
 import { CLOSED_SCOPE_MESSAGE, createTransactionDatabase } from './transaction-database.js';
 import { transactionMetrics } from './transaction-metrics.js';
 
+/**
+ * Constant BEGIN_STATEMENTS
+ *
+ * @description
+ * Maps requested isolation levels to fixed SQL, so the caller never assembles isolation clauses.
+ *
+ * @type {Readonly<Record<'default' | NonNullable<TransactionOptions['isolationLevel']>, string>>}
+ */
 const BEGIN_STATEMENTS: Readonly<
   Record<'default' | NonNullable<TransactionOptions['isolationLevel']>, string>
 > = {
@@ -21,10 +29,22 @@ const BEGIN_STATEMENTS: Readonly<
   serializable: 'BEGIN ISOLATION LEVEL SERIALIZABLE',
 };
 
-/** PostgreSQL answered COMMIT with a rollback because the transaction was already aborted. */
+/**
+ * Class TransactionAbortedError
+ *
+ * @description
+ * PostgreSQL answered COMMIT with a rollback because the transaction was already aborted.
+ */
 export class TransactionAbortedError extends Error {
   // #region Constructor
-  /** Reports the unexpected rollback to callers of the runner. */
+  /**
+   * Constructor
+   *
+   * @description
+   * Reports the unexpected rollback to callers of the runner.
+   *
+   * @constructor
+   */
   public constructor() {
     super(
       'The transaction was rolled back at commit: a statement failed inside it and its error was not propagated.',
@@ -34,6 +54,17 @@ export class TransactionAbortedError extends Error {
   // #endregion
 }
 
+/**
+ * Function acquireConnection
+ *
+ * @description
+ * Checks out a PostgreSQL connection and records the elapsed time even if checkout fails.
+ *
+ * @param {Pool} pool - PostgreSQL pool that owns the checked-out connection.
+ * @param {TransactionKind} kind - Tenant or system transaction kind, also recorded on transaction metrics.
+ * @param {Histogram} poolAcquireDuration - Histogram used to record checkout duration in milliseconds.
+ * @returns {Promise<PoolClient>} A checked-out client that the transaction executor must release.
+ */
 async function acquireConnection(
   pool: Pool,
   kind: TransactionKind,
@@ -51,8 +82,19 @@ async function acquireConnection(
 }
 
 /**
+ * Function executeTransaction
+ *
+ * @description
  * Acquires a connection, sets its transaction-local RLS parameters, and runs the callback.
  * Invalidates the scope before commit or rollback and discards a connection that failed.
+ *
+ * @param {Pool} pool - PostgreSQL pool that owns the checked-out connection.
+ * @param {TSchema | undefined} schema - Optional Drizzle schema for the scoped database.
+ * @param {TransactionKind} kind - Tenant or system transaction kind, also recorded on transaction metrics.
+ * @param {string | null} organizationId - Organization whose data is scoped, or null for system work.
+ * @param {(scope: TransactionScope<TSchema>) => Promise<TResult>} work - Callback that runs with the checked-out transaction scope.
+ * @param {TransactionOptions} options - Isolation and read-only requirements for the transaction.
+ * @returns {Promise<TResult>} The callback result after commit, or a rejection after rollback.
  */
 export async function executeTransaction<TSchema extends DatabaseSchema, TResult>(
   pool: Pool,
@@ -94,7 +136,13 @@ export async function executeTransaction<TSchema extends DatabaseSchema, TResult
       kind,
       organizationId,
     });
-    const result: TResult = await runInTransactionContext(scope, options, isOpen, work);
+    const result: TResult = await runInTransactionContext(
+      scope,
+      { pool, schema },
+      options,
+      isOpen,
+      work,
+    );
     open = false;
     const committed: { command: string } = await connection.query('COMMIT');
     if (committed.command === 'ROLLBACK') {

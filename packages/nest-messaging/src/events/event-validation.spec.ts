@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { ATELIER_NORD, CAMILLE, eventSchemas, type TaskUpdatedV1 } from '../testing/events.js';
 import type { EventSchemas } from './event-envelope.js';
-import { EventValidationError, UnknownEventError, validateEvent } from './event-validation.js';
+import { EventValidationError, UnknownEventError } from '../index.js';
+import { validateEvent } from './event-validation.js';
 
 /**
  * Constant VALID

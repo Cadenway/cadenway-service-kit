@@ -3,51 +3,153 @@ import { randomUUID } from 'node:crypto';
 import type { TransactionClient } from '@cadenway/nest-common/database';
 
 import { REDACTED_PAYLOAD_SQL } from '../../maintenance/outbox-redaction.js';
+import { inspectOutboxLeaseSchema } from '../../schema/inspect-outbox-lease-schema.js';
 import type { PendingRow } from '../outbox-relay-store.js';
 
-/** An outbox row reserved until the recorded deadline. */
+/**
+ * Interface LeasedRow
+ *
+ * @description
+ * An outbox row reserved until the recorded deadline.
+ */
 export interface LeasedRow extends PendingRow {
   // #region Properties
-  /** Token assigned by the reservation transaction. */
+  /**
+   * Property lease_token
+   *
+   * @description
+   * Token assigned by the reservation transaction.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly lease_token: string;
 
-  /** Age in milliseconds at the time of this reservation. */
+  /**
+   * Property queued_ms
+   *
+   * @description
+   * Age in milliseconds at the time of this reservation.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly queued_ms: number;
   // #endregion
 }
 
-/** The only changes allowed to follow an attempt, fenced by its lease token. */
+/**
+ * Interface LeaseOutcome
+ *
+ * @description
+ * The only changes allowed to follow an attempt, fenced by its lease token.
+ */
 export interface LeaseOutcome {
   // #region Properties
-  /** Event identifier of the reserved row. */
+  /**
+   * Property id
+   *
+   * @description
+   * Event identifier of the reserved row.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly id: string;
+
+  /**
+   * Property lease_token
+   *
+   * @description
+   * Reservation token that prevents a stale relay from settling a reclaimed row.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly lease_token: string;
+
+  /**
+   * Property status
+   *
+   * @description
+   * State to persist once this attempt settles.
+   *
+   * @type {'pending' | 'sent' | 'failed'}
+   * @readonly
+   */
   readonly status: 'pending' | 'sent' | 'failed';
+
+  /**
+   * Property attempts
+   *
+   * @description
+   * Accumulated row-specific attempts to record after settlement.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly attempts: number;
+
+  /**
+   * Property retry_ms
+   *
+   * @description
+   * Delay relative to settlement before the row can be claimed again, in milliseconds.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly retry_ms: number;
+
+  /**
+   * Property last_error
+   *
+   * @description
+   * Safe error class for the most recent failure, or null on success.
+   *
+   * @type {string | null}
+   * @readonly
+   */
   readonly last_error: string | null;
+
+  /**
+   * Property redact
+   *
+   * @description
+   * Whether settlement replaces a restricted payload with its envelope and redaction marker.
+   *
+   * @type {boolean}
+   * @readonly
+   */
   readonly redact: boolean;
   // #endregion
 }
 
-/** Checks the service has installed the additive lease migration. */
+/**
+ * Function hasOutboxLeaseSchema
+ *
+ * @description
+ * Checks that both constraints and the expected expiry index are valid for the active outbox.
+ *
+ * @param {TransactionClient} client - System transaction client whose search path selects the active outbox table.
+ * @returns {Promise<boolean>} Whether the active outbox is ready for the lease relay.
+ */
 export async function hasOutboxLeaseSchema(client: TransactionClient): Promise<boolean> {
-  const { rows }: { rows: unknown[] } = await client.query(
-    `select exists (
-       select 1 from pg_catalog.pg_constraint
-        where conrelid = 'outbox_events'::regclass and conname = 'outbox_events_lease_check'
-          and convalidated
-     ) and exists (
-       select 1 from pg_catalog.pg_index as indexes
-       join pg_catalog.pg_class as names on names.oid = indexes.indexrelid
-        where indexes.indrelid = 'outbox_events'::regclass and indexes.indisvalid
-          and names.relname = 'outbox_events_lease_expiry_index'
-     ) as present`,
-  );
-  return (rows[0] as { present?: boolean } | undefined)?.present === true;
+  const schema = await inspectOutboxLeaseSchema(client, 'outbox_events');
+  return schema?.index_state === 'valid' && schema.checks_valid;
 }
 
-/** Claims up to the available slots, replacing tokens of expired reservations. */
+/**
+ * Function claimOutboxRows
+ *
+ * @description
+ * Claims up to the available slots, replacing tokens of expired reservations.
+ *
+ * @param {TransactionClient} client - System transaction client reserving rows and assigning new tokens.
+ * @param {number} limit - Maximum number of active publication slots to fill.
+ * @param {number} leaseMs - Duration for which the new tokens are valid, in milliseconds.
+ * @returns {Promise<readonly LeasedRow[]>} Claimed rows and their new reservation tokens.
+ */
 export async function claimOutboxRows(
   client: TransactionClient,
   limit: number,
@@ -79,7 +181,16 @@ export async function claimOutboxRows(
   return rows as LeasedRow[];
 }
 
-/** Settles current leases as a batch and returns the ids actually updated. */
+/**
+ * Function settleOutboxLeases
+ *
+ * @description
+ * Settles current leases as a batch and returns the ids actually updated.
+ *
+ * @param {TransactionClient} client - System transaction client applying the fenced updates.
+ * @param {readonly LeaseOutcome[]} outcomes - Outcomes keyed by event ID and by the token held when publication started.
+ * @returns {Promise<ReadonlySet<string>>} Event IDs whose outcomes were saved under still-valid lease tokens.
+ */
 export async function settleOutboxLeases(
   client: TransactionClient,
   outcomes: readonly LeaseOutcome[],
@@ -109,7 +220,16 @@ export async function settleOutboxLeases(
   return new Set((rows as { id: string }[]).map(({ id }: { id: string }) => id));
 }
 
-/** Restores an expired batch for the legacy relay during rollback. */
+/**
+ * Function releaseExpiredOutboxLeases
+ *
+ * @description
+ * Restores an expired batch for the legacy relay during rollback.
+ *
+ * @param {TransactionClient} client - System transaction client releasing expired reservations.
+ * @param {number} limit - Maximum rows to return to pending.
+ * @returns {Promise<number>} Number of expired reservations returned to pending.
+ */
 export async function releaseExpiredOutboxLeases(
   client: TransactionClient,
   limit: number,

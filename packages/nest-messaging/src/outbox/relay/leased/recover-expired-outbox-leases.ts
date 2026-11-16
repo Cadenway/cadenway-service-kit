@@ -3,11 +3,16 @@ import type { DatabaseSchema, TransactionScope } from '@cadenway/nest-common/dat
 import { releaseExpiredOutboxLeases } from './outbox-lease-store.js';
 
 /**
- * Returns up to one batch of expired outbox leases to the pending state for rollback.
+ * Function recoverExpiredOutboxLeases
+ *
+ * @description
+ * Returns one batch of expired leases to pending in the caller's system transaction. Use it
+ * before re-enabling the legacy relay during rollback.
  *
  * @param {TransactionScope<TDatabase>} tx - System transaction of the service database.
- * @param {number} [limit=100] - Maximum number of rows to release.
+ * @param {number} limit - Maximum rows to release. Defaults to 100 and accepts integers from 1 to 1000.
  * @returns {Promise<number>} Number of leases released by this transaction.
+ * @throws When the transaction is not a system transaction or the limit is out of range.
  */
 export async function recoverExpiredOutboxLeases<TDatabase extends DatabaseSchema>(
   tx: TransactionScope<TDatabase>,

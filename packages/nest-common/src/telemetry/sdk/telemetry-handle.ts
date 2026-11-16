@@ -15,7 +15,7 @@ export type TelemetryShutdown = () => Promise<void>;
  * Holds the shutdown function of the running telemetry, if any. Kept apart from the SDK so the
  * main entry point can flush telemetry at shutdown without importing the OpenTelemetry SDK.
  *
- * @type {{ shutdown: TelemetryShutdown | undefined }}
+ * @type {{ shutdown: TelemetryShutdown | undefined; }}
  */
 const registry: { shutdown: TelemetryShutdown | undefined } = { shutdown: undefined };
 
@@ -26,7 +26,6 @@ const registry: { shutdown: TelemetryShutdown | undefined } = { shutdown: undefi
  * Records how to stop the telemetry that was just started, or clears the record with `undefined`.
  *
  * @param {TelemetryShutdown | undefined} shutdown - Function that flushes and stops telemetry.
- * @returns {void}
  */
 export function registerTelemetryShutdown(shutdown: TelemetryShutdown | undefined): void {
   registry.shutdown = shutdown;

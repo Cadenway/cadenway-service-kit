@@ -8,7 +8,7 @@ import pg from 'pg';
  * Injection token of the `pg` pool of the service. The transaction runners are the normal way
  * in; the pool is exposed for health checks and for closing.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const DATABASE_POOL: unique symbol = Symbol('cadenway.database.pool');
 
@@ -29,7 +29,7 @@ export const DEFAULT_POOL_SIZE: number = 5;
  * Creates the pool described by the options. No connection is opened before the first
  * transaction.
  *
- * @param {object} options - Connection string and pool settings.
+ * @param {{ readonly connectionString: string; readonly poolSize?: number; readonly connectionTimeoutMs?: number; readonly applicationName?: string; }} options - Connection string and pool settings.
  * @returns {pg.Pool} The pool of the service.
  */
 export function createPool(options: {

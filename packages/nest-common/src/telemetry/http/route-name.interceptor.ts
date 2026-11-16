@@ -21,7 +21,6 @@ import { routePatternOf } from '../../http/routing/route.js';
  *
  * @param {string} method - HTTP method of the request.
  * @param {string} route - Route pattern, such as `/internal/v1/tasks/:taskId`.
- * @returns {void}
  */
 export function nameHttpSpan(method: string, route: string): void {
   const metadata: RPCMetadata | undefined = getRPCMetadata(otelContext.active());

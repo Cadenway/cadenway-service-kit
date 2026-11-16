@@ -25,11 +25,9 @@ import { ProblemException } from '../../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import type { InternalPrincipal } from '../context/internal-principal.js';
 import { setRequestOrganizationContext } from '../context/request-organization-context.js';
-import {
-  InternalTokenSigner,
-  InternalTokenVerifier,
-  type Ed25519PrivateJwk,
-} from './internal-token.js';
+import { InternalTokenSigner } from './internal-token-signer.js';
+import { InternalTokenVerifier } from './internal-token-verifier.js';
+import type { Ed25519PrivateJwk } from './internal-token.js';
 import {
   getOrganizationContext,
   type OrganizationContext,

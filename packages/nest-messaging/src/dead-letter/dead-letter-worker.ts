@@ -10,7 +10,7 @@ import {
 import { z } from 'zod';
 
 import { MessagingConnection } from '../connection/messaging-connection.js';
-import { errorClassOf } from '../observability/error-class.js';
+import { errorCategoryOf } from '../observability/error-class.js';
 import {
   MESSAGING_OPTIONS,
   type ResolvedMessagingOptions,
@@ -36,8 +36,7 @@ import {
  * Type DeadLetterReason
  *
  * @description
- * Why a message became a dead letter: a consumer delivered it as many times as allowed without
- * an acknowledgement, or a consumer terminated it because it can never be handled.
+ * Whether a consumer exhausted its delivery attempts or terminated the message.
  *
  * @type {'max-deliveries' | 'terminated'}
  */
@@ -151,20 +150,19 @@ const KNOWN_TERMINATION_REASONS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * Function boundedReason
+ * Function loggedTerminationReason
  *
  * @description
- * Makes a termination reason safe to log: a reason the kit sends is kept, any other one, which
- * another client chose, is cut to 64 printable characters.
+ * Preserves the kit's termination reasons and classifies external reasons without logging them.
  *
- * @param {string | undefined} reason - Reason of the advisory.
- * @returns {string | undefined} The reason to log, or `undefined` when there is none.
+ * @param {string | undefined} reason - Reason recorded by the terminating consumer, if any.
+ * @returns {string | undefined} A kit reason, a fixed label for an external reason, or undefined when none was supplied.
  */
-export function boundedReason(reason: string | undefined): string | undefined {
+export function loggedTerminationReason(reason: string | undefined): string | undefined {
   if (reason === undefined || KNOWN_TERMINATION_REASONS.has(reason)) {
     return reason;
   }
-  return reason.replace(/[^\x20-\x7e]/gu, '?').slice(0, 64);
+  return 'external-termination';
 }
 
 /**
@@ -200,6 +198,118 @@ interface DeadLetter {
 }
 
 /**
+ * Constant MAX_PENDING_ADVISORIES
+ *
+ * @description
+ * Maximum number of advisories waiting behind an active copy on one subscription.
+ *
+ * @type {number}
+ */
+const MAX_PENDING_ADVISORIES: number = 1_000;
+/**
+ * Constant MAX_PENDING_BYTES
+ *
+ * @description
+ * Maximum aggregate size of advisory payloads waiting on one subscription, in bytes.
+ *
+ * @type {number}
+ */
+const MAX_PENDING_BYTES: number = 16 * 1024 * 1024;
+/**
+ * Constant decoder
+ *
+ * @description
+ * Decodes advisory payloads as UTF-8 before interpreting their JSON.
+ *
+ * @type {TextDecoder}
+ */
+const decoder: TextDecoder = new TextDecoder();
+
+/**
+ * Interface AdvisorySource
+ *
+ * @description
+ * Tracks pending advisories and the serial copy loop of one subscription.
+ */
+interface AdvisorySource {
+  // #region Properties
+  /**
+   * Property stream
+   *
+   * @description
+   * Stream whose messages are eligible for the copy.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly stream: string;
+
+  /**
+   * Property reason
+   *
+   * @description
+   * Why JetStream emitted the advisory.
+   *
+   * @type {DeadLetterReason}
+   * @readonly
+   */
+  readonly reason: DeadLetterReason;
+
+  /**
+   * Property subject
+   *
+   * @description
+   * Subject used when reporting the subscription's health.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly subject: string;
+
+  /**
+   * Property pending
+   *
+   * @description
+   * Detached payloads waiting for the active copy to finish.
+   *
+   * @type {Uint8Array[]}
+   * @readonly
+   */
+  readonly pending: Uint8Array[];
+
+  /**
+   * Property pendingBytes
+   *
+   * @description
+   * Total size of the queued payloads in bytes.
+   *
+   * @type {number}
+   */
+  pendingBytes: number;
+
+  /**
+   * Property dropped
+   *
+   * @description
+   * Number of arrivals refused since subscription.
+   *
+   * @type {number}
+   */
+  dropped: number;
+
+  /**
+   * Property active
+   *
+   * @description
+   * Completion of the current copy loop, if active.
+   *
+   * @type {Promise<void> | undefined}
+   */
+  active: Promise<void> | undefined;
+  // #endregion
+}
+
+/**
  * Class DeadLetterWorker
  *
  * @description
@@ -216,8 +326,7 @@ interface DeadLetter {
  * replicas share the advisories through a queue group, and the `Nats-Msg-Id` of a dead
  * letter is derived from the consumer and the sequence, so an advisory seen twice is stored
  * once. A copy that fails is tried five times over about two minutes. Advisories are plain NATS
- * messages: one published while no worker is connected is lost, and the message then stays in
- * its stream until it expires.
+ * messages and may be lost while no worker is connected or an admission limit is reached.
  */
 @Injectable()
 export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicationShutdown {
@@ -245,15 +354,15 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
   private readonly subscriptions: Subscription[] = [];
 
   /**
-   * Property running
+   * Property sources
    *
    * @description
-   * Loops of the running worker, one per advisory subject.
+   * One bounded intake queue per advisory subject.
    *
-   * @type {Promise<void>[]}
+   * @type {AdvisorySource[]}
    * @readonly
    */
-  private readonly running: Promise<void>[] = [];
+  private readonly sources: AdvisorySource[] = [];
 
   /**
    * Property stop
@@ -266,7 +375,15 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
    */
   private readonly stop: AbortController = new AbortController();
 
-  /** Aborted when the grace period for active copies expires. */
+  /**
+   * Property abandon
+   *
+   * @description
+   * Aborted when the grace period for active copies expires.
+   *
+   * @type {AbortController}
+   * @readonly
+   */
   private readonly abandon: AbortController = new AbortController();
   // #endregion
 
@@ -311,9 +428,31 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
         ['terminated', terminatedAdvisorySubject(stream)],
       ];
       for (const [reason, subject] of sources) {
-        const subscription: Subscription = this.connection.nats.subscribe(subject, { queue });
+        const source: AdvisorySource = {
+          stream,
+          reason,
+          subject,
+          pending: [],
+          pendingBytes: 0,
+          dropped: 0,
+          active: undefined,
+        };
+        // A callback bypasses the NATS iterator's unbounded message buffer.
+        const subscription: Subscription = this.connection.nats.subscribe(subject, {
+          queue,
+          callback: (error: Error | null, message: Msg): void => {
+            if (error !== null) {
+              this.logger.error(
+                { stream, reason, errorClass: errorCategoryOf(error) },
+                'dead-letter subscription failed',
+              );
+              return;
+            }
+            this.accept(source, message.data);
+          },
+        });
         this.subscriptions.push(subscription);
-        this.running.push(this.work(stream, reason, subscription));
+        this.sources.push(source);
       }
     }
     await this.connection.flush();
@@ -324,8 +463,8 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
    * Method beforeApplicationShutdown
    *
    * @description
-   * Unsubscribes without a broker round trip and stops retrying. Active copies may finish
-   * within the shutdown budget. The connection's later shutdown hook owns the final drain.
+   * Stops intake and retries, drops queued advisories and lets active copies finish within
+   * the shutdown budget. The connection's later shutdown hook owns the final drain.
    *
    * @returns {Promise<void>} Resolves once the worker stopped.
    */
@@ -334,7 +473,15 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
     for (const subscription of this.subscriptions) {
       subscription.unsubscribe();
     }
-    if (this.running.length === 0) {
+    const running: Promise<void>[] = [];
+    for (const source of this.sources) {
+      source.pending.length = 0;
+      source.pendingBytes = 0;
+      if (source.active !== undefined) {
+        running.push(source.active);
+      }
+    }
+    if (running.length === 0) {
       return;
     }
 
@@ -346,7 +493,7 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
     });
     try {
       const outcome: 'stopped' | 'timeout' = await Promise.race([
-        Promise.allSettled(this.running).then((): 'stopped' => 'stopped'),
+        Promise.allSettled(running).then((): 'stopped' => 'stopped'),
         deadline,
       ]);
       if (outcome === 'timeout') {
@@ -362,33 +509,65 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
   }
 
   /**
+   * Method accept
+   *
+   * @description
+   * Reserves space synchronously so overload cannot accumulate in the NATS callback.
+   *
+   * @param {AdvisorySource} source - Queue and budget associated with the advisory subscription.
+   * @param {Uint8Array} data - Wire payload used to enforce the byte budget before copying data.
+   */
+  private accept(source: AdvisorySource, data: Uint8Array): void {
+    if (this.stop.signal.aborted) {
+      return;
+    }
+    if (
+      source.pending.length >= MAX_PENDING_ADVISORIES ||
+      source.pendingBytes + data.byteLength > MAX_PENDING_BYTES
+    ) {
+      source.dropped += 1;
+      if (source.dropped === 1 || source.dropped % MAX_PENDING_ADVISORIES === 0) {
+        this.logger.warn(
+          { subject: source.subject, dropped: source.dropped },
+          'dead-letter advisory queue is full: dropped',
+        );
+      }
+      return;
+    }
+    source.pending.push(new Uint8Array(data));
+    source.pendingBytes += data.byteLength;
+    source.active ??= Promise.resolve().then(() => this.work(source));
+  }
+
+  /**
    * Method work
    *
    * @description
-   * Copies the dead letter of each advisory of one subject, one at a time.
+   * Copies each accepted advisory in delivery order, with at most one active copy per subject.
    *
-   * @param {string} stream - Stream whose advisories the subscription receives.
-   * @param {DeadLetterReason} reason - What the advisories of this subject report.
-   * @param {Subscription} subscription - Subscription on the advisory subject.
-   * @returns {Promise<void>} Resolves when the subscription closed.
+   * @param {AdvisorySource} source - Subscription queue and metadata for the copies it schedules.
+   * @returns {Promise<void>} Resolves when the queue drains or shutdown stops admission.
    */
-  private async work(
-    stream: string,
-    reason: DeadLetterReason,
-    subscription: Subscription,
-  ): Promise<void> {
+  private async work(source: AdvisorySource): Promise<void> {
     try {
-      for await (const message of subscription as AsyncIterable<Msg>) {
-        if (this.stop.signal.aborted) {
-          break;
+      while (!this.stop.signal.aborted) {
+        const data: Uint8Array | undefined = source.pending.shift();
+        if (data === undefined) {
+          return;
         }
-        const advisory: ConsumerAdvisory | undefined = this.parse(stream, message);
+        source.pendingBytes -= data.byteLength;
+        const advisory: ConsumerAdvisory | undefined = this.parse(source, data);
         if (advisory !== undefined) {
-          await this.copyWithRetries({ reason, advisory });
+          await this.copyWithRetries({ reason: source.reason, advisory });
         }
       }
     } catch (error) {
-      this.logger.error({ stream, reason, err: error }, 'dead-letter subscription failed');
+      this.logger.error(
+        { subject: source.subject, errorClass: errorCategoryOf(error) },
+        'dead-letter copy loop failed',
+      );
+    } finally {
+      source.active = undefined;
     }
   }
 
@@ -396,22 +575,22 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
    * Method parse
    *
    * @description
-   * Reads the fields of an advisory of the expected stream.
+   * Reads the required fields of an advisory and verifies it came from the expected stream.
    *
-   * @param {string} expectedStream - Stream whose advisories the subscription receives.
-   * @param {Msg} message - Advisory published by JetStream.
-   * @returns {ConsumerAdvisory | undefined} The fields, or `undefined` for an unreadable advisory, which is logged.
+   * @param {AdvisorySource} source - Subscription whose stream the advisory must reference.
+   * @param {Uint8Array} data - UTF-8 JSON advisory payload.
+   * @returns {ConsumerAdvisory | undefined} Validated metadata or undefined when the advisory is malformed or refers to another stream.
    */
-  private parse(expectedStream: string, message: Msg): ConsumerAdvisory | undefined {
+  private parse(source: AdvisorySource, data: Uint8Array): ConsumerAdvisory | undefined {
     let decoded: unknown;
     try {
-      decoded = JSON.parse(message.string());
+      decoded = JSON.parse(decoder.decode(data));
     } catch {
       decoded = undefined;
     }
     const parsed: z.ZodSafeParseResult<ConsumerAdvisory> = advisorySchema.safeParse(decoded);
-    if (!parsed.success || parsed.data.stream !== expectedStream) {
-      this.logger.error({ subject: message.subject }, 'unreadable consumer advisory');
+    if (!parsed.success || parsed.data.stream !== source.stream) {
+      this.logger.error({ subject: source.subject }, 'unreadable consumer advisory');
       return undefined;
     }
     return parsed.data;
@@ -440,7 +619,7 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
           streamSequence: deadLetter.advisory.stream_seq,
           reason: deadLetter.reason,
           attempt: attempt + 1,
-          errorClass: errorClassOf(error),
+          errorClass: errorCategoryOf(error),
         };
         if (delayMs !== undefined && !this.stop.signal.aborted) {
           this.logger.warn(
@@ -450,7 +629,7 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
           await waitForRetry(delayMs, this.stop.signal);
         }
         if (delayMs === undefined || this.stop.signal.aborted) {
-          this.logger.error({ ...fields, err: error }, 'dead letter could not be copied');
+          this.logger.error(fields, 'dead letter could not be copied');
           return;
         }
       }
@@ -525,7 +704,7 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
         streamSequence,
         deliveries: advisory.deliveries,
         reason,
-        terminationReason: boundedReason(advisory.reason),
+        terminationReason: loggedTerminationReason(advisory.reason),
         payloadDropped: dropPayload,
       },
       'dead letter copied',

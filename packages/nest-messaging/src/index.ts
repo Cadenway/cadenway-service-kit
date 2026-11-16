@@ -33,10 +33,10 @@ export type {
 } from './events/event-envelope.js';
 export {
   EventValidationError,
-  UnknownEventError,
-  validateEvent,
   type EventValidationIssue,
-} from './events/event-validation.js';
+} from './events/event-validation-error.js';
+export { UnknownEventError } from './events/unknown-event-error.js';
+export { validateEvent } from './events/event-validation.js';
 export {
   DEFAULT_DEAD_LETTER_MAX_AGE_DAYS,
   DEFAULT_DEAD_LETTER_MAX_BYTES,
@@ -75,17 +75,14 @@ export {
 } from './transport/event-headers.js';
 export {
   EventPublisher,
-  EventStreamUnavailableError,
   type OutgoingEvent,
   type PublishedEvent,
 } from './publisher/event-publisher.js';
-export {
-  RebuildConsumerUnavailableError,
-  RebuildEmitter,
-  RebuildFlushTimeoutError,
-  RebuildItemError,
-  RebuildRejectedError,
-  type RebuildTarget,
-} from './rebuild/emitter/rebuild-emitter.js';
+export { EventStreamUnavailableError } from './publisher/event-stream-unavailable-error.js';
+export { RebuildConsumerUnavailableError } from './rebuild/emitter/rebuild-consumer-unavailable-error.js';
+export { RebuildEmitter, type RebuildTarget } from './rebuild/emitter/rebuild-emitter.js';
+export { RebuildFlushTimeoutError } from './rebuild/emitter/rebuild-flush-timeout-error.js';
+export { RebuildItemError } from './rebuild/emitter/rebuild-item-error.js';
+export { RebuildRejectedError } from './rebuild/emitter/rebuild-rejected-error.js';
 export type { RebuildRejection } from './rebuild/codec/rebuild-reply-codec.js';
 export { durableConsumerName, eventSubject } from './transport/subjects.js';

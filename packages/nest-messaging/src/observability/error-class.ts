@@ -16,3 +16,25 @@ export function errorClassOf(error: unknown): string {
   const name: string = error.name === 'Error' ? error.constructor.name : error.name;
   return name.slice(0, 100);
 }
+
+/**
+ * Function errorCategoryOf
+ *
+ * @description
+ * Classifies failures without retaining caller-controlled error names or messages.
+ *
+ * @param {unknown} error - Failure value from a handler or broker operation.
+ * @returns {string} Fixed error category for diagnostics without the supplied name or message.
+ */
+export function errorCategoryOf(error: unknown): string {
+  if (error instanceof TypeError) {
+    return 'TypeError';
+  }
+  if (error instanceof RangeError) {
+    return 'RangeError';
+  }
+  if (error instanceof SyntaxError) {
+    return 'SyntaxError';
+  }
+  return error instanceof Error ? 'Error' : 'UnknownError';
+}

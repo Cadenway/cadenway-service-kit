@@ -31,6 +31,7 @@ export interface ZodDto<TValue> {
    * @description
    * Present only so the class can be used as a parameter type; never called.
    *
+   * @returns {TValue} The parsed value type exposed to a controller parameter.
    * @constructor
    */
   new (): TValue;

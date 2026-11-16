@@ -63,6 +63,15 @@ describe('resolveJobsModuleOptions', () => {
     expect(options.queues[0]?.deadLetter).toBe('reminders.dead-letter');
   });
 
+  it.each([0, 1, 2_147_483])('accepts a dead-letter interval of %i seconds', (seconds: number) => {
+    const options: ResolvedJobsModuleOptions = resolveJobsModuleOptions({
+      connection,
+      queues: [],
+      deadLetterCheckIntervalSeconds: seconds,
+    });
+    expect(options.deadLetterCheckIntervalSeconds).toBe(seconds);
+  });
+
   it.each([
     ['no connection', { queues: [] }, /connection is required/],
     ['a connection that names no server', { connection: {}, queues: [] }, /connectionString, or/],
@@ -74,11 +83,26 @@ describe('resolveJobsModuleOptions', () => {
     [
       'a negative dead-letter interval',
       { connection, queues: [], deadLetterCheckIntervalSeconds: -1 },
-      /deadLetterCheckIntervalSeconds must be an integer of at least 0/,
+      /deadLetterCheckIntervalSeconds must be an integer from 0 to 2147483/,
     ],
     [
       'a fractional dead-letter interval',
       { connection, queues: [], deadLetterCheckIntervalSeconds: 0.5 },
+      /deadLetterCheckIntervalSeconds/,
+    ],
+    [
+      'a dead-letter interval beyond the timer range',
+      { connection, queues: [], deadLetterCheckIntervalSeconds: 2_147_484 },
+      /deadLetterCheckIntervalSeconds/,
+    ],
+    [
+      'an infinite dead-letter interval',
+      { connection, queues: [], deadLetterCheckIntervalSeconds: Infinity },
+      /deadLetterCheckIntervalSeconds/,
+    ],
+    [
+      'a NaN dead-letter interval',
+      { connection, queues: [], deadLetterCheckIntervalSeconds: NaN },
       /deadLetterCheckIntervalSeconds/,
     ],
     [

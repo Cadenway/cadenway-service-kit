@@ -199,7 +199,7 @@ export interface ProblemInit {
    * @description
    * Underlying error, kept for the logs and never sent to the caller.
    *
-   * @type {unknown}
+   * @type {unknown | undefined}
    * @readonly
    */
   readonly cause?: unknown;

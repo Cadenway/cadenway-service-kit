@@ -102,7 +102,6 @@ export function parseIfMatch(header: string | undefined): IfMatchCondition {
  * @param {IfMatchCondition} condition - Parsed `If-Match` header.
  * @param {number} currentVersion - Version of the aggregate as stored.
  * @param {VersionCheckOptions} options - Whether the header is mandatory.
- * @returns {void}
  * @throws {ProblemException} 412 `precondition.failed` when the versions differ; 400 `request.if-match-required` when the header is mandatory and absent.
  */
 export function assertVersionMatch(

@@ -24,7 +24,7 @@ export interface HealthModuleAsyncOptions {
    * @description
    * Modules exporting the providers named in `inject`, when they are not global.
    *
-   * @type {ModuleMetadata['imports']}
+   * @type {ModuleMetadata['imports'] | undefined}
    * @readonly
    */
   readonly imports?: ModuleMetadata['imports'];
@@ -36,7 +36,7 @@ export interface HealthModuleAsyncOptions {
    * Tokens of the providers handed to `useFactory`, in order. They must be global or exported by
    * a module listed in `imports`.
    *
-   * @type {FactoryProvider['inject']}
+   * @type {FactoryProvider['inject'] | undefined}
    * @readonly
    */
   readonly inject?: FactoryProvider['inject'];

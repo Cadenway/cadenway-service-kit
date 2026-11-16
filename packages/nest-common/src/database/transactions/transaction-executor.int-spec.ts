@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   runWithOrganizationContext,
@@ -260,6 +260,31 @@ describe('PostgreSQL transactions', () => {
         tenant.run(() => as(OTHER_ORGANIZATION, () => tenant.run(() => Promise.resolve('other')))),
       ),
     ).rejects.toThrow(/another organization/u);
+  });
+
+  it('joins only a runner bound to the same pool and schema instance', async () => {
+    const otherPool: pg.Pool = new pg.Pool({ connectionString: database.appUrl });
+    const schema = {};
+    const outerRunner = new SystemTransactionRunner(pool, schema);
+    const sameDatabase = new SystemTransactionRunner(pool, schema);
+    const differentPool = new SystemTransactionRunner(otherPool, schema);
+    const differentSchema = new SystemTransactionRunner(pool, {});
+    const work = vi.fn(() => Promise.resolve());
+
+    try {
+      await outerRunner.run(async (outer) => {
+        await sameDatabase.run((inner) => {
+          expect(inner).toBe(outer);
+          return Promise.resolve();
+        });
+        await expect(differentPool.run(work)).rejects.toThrow(/same PostgreSQL pool and schema/u);
+        await expect(differentSchema.run(work)).rejects.toThrow(/same PostgreSQL pool and schema/u);
+      });
+      expect(work).not.toHaveBeenCalled();
+      expect(otherPool.totalCount).toBe(0);
+    } finally {
+      await otherPool.end();
+    }
   });
 
   it('refuses to start without an organization or with an id that is not a UUID', async () => {

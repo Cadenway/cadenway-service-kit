@@ -19,7 +19,7 @@ const PRINCIPAL_PROPERTY: 'internalPrincipal' = 'internalPrincipal';
  * Request property holding the organization context attached by `setRequestOrganizationContext`.
  * A symbol private to this module: nothing else, and no request data, can set it.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 const ATTACHED_CONTEXT: unique symbol = Symbol('cadenway.request-organization-context');
 
@@ -31,7 +31,6 @@ const ATTACHED_CONTEXT: unique symbol = Symbol('cadenway.request-organization-co
  *
  * @param {object} request - Incoming request.
  * @param {InternalPrincipal} principal - Identity verified and accepted by the guard.
- * @returns {void}
  */
 export function setVerifiedInternalPrincipal(request: object, principal: InternalPrincipal): void {
   const holder: { [PRINCIPAL_PROPERTY]?: InternalPrincipal } = request;
@@ -73,7 +72,6 @@ export function principalOf(request: object): InternalPrincipal | undefined {
  *
  * @param {object} request - Incoming request, as handed to the guard.
  * @param {OrganizationContext} context - Organization, actor, member role and scopes established by the verification.
- * @returns {void}
  * @throws {Error} When the request already has an identity or the context is inconsistent: a programming error.
  */
 export function setRequestOrganizationContext(request: object, context: OrganizationContext): void {

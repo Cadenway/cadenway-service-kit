@@ -32,6 +32,35 @@ import type { MessagingModuleOptions, ResolvedMessagingOptions } from './messagi
 const NAME_PATTERN: RegExp = /^[A-Za-z0-9_-]+$/u;
 
 /**
+ * Constant MAX_TIMER_MS
+ *
+ * @description
+ * Largest whole millisecond delay supported by Node.js timers.
+ *
+ * @type {number}
+ */
+const MAX_TIMER_MS: number = 2_147_483_647;
+
+/**
+ * Function timerDelay
+ *
+ * @description
+ * Rejects values Node's timers would truncate or reduce to a one-millisecond delay.
+ *
+ * @param {string} name - Configuration option used to identify an invalid delay.
+ * @param {number} value - Candidate whole millisecond delay.
+ * @returns {number} The original delay when it is supported by Node.js timers.
+ */
+function timerDelay(name: string, value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_TIMER_MS) {
+    throw new Error(
+      `The ${name} of MessagingModule must be an integer between 1 and ${String(MAX_TIMER_MS)} ms.`,
+    );
+  }
+  return value;
+}
+
+/**
  * Function parseServers
  *
  * @description
@@ -60,7 +89,7 @@ export function parseServers(servers: string | readonly string[]): readonly stri
  *
  * @param {MessagingModuleOptions} options - Options given to `MessagingModule`.
  * @returns {ResolvedMessagingOptions} The complete options.
- * @throws {Error} When the service or rebuild name is not one token, no server is given, a subject prefix is not one token or two prefixes are equal, a count is not a positive integer, the handler timeout is not below the acknowledgement wait, or a restricted event name cannot be a subject.
+ * @throws {Error} When a name, subject, server, count or timeout is invalid.
  */
 export function resolveMessagingOptions(options: MessagingModuleOptions): ResolvedMessagingOptions {
   if (!NAME_PATTERN.test(options.service)) {
@@ -142,8 +171,17 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     restrictedMaxBytes: options.restrictedMaxBytes ?? DEFAULT_RESTRICTED_MAX_BYTES,
     deadLetterMaxBytes: options.deadLetterMaxBytes ?? DEFAULT_DEAD_LETTER_MAX_BYTES,
     deadLetterMaxAgeDays: options.deadLetterMaxAgeDays ?? DEFAULT_DEAD_LETTER_MAX_AGE_DAYS,
-    publishTimeoutMs: options.publishTimeoutMs ?? DEFAULT_PUBLISH_TIMEOUT_MS,
-    shutdownTimeoutMs: options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    rebuildTimeoutMs: options.rebuildTimeoutMs ?? DEFAULT_REBUILD_TIMEOUT_MS,
+    publishTimeoutMs: timerDelay(
+      'publishTimeoutMs',
+      options.publishTimeoutMs ?? DEFAULT_PUBLISH_TIMEOUT_MS,
+    ),
+    shutdownTimeoutMs: timerDelay(
+      'shutdownTimeoutMs',
+      options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    ),
+    rebuildTimeoutMs: timerDelay(
+      'rebuildTimeoutMs',
+      options.rebuildTimeoutMs ?? DEFAULT_REBUILD_TIMEOUT_MS,
+    ),
   };
 }

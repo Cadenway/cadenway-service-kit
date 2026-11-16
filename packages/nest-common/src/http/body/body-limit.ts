@@ -103,7 +103,7 @@ export interface BodyParserHost {
    * the span of the Express instrumentation.
    *
    * @param {'json'} type - Parser to register.
-   * @param {{ limit: number }} options - Options of the parser.
+   * @param {{ limit: number; }} options - Options of the parser.
    * @returns {unknown} Ignored.
    */
   useBodyParser(type: 'json', options: { limit: number }): unknown;
@@ -205,7 +205,6 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
  *
  * @param {BodyParserHost} app - NestJS application on the Express platform.
  * @param {number} limitBytes - Largest accepted body, in bytes; defaults to `JSON_BODY_LIMIT_BYTES`.
- * @returns {void}
  */
 export function applyJsonBodyLimit(
   app: BodyParserHost,

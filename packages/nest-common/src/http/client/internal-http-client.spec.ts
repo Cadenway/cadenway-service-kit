@@ -2,14 +2,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InternalPrincipal } from '../../auth/context/internal-principal.js';
-import {
-  InternalTokenSigner,
-  InternalTokenVerifier,
-  type Ed25519PrivateJwk,
-} from '../../auth/internal-token/internal-token.js';
+import { InternalTokenSigner } from '../../auth/internal-token/internal-token-signer.js';
+import { InternalTokenVerifier } from '../../auth/internal-token/internal-token-verifier.js';
+import type { Ed25519PrivateJwk } from '../../auth/internal-token/internal-token.js';
 import {
   runWithOrganizationContext,
   type OrganizationContext,
@@ -520,5 +518,28 @@ describe('InternalHttpClient', () => {
       code: 'upstream.error',
       details: { service: 'task-service' },
     });
+  });
+
+  it('does not wait for the body or for cancellation when an upstream rejects the token', async () => {
+    let finishCancellation: () => void = () => undefined;
+    const cancellation = new Promise<void>((resolve) => {
+      finishCancellation = resolve;
+    });
+    const cancel = vi.fn(() => cancellation);
+    const pull = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const upstream = client({
+      fetch: () => Promise.resolve(new Response(body, { status: 401 })),
+    });
+
+    try {
+      await expect(
+        problemOf(runWithOrganizationContext(context, () => upstream.fetch('/tasks'))),
+      ).resolves.toMatchObject({ status: 503, code: 'upstream.unauthorized' });
+      expect(pull).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      finishCancellation();
+    }
   });
 });

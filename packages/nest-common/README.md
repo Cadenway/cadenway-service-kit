@@ -225,16 +225,16 @@ Every line is one JSON object with `level` (as a label), `time` (ISO 8601, UTC),
 `method`, `route` (the matched pattern, `null` when no route matched), `status` and `durationMs`:
 `info` below 400, `warn` from 400, `error` from 500.
 
-| Never written                                 | Why                                                                                                                                                             |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request and response bodies, headers, cookies | The request object is not attached to the lines                                                                                                                 |
-| Query strings and raw paths                   | Only the route pattern is logged                                                                                                                                |
-| Remote addresses                              | Same                                                                                                                                                            |
-| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                                                                                                                |
-| Values of the redacted keys                   | Replaced by `[REDACTED]` at any depth, whatever the case and separators of the key                                                                              |
-| Anything nested deeper than six levels        | Replaced whole by `[REDACTED]`: a line carries identifiers, not payloads                                                                                        |
-| SQL values                                    | The `query`, `params`, `detail` and `where` of a database error are dropped, and the `params:` line of a failed Drizzle query is cut from its message and stack |
-| E-mail addresses                              | Replaced by `[REDACTED]` in every message, logged error and string value of a logged object                                                                     |
+| Never written                                 | Why                                                                                                                                                                  |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and response bodies, headers, cookies | The request object is not attached to the lines                                                                                                                      |
+| Query strings and raw paths                   | Only the route pattern is logged                                                                                                                                     |
+| Remote addresses                              | Same                                                                                                                                                                 |
+| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                                                                                                                     |
+| Values of the redacted keys                   | Replaced by `[REDACTED]` at any depth, whatever the case and separators of the key                                                                                   |
+| Anything nested deeper than six levels        | Replaced whole by `[REDACTED]`: a line carries identifiers, not payloads                                                                                             |
+| SQL values                                    | Recognized database errors and their wrappers use a fixed message. SQL fields and cause text are dropped, while the SQLSTATE and available stack frames are retained |
+| E-mail addresses                              | Replaced by `[REDACTED]` in every message, logged error and string value of a logged object                                                                          |
 
 Redacted keys (`DEFAULT_REDACTED_KEYS`): `authorization`, `cookie`, `set-cookie`, `password`,
 `currentPassword`, `newPassword`, `token`, `accessToken`, `refreshToken`, `idToken`,
@@ -805,8 +805,8 @@ await this.tenant.run(async (tx) => {
   never changes its own access.
 - `run(work, { isolationLevel, readOnly })`: `read committed` and read-write by default. A joined
   transaction must already be at least as strict as what the nested `run` asks: otherwise it
-  throws before starting the nested work. A nested `readOnly: true` requires a read-only outer
-  transaction.
+  throws before starting the nested work. Both runners must refer to the same pool and schema
+  instance. A nested `readOnly: true` requires a read-only outer transaction.
 - `tx.db` is the Drizzle database without `transaction`: on one connection Drizzle would issue its
   own `COMMIT` and end the transaction of the runner. Type a repository with
   `TransactionDatabase<typeof schema>`.

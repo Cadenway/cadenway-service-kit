@@ -9,7 +9,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { EventValidationError } from '../../events/event-validation.js';
+import { EventValidationError } from '../../events/event-validation-error.js';
 import { resolveMessagingOptions } from '../../configuration/resolve-messaging-options.js';
 import { disableTracePropagation, enableTracePropagation } from '../../testing/application.js';
 import {

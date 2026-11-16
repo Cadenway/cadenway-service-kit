@@ -1,20 +1,21 @@
 import { getOrganizationContext, runWithOrganizationContext } from '@cadenway/nest-common';
+import { Logger } from '@nestjs/common';
 import type { TestingModule } from '@nestjs/testing';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { EventConsumers } from '../../consumer/event-consumers.js';
+import {
+  RebuildConsumerUnavailableError,
+  RebuildItemError,
+  RebuildRejectedError,
+} from '../../index.js';
 import { MessagingModule } from '../../wiring/messaging.module.js';
 import { messagingOptions, startApplication } from '../../testing/application.js';
 import { ATELIER_NORD, CAMILLE } from '../../testing/events.js';
 import { startTestNats, type TestNats } from '../../testing/nats.js';
 import { delay, waitFor } from '../../testing/wait.js';
-import {
-  RebuildConsumerUnavailableError,
-  RebuildEmitter,
-  RebuildItemError,
-  RebuildRejectedError,
-} from './rebuild-emitter.js';
+import { RebuildEmitter } from './rebuild-emitter.js';
 
 /**
  * Interface TaskItem
@@ -111,6 +112,7 @@ describe('rebuild on a real NATS server', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await owner.close();
     await plainOwner.close();
     await consumer.close();
@@ -255,13 +257,16 @@ describe('rebuild on a real NATS server', () => {
   });
 
   it('tells the emitter when the consumer refuses an item or its handler fails', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const failure = new TypeError('synthetic exception data', {
+      cause: new Error('synthetic cause'),
+    });
+    failure.name = 'synthetic exception name';
     await consumer.get(EventConsumers).onRebuild({
       entity: 'task',
       schema: taskItemSchema,
       handle: (item: TaskItem): Promise<void> =>
-        item.taskId === 'CAD-500'
-          ? Promise.reject(new Error('index unavailable'))
-          : Promise.resolve(),
+        item.taskId === 'CAD-500' ? Promise.reject(failure) : Promise.resolve(),
     });
 
     await expect(
@@ -285,6 +290,10 @@ describe('rebuild on a real NATS server', () => {
         { taskId: 'CAD-500', title: 'A' },
       ),
     ).rejects.toThrow(RebuildRejectedError);
+    expect(warn.mock.calls.filter(([, message]) => message === 'rebuild handler failed')).toEqual([
+      [{ subject: 'rebuild.search.task', errorClass: 'TypeError' }, 'rebuild handler failed'],
+      [{ subject: 'rebuild.search.task', errorClass: 'TypeError' }, 'rebuild handler failed'],
+    ]);
     await expect(
       emitter.emit(
         { consumer: 'search', entity: 'task', schema: taskItemSchema },

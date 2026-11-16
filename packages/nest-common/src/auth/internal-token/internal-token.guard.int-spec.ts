@@ -12,7 +12,8 @@ import { LoggingModule } from '../../logging/logging.module.js';
 import { ProblemFilter } from '../../problem/problem.filter.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import { InternalAccess } from './internal-token.guard.js';
-import { InternalTokenSigner, type Ed25519PrivateJwk } from './internal-token.js';
+import { InternalTokenSigner } from './internal-token-signer.js';
+import type { Ed25519PrivateJwk } from './internal-token.js';
 import { InternalTokenModule } from './internal-token.module.js';
 import {
   getOrganizationContext,

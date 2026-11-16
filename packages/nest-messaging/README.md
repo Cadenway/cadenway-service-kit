@@ -84,8 +84,8 @@ reconnects forever: a NATS restart suspends publishing and consuming, which resu
 With a user, the client receives its replies under `_INBOX.<user>`, the only inbox prefix the
 broker lets that user subscribe to. Disconnections and reconnections are logged through the
 NestJS `Logger`, never a payload. On shutdown (enable the shutdown hooks, as `createApplication`
-of `@cadenway/nest-common` does) the consumers stop pulling and their running handlers finish
-first, then the connection is drained; a drain that does not finish within `shutdownTimeoutMs`,
+of `@cadenway/nest-common` does) the consumers stop taking new deliveries. Running handlers have
+up to `shutdownTimeoutMs` to finish before the connection is drained. A drain that does not finish within `shutdownTimeoutMs`,
 as when the server is gone, gives way to a plain close.
 
 **`service` names every durable consumer.** Changing it renames them all: the new consumers
@@ -123,6 +123,7 @@ and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
 | `publishTimeoutMs`            | 5000                   | Time a publish, or another JetStream request, waits for its answer                                                                                                                            |
 | `shutdownTimeoutMs`           | 10 000                 | Time a shutdown waits for running handlers, then for the drain of the connection; an abandoned handler sees its message redelivered                                                           |
 
+The publish, rebuild and shutdown timeouts accept whole milliseconds from 1 to 2,147,483,647.
 The retry delays (1 s, 5 s, 30 s, 2 min, so five deliveries) are not an option: every durable
 consumer of the platform gets the same `max_deliver`. The specs of the package shorten them
 through an internal provider.
@@ -309,12 +310,14 @@ knows `user`, `automation`, `git` and `system`; an event with another kind runs 
 contracts add an actor kind.
 
 The handler receives the typed payload and `{ deliveryCount, streamSequence, redelivered,
-claimVersion, signal }`. Resolving acknowledges the message. Rejecting asks for a redelivery after
+claimVersion, signal }`. Resolving allows the delivery to be acknowledged. Rejecting asks for a redelivery after
 1 s, 5 s, 30 s then 2 min (`nak(delay)`), logged as a warning; the fifth failure is logged as an
 error and makes the message a dead letter. A handler still running after `handlerTimeoutMs`
 (25 s) is abandoned: `signal` is aborted (pass it to the calls the handler makes), the attempt
 counts as failed and the next message is handled. An answer that cannot be sent because the
-connection closed is logged at debug level; the server redelivers the message.
+connection closed is logged at debug level; the server redelivers the message. If shutdown
+grace expires, `signal` is aborted and the delivery is left unacknowledged for JetStream to
+redeliver. Failure logs carry delivery metadata and an error category.
 
 **Deduplication.** Without a deduplicator, the handler runs for every delivery, duplicates
 included, and `claimVersion` always resolves to `true`: fine for the realtime gateway, which only
@@ -325,8 +328,9 @@ registers the same deduplicator. With it, each delivery runs in
 one transaction (tenant runner for the organization of the event, system runner for an event
 without one) that records `(consumer, event id)` in `processed_events`, skips the handler when
 the id is already there, and otherwise runs the handler in the same transaction: a `run` of the
-same runner inside the handler joins it. The message is acknowledged after the commit; a handler
-failure, or its deadline, rolls the processed id back too. No statement of that transaction may
+same runner inside the handler joins it. The message is acknowledged after the commit. A handler
+that fails or is abandoned before commit rolls back the processed id and its writes. When
+shutdown leaves a committed delivery unacknowledged, a redelivery skips the handler. No statement of that transaction may
 run longer than `handlerTimeoutMs`, and the claim of the processed id waits at most five seconds
 (`lock_timeout`) for another delivery of the same event: past it the delivery fails and is retried
 after the next delay, when it finds the id and skips the handler.
@@ -373,8 +377,10 @@ hold a single-use code that would otherwise sit 30 days in `EVENTS_DLQ`; set
 `EVENTS_DLQ` to store it. A copy that fails (the dead-letter stream briefly missing, a timeout) is
 tried five times over about two minutes, then logged as an error naming the consumer, the stream
 and the sequence. Each dead letter is logged as an error, without the payload; a termination
-reason other than the kit's own is cut to 64 printable characters. No backend consumes
-`EVENTS_DLQ`; operators read it. At shutdown the worker unsubscribes, stops retries, and gives
+reason other than the kit's own is logged as `external-termination`. No backend consumes
+`EVENTS_DLQ`; operators read it. Each advisory subscription copies one message at a time and
+queues up to 1,000 advisories or 16 MiB in arrival order, whichever limit is reached first.
+Once full it drops new arrivals and periodically reports the number dropped. At shutdown the worker unsubscribes, stops retries, and gives
 in-flight copies up to `shutdownTimeoutMs` to finish. Advisories still waiting are dropped.
 The connection then drains in its own shutdown phase.
 
@@ -463,8 +469,9 @@ publication duration and attempt outcomes.
 **Service-owned migration.** Generate an additive migration by switching the service's schema
 re-export to `/outbox/schema`. Add nullable `lease_token` and `lease_expires_at`, allow `leased`
 in the status check and add the lease-state check. The new partial index covers
-`(lease_expires_at, id) WHERE status = 'leased'`. Install and validate the migration before
-enabling the leased relay. The legacy writer still inserts `pending` and the legacy relay still
+`(lease_expires_at, id) WHERE status = 'leased'`. Install and validate both checks and the
+partial index before enabling the leased relay. The migration finalizer rejects a valid index
+that uses the expected name but has a different definition. The legacy writer still inserts `pending` and the legacy relay still
 claims only `pending`. Keep the migration applied when reverting.
 
 **Rollback.** Stop the leased relay and allow in-flight reservations to expire. Run
@@ -523,7 +530,8 @@ logged at most once a minute per class of error. A failure that concerns every r
 stream unreachable, a timeout, a closed connection, a missing permission, the server out of
 resources) stops the pass without counting against the row, and the relay backs off, doubling the
 poll interval up to 30 seconds; so does a database failure. `relay.publishPending()` runs one
-pass by hand and returns `{ published, failed, interrupted }`.
+pass by hand and returns `{ published, failed, interrupted }`. At shutdown the relay stops
+admitting manual and scheduled passes and waits for any passes already started to settle.
 
 Automatic maintenance starts alongside the relay and runs independently of publication. It
 redacts older restricted rows at startup, even when periodic sweeps are disabled. Each

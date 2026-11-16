@@ -28,21 +28,19 @@ export type { RebuildSubscription } from '../rebuild/subscriptions/rebuild-subsc
  * Class EventConsumers
  *
  * @description
- * Registers the event handlers of an application and runs them.
+ * Runs one durable pull consumer per event handler and one Core NATS subscription per rebuild.
  *
  * Each handler consumes one event through its own durable pull consumer, `<service>__<handler>`,
- * filtered on the subject of that event: explicit acknowledgement, 30 seconds to handle a
- * message, five deliveries. Delivery is at least once and unordered. A handler that rejects or
- * passes `handlerTimeoutMs` is retried after 1 s, 5 s, 30 s and 2 min; after the fifth failure,
- * or when the payload does not match its contract, the message becomes a dead letter. One
- * message is handled at a time per handler and per replica.
+ * filtered on that event's subject. Delivery is at least once and unordered, with one active
+ * delivery per handler per replica. A handler rejection or deadline uses the retry schedule.
+ * Invalid payloads are terminated. Shutdown leaves deliveries that exceed the grace period
+ * unacknowledged for redelivery.
  *
  * A consumer that disappears from the server (deleted, or lost with its stream) is reported to
  * readiness and recovered. When the module manages consumers, a missing consumer is created
  * again from the beginning of the retained stream. Otherwise, the kit waits for the platform.
- * Without an `EventDeduplicator` the handler runs for every delivery, duplicates
- * included; the outbox entry point provides the PostgreSQL deduplicator. Registration is
- * explicit: call `subscribe` from `onApplicationBootstrap` of a provider.
+ * Without a deduplicator, the handler runs for every delivery, including duplicates. Call
+ * `subscribe` from a provider's `onApplicationBootstrap` to register it.
  */
 @Injectable()
 export class EventConsumers implements BeforeApplicationShutdown {
@@ -69,6 +67,17 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * @readonly
    */
   private readonly stop: AbortController = new AbortController();
+
+  /**
+   * Property abandon
+   *
+   * @description
+   * Cancels in-flight durable deliveries after the shutdown grace period.
+   *
+   * @type {AbortController}
+   * @readonly
+   */
+  private readonly abandon: AbortController = new AbortController();
 
   /**
    * Property subscriptions
@@ -98,12 +107,12 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * Constructor
    *
    * @description
-   * Shares the module's connection, logger and shutdown signal between the event and rebuild paths.
+   * Shares the connection and shutdown deadline between durable and rebuild subscriptions.
    *
-   * @param {MessagingConnection} connection - NATS connection of the application.
-   * @param {ResolvedMessagingOptions} options - Options of the module.
-   * @param {MessagingTuning} tuning - Retry and recovery timings.
-   * @param {EventDeduplicator | undefined} deduplicator - Deduplicator of the application, when it has one.
+   * @param {MessagingConnection} connection - Connection shared by the durable event and rebuild paths.
+   * @param {ResolvedMessagingOptions} options - Module routing, handler deadline and shutdown grace.
+   * @param {MessagingTuning} tuning - Delivery retries and durable recovery timing.
+   * @param {EventDeduplicator | undefined} deduplicator - Optional deduplicator that records effects before the acknowledgement.
    * @constructor
    */
   public constructor(
@@ -117,6 +126,7 @@ export class EventConsumers implements BeforeApplicationShutdown {
       options.handlerTimeoutMs,
       tuning.retryDelaysMs,
       deduplicator,
+      this.abandon.signal,
     );
     this.subscriptions = new DurableSubscriptions(
       connection,
@@ -135,13 +145,14 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * Method subscribe
    *
    * @description
-   * Registers a handler for one event and starts delivering to it. With `manageConsumers` on,
-   * the durable consumer is created, or its acknowledgement settings updated; otherwise the
-   * handler binds to the existing consumer.
+   * Registers a handler and starts pulling from its durable consumer. With `manageConsumers`
+   * enabled, creates the consumer or updates its acknowledgement settings. Otherwise binds to
+   * an existing consumer with the same filter.
    *
-   * @param {EventSubscription<TSchemas, TName>} subscription - Handler name, event and handler.
-   * @returns {Promise<void>} Resolves once the consumer exists and is being pulled.
-   * @throws {Error} When the handler is already registered, the stream is missing, the consumer is missing while `manageConsumers` is off, the server refuses to create or update it, or it filters another subject.
+   * @param {EventSubscription<TSchemas, TName>} subscription - Event name and schemas, durable handler name and handler.
+   * @returns {Promise<void>} Resolves once the durable consumer is present and the pull loop has started.
+   * @throws {Error} When the handler is already registered, the application is closing or the
+   * broker cannot supply the required consumer.
    */
   public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
     subscription: EventSubscription<TSchemas, TName>,
@@ -153,16 +164,15 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * Method onRebuild
    *
    * @description
-   * Registers the handler of a rebuilt entity: items the owner of the entity emits on
-   * `rebuild.<rebuildName>.<entity>` (the NATS user of this application by default) are
-   * validated and applied one at a time, in a context without organization; an item sent as a
-   * request is answered. Replicas share the items through a queue group. The oldest waiting
-   * items are dropped when the queue exceeds `rebuildMaxPending` items or 16 MiB. An item that
-   * cannot fit within the byte budget is refused. Both cases are logged and reject requests.
+   * Registers a rebuild handler and waits for the broker to know the subscription. Replicas
+   * share items through a queue group. The handler validates and applies one item at a time in
+   * a context without an organization. Waiting items are evicted oldest first at the count or
+   * byte limit, and oversized items are refused. Rebuild requests receive the outcome.
    *
-   * @param {RebuildSubscription<TItem>} registration - Entity, item schema and handler.
-   * @returns {Promise<void>} Resolves once the server knows the subscription: an emitter that starts afterwards finds the consumer.
-   * @throws {Error} When the entity is already registered or its name cannot be a subject token.
+   * @param {RebuildSubscription<TItem>} registration - Rebuilt entity name, item schema and handler.
+   * @returns {Promise<void>} Resolves after the broker knows the subscription.
+   * @throws {Error} When the application is closing, the entity is already registered or its
+   * name cannot be a subject token.
    */
   public async onRebuild<TItem>(registration: RebuildSubscription<TItem>): Promise<void> {
     return this.rebuilds.onRebuild(registration);
@@ -173,10 +183,10 @@ export class EventConsumers implements BeforeApplicationShutdown {
    *
    * @description
    * Stops pulling and lets the running handlers finish, for at most `shutdownTimeoutMs`. It runs
-   * before the connection is drained and before the database pool closes. A handler still
-   * running after the timeout is abandoned: its message is redelivered later.
+   * before the connection is drained and before the database pool closes. A durable handler
+   * still running after the timeout receives an abort signal and leaves the message unacknowledged.
    *
-   * @returns {Promise<void>} Resolves once the handlers finished or the timeout elapsed.
+   * @returns {Promise<void>} Resolves once handlers finish or shutdown grace expires.
    */
   public async beforeApplicationShutdown(): Promise<void> {
     this.stop.abort();
@@ -184,6 +194,7 @@ export class EventConsumers implements BeforeApplicationShutdown {
     let timer: NodeJS.Timeout | undefined;
     const timedOut: Promise<boolean> = new Promise<boolean>((resolve: (value: boolean) => void) => {
       timer = setTimeout(() => {
+        this.abandon.abort();
         resolve(true);
       }, this.options.shutdownTimeoutMs);
     });

@@ -6,16 +6,48 @@ import {
   type RestrictedNames,
 } from './outbox-redaction.js';
 
-/** The three phases of automatic retention, run in this order. */
+/**
+ * Type MaintenancePhase
+ *
+ * @description
+ * The three phases of automatic retention, run in this order.
+ *
+ * @type {'redact' | 'purge-sent' | 'purge-processed'}
+ */
 export type MaintenancePhase = 'redact' | 'purge-sent' | 'purge-processed';
 
-/** Maximum number of rows changed in one automatic maintenance transaction. */
+/**
+ * Constant MAINTENANCE_BATCH_SIZE
+ *
+ * @description
+ * Maximum number of rows changed in one automatic maintenance transaction.
+ *
+ * @type {number}
+ */
 export const MAINTENANCE_BATCH_SIZE: number = 100;
 
-/** Shared database-local lock key for automatic maintenance across replicas. */
+/**
+ * Constant MAINTENANCE_LOCK_NAME
+ *
+ * @description
+ * Shared database-local lock key for automatic maintenance across replicas.
+ *
+ * @type {string}
+ */
 export const MAINTENANCE_LOCK_NAME: string = 'cadenway:nest-messaging:outbox-maintenance';
 
-/** One bounded automatic cleanup step. A busy replica yields without waiting or selecting rows. */
+/**
+ * Function maintainOutboxBatch
+ *
+ * @description
+ * One bounded automatic cleanup step. A busy replica yields without waiting or selecting rows.
+ *
+ * @param {TransactionClient} client - Client of the system transaction that holds the advisory lock.
+ * @param {MaintenancePhase} phase - Retention operation to perform in this batch.
+ * @param {RestrictedNames} restricted - Persisted route rules for identifying restricted rows.
+ * @param {number} retentionDays - Age in days before a sent row or processed event ID is eligible for deletion.
+ * @returns {Promise<number | undefined>} Rows changed in this transaction, or undefined if another replica holds the lock.
+ */
 export async function maintainOutboxBatch(
   client: TransactionClient,
   phase: MaintenancePhase,

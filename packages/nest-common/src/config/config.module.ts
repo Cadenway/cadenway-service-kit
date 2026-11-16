@@ -10,7 +10,7 @@ import { loadConfig, type ConfigEnvironment } from './load-config.js';
  * Injection token of the validated configuration provided by `ConfigModule.forRoot`. Inject it
  * with `@Inject(CONFIG)` and type the parameter with the configuration type of the application.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const CONFIG: unique symbol = Symbol('cadenway.config');
 

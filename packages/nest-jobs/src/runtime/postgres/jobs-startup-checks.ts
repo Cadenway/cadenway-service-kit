@@ -1,9 +1,12 @@
 import type { Logger } from '@nestjs/common';
-import type { PgBoss, QueueResult, Schedule } from 'pg-boss';
+import { Client } from 'pg';
+import { PgBoss, type QueueResult, type Schedule } from 'pg-boss';
 
 import type { ResolvedJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
+import type { ResolvedJobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
 import type { JobsQueryResult } from '../../jobs/database/jobs-transaction.js';
 import type { ResolvedDeadLetterQueue, ResolvedJobQueue } from '../../jobs/queues/job-queue.js';
+import { expectedSchemaVersion } from '../../schema/pg-boss-schema.js';
 import { fieldOf } from './database-row.js';
 import { JobsNotProvisionedError } from './jobs-not-provisioned.error.js';
 
@@ -29,6 +32,16 @@ const PROVISION_HINT: string =
 const INSUFFICIENT_PRIVILEGE: string = '42501';
 
 /**
+ * Constant STARTUP_TIMEOUT_MS
+ *
+ * @description
+ * Maximum time for the temporary startup connection and for each of its queries, in milliseconds.
+ *
+ * @type {number}
+ */
+const STARTUP_TIMEOUT_MS: number = 10_000;
+
+/**
  * Function hasSqlState
  *
  * @description
@@ -46,10 +59,10 @@ function hasSqlState(error: unknown, code: string): boolean {
  * Function toStartupError
  *
  * @description
- * Turns the failures that mean "the database was not provisioned" into one explicit error; any
- * other failure, such as an unreachable server, is returned unchanged.
+ * Gives provisioning failures an actionable error and preserves unrelated failures such as
+ * network errors and timeouts.
  *
- * @param {unknown} error - Failure of the pg-boss start.
+ * @param {unknown} error - Failure while checking provisioning or starting pg-boss.
  * @param {string} schema - Schema the runtime was told to use.
  * @returns {unknown} A `JobsNotProvisionedError`, or the original failure.
  */
@@ -107,7 +120,16 @@ function settingsThatDiffer(declared: ResolvedJobQueue, stored: QueueResult): re
     .map((comparison: readonly [string, unknown, unknown]): string => comparison[0]);
 }
 
-/** Refuses a role with DDL access unless the runtime explicitly allows a privileged role. */
+/**
+ * Function assertUnprivilegedRole
+ *
+ * @description
+ * Refuses a role with DDL access unless the runtime explicitly allows a privileged role.
+ *
+ * @param {PgBoss} boss - pg-boss instance bound to the temporary startup session.
+ * @param {ResolvedJobsModuleOptions} options - Schema and permitted role privileges of the runtime.
+ * @returns {Promise<void>} Resolves when the configured role is accepted.
+ */
 async function assertUnprivilegedRole(
   boss: PgBoss,
   options: ResolvedJobsModuleOptions,
@@ -128,7 +150,16 @@ async function assertUnprivilegedRole(
   }
 }
 
-/** Reports stored queue settings that require provisioning to take effect. */
+/**
+ * Function warnAboutQueueSettings
+ *
+ * @description
+ * Reports stored queue settings that require provisioning to take effect.
+ *
+ * @param {Logger} logger - Logger scoped to the jobs runtime.
+ * @param {string} queue - Name of the declared queue.
+ * @param {readonly string[]} differing - Settings whose stored values differ from their declarations.
+ */
 function warnAboutQueueSettings(logger: Logger, queue: string, differing: readonly string[]): void {
   if (differing.length > 0) {
     logger.warn(
@@ -137,7 +168,18 @@ function warnAboutQueueSettings(logger: Logger, queue: string, differing: readon
   }
 }
 
-/** Requires the declared queues and reports drift between declarations and stored settings. */
+/**
+ * Function assertProvisioned
+ *
+ * @description
+ * Requires the declared queues and reports drift between declarations and stored settings.
+ *
+ * @param {PgBoss} boss - pg-boss instance bound to the temporary startup session.
+ * @param {ResolvedJobsModuleOptions} options - Schema and declared queues of the runtime.
+ * @param {readonly ResolvedDeadLetterQueue[]} deadLetterQueues - Distinct dead-letter queues expected for the declarations.
+ * @param {Logger} logger - Logger for settings that differ from their declarations.
+ * @returns {Promise<void>} Resolves when every declared queue and its dead-letter queue exist.
+ */
 async function assertProvisioned(
   boss: PgBoss,
   options: ResolvedJobsModuleOptions,
@@ -175,19 +217,22 @@ async function assertProvisioned(
   }
 }
 
-/** Checks the runtime database and reports stored schedules with no matching declaration. */
-export async function verifyJobsDatabase(
+/**
+ * Function warnAboutUndeclaredSchedules
+ *
+ * @description
+ * Reports schedules the application may still need to remove after dropping a declaration.
+ *
+ * @param {PgBoss} boss - pg-boss instance bound to the temporary startup session.
+ * @param {ResolvedJobsModuleOptions} options - Queue declarations that identify which schedules belong to the process.
+ * @param {Logger} logger - Logger for schedules that still target an undeclared queue.
+ * @returns {Promise<void>} Resolves once any stale schedule warnings have been logged.
+ */
+async function warnAboutUndeclaredSchedules(
   boss: PgBoss,
   options: ResolvedJobsModuleOptions,
-  deadLetterQueues: readonly ResolvedDeadLetterQueue[],
   logger: Logger,
-  checkSchedules: boolean = true,
 ): Promise<void> {
-  await assertUnprivilegedRole(boss, options);
-  await assertProvisioned(boss, options, deadLetterQueues, logger);
-  if (!checkSchedules) {
-    return;
-  }
   const declaredNames: ReadonlySet<string> = new Set(
     options.queues.map((queue: ResolvedJobQueue): string => queue.name),
   );
@@ -198,5 +243,67 @@ export async function verifyJobsDatabase(
         `A schedule is stored for queue "${schedule.name}" (key "${schedule.key}"), which is not declared: it still creates jobs that nothing consumes. Remove it with unschedule(), or declare the queue.`,
       );
     }
+  }
+}
+
+/**
+ * Function verifyJobsDatabase
+ *
+ * @description
+ * Checks the application role, schema version and queue declarations before starting pg-boss.
+ * The temporary session bounds both connection and per-query time and is closed before activation.
+ *
+ * @param {ResolvedJobsRuntimeOptions} options - Resolved capabilities, application connection and queue declarations.
+ * @param {readonly ResolvedDeadLetterQueue[]} deadLetterQueues - Distinct dead-letter queues expected for the declarations.
+ * @param {Logger} logger - Logger for provisioned settings that need attention.
+ * @returns {Promise<void>} Resolves once checks pass and the temporary session closes.
+ * @throws {JobsNotProvisionedError} When the schema, a grant or a declared queue is missing, or the schema version does not match.
+ * @throws {Error} When the role is not allowed or the connection or query times out.
+ */
+export async function verifyJobsDatabase(
+  options: ResolvedJobsRuntimeOptions,
+  deadLetterQueues: readonly ResolvedDeadLetterQueue[],
+  logger: Logger,
+): Promise<void> {
+  const client: Client = new Client({
+    ...options.connection,
+    connectionTimeoutMillis: STARTUP_TIMEOUT_MS,
+    statement_timeout: STARTUP_TIMEOUT_MS,
+  });
+  // pg also emits connection failures as events, even when it rejects the active query.
+  let connectionError: Error | undefined;
+  client.on('error', (error: Error): void => {
+    connectionError = error;
+  });
+  try {
+    await client.connect();
+    const boss: PgBoss = new PgBoss({
+      schema: options.schema,
+      db: {
+        executeSql: (text: string, values?: unknown[]): Promise<JobsQueryResult> => {
+          // The per-query deadline takes precedence over settings supplied in the connection URI.
+          const query = { text, values, query_timeout: STARTUP_TIMEOUT_MS };
+          return client.query(query);
+        },
+      },
+    });
+    if (!(await boss.isInstalled())) {
+      throw new Error('pg-boss is not installed');
+    }
+    if ((await boss.schemaVersion()) !== expectedSchemaVersion()) {
+      throw new Error('pg-boss database requires migrations');
+    }
+    await assertUnprivilegedRole(boss, options);
+    await assertProvisioned(boss, options, deadLetterQueues, logger);
+    if (options.capabilities.has('scheduler')) {
+      await warnAboutUndeclaredSchedules(boss, options, logger);
+    }
+    if (connectionError !== undefined) {
+      throw connectionError;
+    }
+  } catch (error) {
+    throw toStartupError(connectionError ?? error, options.schema);
+  } finally {
+    await client.end();
   }
 }

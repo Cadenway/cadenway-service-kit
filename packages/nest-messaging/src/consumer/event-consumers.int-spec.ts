@@ -49,7 +49,7 @@ import {
 } from '../testing/events.js';
 import { taskUpdatedV1Schema } from '../testing/contracts/events/task-service.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
-import { delay, waitFor } from '../testing/wait.js';
+import { deferred, delay, waitFor } from '../testing/wait.js';
 import { EventConsumers, type EventContext } from './event-consumers.js';
 
 /**
@@ -505,20 +505,28 @@ describe('event consumers on a real NATS server, without a database', () => {
         messagingOptions(nats, { ...isolatedNames('shutdown'), service: 'search-service' }),
       ),
     ]);
+    const started = deferred<AbortSignal>();
+    const release = deferred<undefined>();
     const steps: string[] = [];
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
       schemas: eventSchemas,
       event: 'task.updated.v1',
-      handle: async (): Promise<void> => {
+      handle: async (_payload, { signal }): Promise<void> => {
         steps.push('started');
-        await delay(400);
+        started.resolve(signal);
+        await release.promise;
         steps.push('finished');
       },
     });
     await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
-    await waitFor(() => steps.length === 1);
+    const signal: AbortSignal = await started.promise;
 
+    // Call the hook directly to observe the grace period before the connection closes.
+    const shutdown: Promise<void> = application.get(EventConsumers).beforeApplicationShutdown();
+    expect(signal.aborted).toBe(false);
+    release.resolve(undefined);
+    await shutdown;
     await application.close();
     steps.push('closed');
     const consumer: ConsumerInfo = await manager.consumers.info(
@@ -528,6 +536,34 @@ describe('event consumers on a real NATS server, without a database', () => {
 
     expect(steps).toEqual(['started', 'finished', 'closed']);
     expect(consumer.num_ack_pending).toBe(0);
+  });
+
+  it('gives the handler the transformed output of its registered schema', async () => {
+    const names = isolatedNames('transformation');
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, names)),
+    ]);
+    try {
+      const transformed = {
+        'task.updated.v1': taskUpdatedV1Schema.extend({
+          taskId: z.string().transform((value) => ({ key: value })),
+        }),
+      };
+      const received = deferred<string>();
+      await application.get(EventConsumers).subscribe({
+        handler: 'index-task',
+        schemas: transformed,
+        event: 'task.updated.v1',
+        handle: ({ taskId }): Promise<void> => {
+          received.resolve(taskId.key);
+          return Promise.resolve();
+        },
+      });
+      await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await expect(received.promise).resolves.toBe('CAD-482');
+    } finally {
+      await application.close();
+    }
   });
 
   it('opens the context as the system for an actor kind the kit does not know, and warns once', async () => {

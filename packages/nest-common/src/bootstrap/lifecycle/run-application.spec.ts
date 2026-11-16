@@ -149,4 +149,21 @@ describe('runApplication', () => {
       err: { type: 'ConfigError', issues: ['PORT: required, not set'] },
     });
   });
+
+  it('keeps the SQLSTATE without the database cause text in the start-up log', async () => {
+    const databaseError = Object.assign(new Error('diagnostic fixture\ncontinuation fixture'), {
+      severity: 'ERROR',
+      code: '23505',
+      detail: 'row detail fixture',
+    });
+    const outcome: Outcome = await run(() =>
+      Promise.reject(new Error('Schema preflight failed', { cause: databaseError })),
+    );
+
+    const chunk: string = outcome.chunks[0] ?? '';
+    const line = JSON.parse(chunk) as { err?: { stack?: string } };
+    expect(line).toMatchObject({ err: { message: 'Database operation failed.', code: '23505' } });
+    expect(line.err?.stack).toContain('at ');
+    expect(chunk).not.toMatch(/diagnostic fixture|continuation fixture|row detail fixture/u);
+  });
 });

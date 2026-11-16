@@ -1,6 +1,9 @@
 import { JetStreamApiError } from '@nats-io/jetstream';
 
 /**
+ * Function isJetStreamApiError
+ *
+ * @description
  * Checks whether the JetStream API returned the specified error code.
  *
  * @param {unknown} error - Error to inspect.

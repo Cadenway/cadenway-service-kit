@@ -1,18 +1,6 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  Module,
-  type BeforeApplicationShutdown,
-  type DynamicModule,
-  type OnModuleInit,
-  type Provider,
-} from '@nestjs/common';
+import { Module, type DynamicModule, type Provider } from '@nestjs/common';
 
-import {
-  resolveJobsRuntimeOptions,
-  type JobsRuntimeOptions,
-} from '../../jobs/configuration/jobs-runtime-options.js';
+import type { JobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
 import type { JobsTransaction } from '../../jobs/database/jobs-transaction.js';
 import type {
   JobEnqueueOptions,
@@ -23,40 +11,23 @@ import type {
   JobScheduleOptions,
   JobUnscheduleOptions,
 } from '../../jobs/scheduling/job-schedule-options.js';
-import { JobsRuntime } from '../lifecycle/jobs-runtime.js';
-import { JobProducer, JobScheduler, JobWorkerRegistry } from './job-capabilities.js';
+import { JobProducer } from './job-producer.js';
+import { JobScheduler } from './job-scheduler.js';
+import { JobWorkerRegistry } from './job-worker-registry.js';
 import {
   JOBS_RUNTIME_OPTIONS,
   type JobsRuntimeModuleAsyncOptions,
 } from './jobs-runtime-module-options.js';
+import { JobsRuntimeHost } from './jobs-runtime.host.js';
 
-@Injectable()
-class JobsRuntimeHost implements OnModuleInit, BeforeApplicationShutdown {
-  // #region Properties
-  /** Shared lifecycle and store for the selected capabilities. */
-  public readonly runtime: JobsRuntime;
-  // #endregion
-
-  // #region Constructor
-  /** Builds the shared runtime without opening a database connection. */
-  public constructor(@Inject(JOBS_RUNTIME_OPTIONS) options: JobsRuntimeOptions) {
-    this.runtime = new JobsRuntime(resolveJobsRuntimeOptions(options), new Logger('JobsRuntime'));
-  }
-  // #endregion
-
-  // #region Methods
-  /** Validates PostgreSQL and starts the selected capabilities before applications use them. */
-  public async onModuleInit(): Promise<void> {
-    await this.runtime.start();
-  }
-
-  /** Stops the selected capabilities before application resources close. */
-  public async beforeApplicationShutdown(): Promise<void> {
-    await this.runtime.stop();
-  }
-  // #endregion
-}
-
+/**
+ * Constant capabilityProviders
+ *
+ * @description
+ * Provides each injectable capability through the runtime host that owns its lifecycle.
+ *
+ * @type {readonly Provider[]}
+ */
 const capabilityProviders: readonly Provider[] = [
   {
     provide: JobProducer,
@@ -93,14 +64,27 @@ const capabilityProviders: readonly Provider[] = [
   },
 ];
 
-/** Global NestJS module for one explicitly configured jobs process. */
+/**
+ * Class JobsRuntimeModule
+ *
+ * @description
+ * Global NestJS module for one explicitly configured jobs process.
+ */
 @Module({
   providers: [JobsRuntimeHost, ...capabilityProviders],
   exports: [JobProducer, JobWorkerRegistry, JobScheduler],
 })
 export class JobsRuntimeModule {
   // #region Methods
-  /** Wires runtime capabilities with options available at module declaration. */
+  /**
+   * Method forRoot
+   *
+   * @description
+   * Wires runtime capabilities with options available at module declaration.
+   *
+   * @param {JobsRuntimeOptions} options - Connection, queues and capabilities known at module declaration.
+   * @returns {DynamicModule} Global module with providers for the jobs capabilities.
+   */
   public static forRoot(options: JobsRuntimeOptions): DynamicModule {
     return {
       module: JobsRuntimeModule,
@@ -109,7 +93,15 @@ export class JobsRuntimeModule {
     };
   }
 
-  /** Wires runtime capabilities through an injected configuration factory. */
+  /**
+   * Method forRootAsync
+   *
+   * @description
+   * Wires runtime capabilities through an injected configuration factory.
+   *
+   * @param {JobsRuntimeModuleAsyncOptions} options - Factory and imports used to resolve the runtime configuration.
+   * @returns {DynamicModule} Global module that supplies the jobs capability providers after resolving its options.
+   */
   public static forRootAsync(options: JobsRuntimeModuleAsyncOptions): DynamicModule {
     return {
       module: JobsRuntimeModule,

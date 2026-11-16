@@ -16,12 +16,12 @@ import { INDEX_BUILD_CLAIM } from './schema-inspection.js';
  * acts on what they hold:
  *
  * - `bam` lists the statements pg-boss runs, verbatim, as the role that migrates. The runtime never
- *   reads or writes it, so the application role keeps no right on it. With one, a compromised
- *   service could have the next provisioning run a statement of its choice as the migrator role.
+ * reads or writes it, so the application role keeps no right on it. With one, a compromised
+ * service could have the next provisioning run a statement of its choice as the migrator role.
  * - `version` holds the installed schema version, which decides the migrations to run, and the
- *   interval claims of the background passes. The runtime only reads it and stamps its own claims,
- *   so the role keeps SELECT and gets UPDATE on those claim columns alone: not on the version, nor
- *   on the index-build claim, which only an instance that migrates stamps.
+ * interval claims of the background passes. The runtime only reads it and stamps its own claims,
+ * so the role keeps SELECT and gets UPDATE on those claim columns alone: not on the version, nor
+ * on the index-build claim, which only an instance that migrates stamps.
  *
  * No default privilege is set: a table of a later pg-boss version is granted by the provisioning
  * run that creates it, after it was looked at here. Both names were validated as plain lowercase

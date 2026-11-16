@@ -22,11 +22,21 @@ export const DEFAULT_SHUTDOWN_TIMEOUT_MS: number = 30_000;
  * Constant DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS
  *
  * @description
- * Seconds between two counts of the jobs that arrived in the dead-letter queues.
+ * Seconds between checks of the jobs retained in the dead-letter queues.
  *
  * @type {number}
  */
 export const DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS: number = 60;
+
+/**
+ * Constant MAX_DEAD_LETTER_CHECK_INTERVAL_SECONDS
+ *
+ * @description
+ * Largest whole-second interval representable by a Node timer.
+ *
+ * @type {number}
+ */
+const MAX_DEAD_LETTER_CHECK_INTERVAL_SECONDS: number = 2_147_483;
 
 /**
  * Type RunInOrganization
@@ -37,6 +47,9 @@ export const DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS: number = 60;
  * it.
  *
  * @type {(organizationId: string | null, work: () => Promise<void>) => Promise<void>}
+ * @param {string | null} organizationId - Organization of the job, or null when it has no organization.
+ * @param {() => Promise<void>} work - Handler invocation that must run exactly once within the context.
+ * @returns {Promise<void>} Settles with the enclosed handler invocation.
  */
 export type RunInOrganization = (
   organizationId: string | null,
@@ -117,9 +130,8 @@ export interface JobsModuleOptions {
    * Property deadLetterCheckIntervalSeconds
    *
    * @description
-   * Whole seconds between checks of the jobs retained in each declared dead-letter queue.
-   * A non-empty queue is logged as an error on each successful check. `0` disables the watch.
-   * Defaults to 60.
+   * Whole seconds between checks of retained dead letters, up to 2,147,483. A non-empty
+   * queue is logged as an error on each check. Defaults to 60. Set `0` to disable the watch.
    *
    * @type {number}
    * @readonly
@@ -232,7 +244,7 @@ export interface ResolvedJobsModuleOptions {
  * Function runDirectly
  *
  * @description
- * Default `runInOrganization`: runs the work without any organization context.
+ * Runs the handler when the application does not install an organization context.
  *
  * @param {string | null} _organizationId - Organization of the job, unused.
  * @param {() => Promise<void>} work - Handling of the job.
@@ -246,11 +258,11 @@ function runDirectly(_organizationId: string | null, work: () => Promise<void>):
  * Function resolveJobsModuleOptions
  *
  * @description
- * Applies the defaults of the module options and validates them.
+ * Resolves defaults and validates the job runtime configuration before opening a connection.
  *
  * @param {JobsModuleOptions} options - Options given to `JobsModule`.
  * @returns {ResolvedJobsModuleOptions} The options with every value set.
- * @throws {Error} When an option or a queue declaration is invalid.
+ * @throws {Error} When an option or queue declaration is invalid.
  */
 export function resolveJobsModuleOptions(options: JobsModuleOptions): ResolvedJobsModuleOptions {
   const connection: unknown = options.connection;
@@ -267,8 +279,14 @@ export function resolveJobsModuleOptions(options: JobsModuleOptions): ResolvedJo
   }
   const deadLetterCheckIntervalSeconds: number =
     options.deadLetterCheckIntervalSeconds ?? DEFAULT_DEAD_LETTER_CHECK_INTERVAL_SECONDS;
-  if (!Number.isInteger(deadLetterCheckIntervalSeconds) || deadLetterCheckIntervalSeconds < 0) {
-    throw new Error('deadLetterCheckIntervalSeconds must be an integer of at least 0.');
+  if (
+    !Number.isInteger(deadLetterCheckIntervalSeconds) ||
+    deadLetterCheckIntervalSeconds < 0 ||
+    deadLetterCheckIntervalSeconds > MAX_DEAD_LETTER_CHECK_INTERVAL_SECONDS
+  ) {
+    throw new Error(
+      `deadLetterCheckIntervalSeconds must be an integer from 0 to ${String(MAX_DEAD_LETTER_CHECK_INTERVAL_SECONDS)}.`,
+    );
   }
   const allowPrivilegedRole: unknown = options.allowPrivilegedRole ?? false;
   if (typeof allowPrivilegedRole !== 'boolean') {
