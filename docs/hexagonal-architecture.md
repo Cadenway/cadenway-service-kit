@@ -4,6 +4,49 @@ Cadenway uses two architecture profiles. The `service` profile gives a business 
 
 This is the target for `convention: 'strict'`. A repository can prepare for the target while it still runs the existing checks. See [Consumer rollout](#consumer-rollout) for the activation sequence.
 
+## Source conventions
+
+Use lowercase kebab-case for paths and the suffix of the file's architectural role. Name authored
+exports after the role and concept they represent.
+
+| File                                                  | Name and responsibility                                                                                                                 |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `revoke-session.use-case.ts`                          | `RevokeSession` has a public instance method named `execute`.                                                                           |
+| `revoke-session.input.ts`, `revoke-session.output.ts` | Declare `RevokeSessionInput` and `RevokeSessionOutput` in their respective files when the operation needs those contracts.              |
+| `session-repository.port.ts`                          | `SessionRepository` or `SessionRepositoryPort` declares the capability the application needs.                                           |
+| `drizzle-session.repository.ts`                       | `DrizzleSessionRepository` names the implementation and its technology.                                                                 |
+| `revoke-session-path.dto.ts`                          | `RevokeSessionPath` or `RevokeSessionPathDto` is the authored transport declaration. Keep generated contract names and grouping intact. |
+| `session.mapper.ts`                                   | Name transformations after their result, such as `toSessionResponse` or `toSessionRecord`, in the layer that owns the conversion.       |
+
+Give each file a single architectural responsibility and give each named exported contract its own
+declaration file. Keep small private types, constants and functions next to the behavior they serve.
+Extract a named construct when it owns an invariant, a transformation, an error policy or an external
+interaction that callers or tests need to understand separately. Use file size and complexity as
+review signals. Keep HTTP DTOs, application inputs and persistence records at their respective
+boundaries, even if they currently share fields.
+
+Run Prettier and type-aware ESLint separately. Lint warnings fail the pilot quality gate. Use
+explicit signatures at module boundaries and let TypeScript infer clear local types. Use
+`import type` for type-only dependencies and a value import for classes that Nest needs in runtime
+injection or validation metadata. Document exported declarations with prose. Record constraints,
+failure behavior and side effects when relevant, keeping types and modifiers in TypeScript.
+
+### Reusable functions and dependencies
+
+- Check the standard library, existing module code and published Cadenway packages before adding a
+  utility. Use the existing API directly when a wrapper would only forward its arguments.
+- Keep a private function with its caller. Place a reusable function in the owning layer and name it
+  for its purpose, for example `parse-retry-after.ts` under an HTTP adapter. Strict mode rejects
+  generic `utils`, `helpers` and `misc` paths in authored source.
+- Share code when callers rely on the same behavior and need the same changes. For similar code
+  derived from independently evolving contracts, keep each mapper with its own contract.
+- Share service-wide technical code in the owning technical area and cross-repository Nest
+  mechanisms through the service kit. A capability owns its business rules.
+- For complex formats and protocols, look for a maintained dependency and review its edge-case
+  coverage, maintenance and transitive dependencies. Use it in the appropriate adapter and add a
+  port when the application needs the capability. Extraction, duplication and dependency choices
+  are reviewed with the change.
+
 ## Service profile
 
 A module lives under `src/modules/<module>/`. An `<area>` groups a stable part of the capability, such as `lifecycle`, `assignment` or `comments`. An `<operation>` describes one intent, such as `change-task-status`. A `<concern>` groups related outbound dependencies, such as persistence, transactions or messaging. Create directories when their first file needs them. A query may simply return a projection through a read port.
@@ -51,11 +94,13 @@ src/
     composition/                                  # optional NestJS wiring
       tokens/<area>/
       providers/{use-cases,adapters}/<area>/
-test/
+tests/
   change-task-status.int-spec.ts
 ```
 
-Use kebab-case. File suffixes identify roles, such as `.use-case.ts`, `.input.ts`, `.output.ts`, `.port.ts`, `.controller.ts`, `.dto.ts`, `.handler.ts`, `.gateway.ts`, `.provider.ts`, `.token.ts`, `.schema.ts`, `.repository.ts` and `.mapper.ts`. Give each named exported contract its own file. Private types can stay with their implementation. Keep inputs and outputs beside their use case when they are specific to it. A reusable application model belongs under its own area.
+Keep operation-specific inputs and outputs beside their use case. A reusable application model
+belongs under its own area. Follow the [source conventions](#source-conventions) for file and
+declaration names.
 
 | Layer             | Responsibility                                                                                                                                               | Dependencies within the module                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
@@ -235,13 +280,27 @@ When room joining is implemented, the gateway in `src/modules/connection/present
 
 Use `verifyNestArchitecture` from `@cadenway/nest-testing/architecture` in `pnpm test:architecture` with the project's `tsconfig` and the `service` or `gateway` profile. Opt into v2 with `convention: 'strict'`. The existing convention still applies when this option is absent. In strict mode every finding fails the architecture test, including findings in legacy code. Exceptions cannot suppress findings in this mode.
 
-The verifier checks authored paths, ownership, naming, dependency direction, SDK placement, import aliases, named re-exports, public consumers and eager cycles. It can check declared Nest exports and the application types that a public operation exposes. It runs without booting Nest or opening connections. A startup test verifies that Nest resolves the providers and activates the adapters. A behavior test verifies authorization, isolation, rollback, retries and other runtime guarantees.
+The verifier checks authored paths, ownership, role suffixes, names of authored use cases and contract
+exports, the public `execute` method, dependency direction, SDK placement, import aliases, named
+re-exports, public consumers and eager cycles. It checks declared Nest exports and the application
+types that a public operation exposes. It runs without booting Nest or opening connections. A startup
+test verifies that Nest resolves the providers and activates the adapters. A behavior test verifies
+authorization, isolation, rollback, retries and other runtime guarantees.
 
-Colocate a `<subject>.spec.ts` with its domain, use case or adapter source. Put an adapter test with a disposable real dependency in `<subject>.int-spec.ts` beside the adapter. Place cross-layer `.int-spec.ts` scenarios in the repository's `test/` directory. Include coverage of invalid transitions, cross-organization access, a rollback that leaves neither business writes nor an outbox row, and redelivery without duplicate local effects where applicable.
+Colocate a `<subject>.spec.ts` with its domain, use case or adapter source. Put an adapter test with
+a disposable real dependency in `<subject>.int-spec.ts` beside the adapter. Put cross-layer
+`.int-spec.ts` scenarios and their support files under `tests/`, alongside the architecture
+suite. Include `tests/` in the TypeScript and integration test configuration, and exclude it
+from the production build. Cover invalid transitions, cross-organization access, rollback
+without business writes or an outbox row, and redelivery without duplicate effects where
+applicable.
 
 ## Consumer rollout
 
-Release the verifier through Changesets in `cadenway-tooling`. Each adopting checkout updates its published `@cadenway/nest-testing` development dependency with pnpm and commits its resulting lockfile. Keep `pnpm test:architecture` in `pnpm quality` and CI. Enable `convention: 'strict'` first in Identity and Notification, then in the remaining services and the two gateways.
+Release the verifier through Changesets in `cadenway-tooling`. Each adopting checkout updates its
+published `@cadenway/nest-testing` development dependency with pnpm and commits its resulting
+lockfile. Keep `pnpm test:architecture` in CI. Identity and API Gateway pilot file convention changes
+for the service and gateway profiles.
 
 Publish the guide and checker before activation. An activation can merge once its repository passes strict. Record any required source changes separately from the guide and checker. Check the migration glob, asset paths and startup tests as part of a later source relocation.
 
