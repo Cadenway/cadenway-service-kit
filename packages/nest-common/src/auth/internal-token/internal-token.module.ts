@@ -1,7 +1,8 @@
 import { Module, type DynamicModule, type Provider } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
-import { InternalTokenGuard, OrganizationContextInterceptor } from './internal-token.guard.js';
+import { OrganizationContextInterceptor } from '../context/organization-context.interceptor.js';
+import { InternalTokenGuard } from './internal-token.guard.js';
 import {
   InternalTokenSigner,
   InternalTokenVerifier,

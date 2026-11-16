@@ -4,16 +4,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import type { InternalPrincipal } from '../auth/context/internal-principal.js';
 import {
   InternalTokenSigner,
   InternalTokenVerifier,
   type Ed25519PrivateJwk,
-  type InternalPrincipal,
-} from '../auth/internal-token.js';
+} from '../auth/internal-token/internal-token.js';
 import {
   runWithOrganizationContext,
   type OrganizationContext,
-} from '../auth/organization-context.js';
+} from '../auth/context/organization-context.js';
 import { ProblemException, type Problem } from '../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../testing/internal-token-keys.js';
 import { InternalHttpClient, type InternalHttpClientOptions } from './internal-http-client.js';

@@ -1,6 +1,6 @@
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 
-import type { Ed25519PrivateJwk, Ed25519PublicJwk } from '../auth/internal-token.js';
+import type { Ed25519PrivateJwk, Ed25519PublicJwk } from '../auth/internal-token/internal-token.js';
 
 /**
  * Function generateSigningJwk

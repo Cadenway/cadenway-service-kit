@@ -8,8 +8,11 @@ import { LoggerModule, type Params } from 'nestjs-pino';
 import pino from 'pino';
 import type { Options } from 'pino-http';
 
-import { requestOrganizationContextOf } from '../auth/internal-token.guard.js';
-import { getOrganizationContext, type OrganizationContext } from '../auth/organization-context.js';
+import { requestOrganizationContextOf } from '../auth/context/request-organization-context.js';
+import {
+  getOrganizationContext,
+  type OrganizationContext,
+} from '../auth/context/organization-context.js';
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
 import { readPackageVersion } from '../bootstrap/package-version.js';
 import {

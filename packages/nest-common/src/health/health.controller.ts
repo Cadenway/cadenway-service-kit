@@ -17,7 +17,7 @@ import {
   type HealthIndicatorResult,
 } from '@nestjs/terminus';
 
-import { SkipInternalToken } from '../auth/internal-token.guard.js';
+import { SkipInternalToken } from '../auth/internal-token/internal-token.guard.js';
 import {
   DEFAULT_INDICATOR_TIMEOUT_MS,
   HEALTH_OPTIONS,

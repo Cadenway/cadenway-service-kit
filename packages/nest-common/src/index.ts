@@ -12,16 +12,13 @@ export {
   internalTokenVerifierConfigShape,
   type InternalTokenSignerConfig,
   type InternalTokenVerifierConfig,
-} from './auth/internal-token.config.js';
+} from './auth/internal-token/internal-token.config.js';
 export {
   InternalAccess,
   InternalTokenGuard,
-  OrganizationContextInterceptor,
-  principalOf,
-  setRequestOrganizationContext,
   SkipInternalToken,
   type InternalAccessOptions,
-} from './auth/internal-token.guard.js';
+} from './auth/internal-token/internal-token.guard.js';
 export {
   INTERNAL_TOKEN_ALGORITHM,
   INTERNAL_TOKEN_LIFETIME_SECONDS,
@@ -29,16 +26,21 @@ export {
   InternalTokenVerifier,
   type Ed25519PrivateJwk,
   type Ed25519PublicJwk,
-  type InternalPrincipal,
   type InternalTokenClaims,
   type InternalTokenSignerOptions,
   type InternalTokenVerifierOptions,
   type InvalidTokenReason,
-} from './auth/internal-token.js';
+} from './auth/internal-token/internal-token.js';
 export {
   InternalTokenModule,
   type InternalTokenModuleOptions,
-} from './auth/internal-token.module.js';
+} from './auth/internal-token/internal-token.module.js';
+export type { InternalPrincipal } from './auth/context/internal-principal.js';
+export { OrganizationContextInterceptor } from './auth/context/organization-context.interceptor.js';
+export {
+  principalOf,
+  setRequestOrganizationContext,
+} from './auth/context/request-organization-context.js';
 export {
   getOrganizationContext,
   requireOrganizationId,
@@ -46,7 +48,7 @@ export {
   type InternalActor,
   type InternalActorType,
   type OrganizationContext,
-} from './auth/organization-context.js';
+} from './auth/context/organization-context.js';
 export {
   baseConfigShape,
   type BaseConfig,

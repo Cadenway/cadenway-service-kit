@@ -15,8 +15,11 @@ import request, { type Response } from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { InternalTokenSigner, type Ed25519PrivateJwk } from '../auth/internal-token.js';
-import { getOrganizationContext } from '../auth/organization-context.js';
+import {
+  InternalTokenSigner,
+  type Ed25519PrivateJwk,
+} from '../auth/internal-token/internal-token.js';
+import { getOrganizationContext } from '../auth/context/organization-context.js';
 import { CONFIG } from '../config/config.module.js';
 import { HealthModule } from '../health/health.module.js';
 import { remainingBudgetMs } from '../http-client/request-deadline.js';

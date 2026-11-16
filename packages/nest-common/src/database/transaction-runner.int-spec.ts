@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   runWithOrganizationContext,
   type OrganizationContext,
-} from '../auth/organization-context.js';
+} from '../auth/context/organization-context.js';
 import { startTestDatabase, type TestDatabase } from '../testing/postgres.js';
 import { organizationIsolation } from './organization-policy.js';
 import {

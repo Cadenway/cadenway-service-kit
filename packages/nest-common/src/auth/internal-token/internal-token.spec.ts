@@ -2,9 +2,10 @@ import { importJWK, SignJWT } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { loadConfig } from '../config/load-config.js';
-import { ProblemException } from '../problem/problem.js';
-import { generateSigningJwk, publicJwkOf } from '../testing/internal-token-keys.js';
+import { loadConfig } from '../../config/load-config.js';
+import { ProblemException } from '../../problem/problem.js';
+import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
+import type { InternalPrincipal } from '../context/internal-principal.js';
 import {
   internalTokenSignerConfigShape,
   internalTokenVerifierConfigShape,
@@ -15,7 +16,6 @@ import {
   InternalTokenSigner,
   InternalTokenVerifier,
   type Ed25519PrivateJwk,
-  type InternalPrincipal,
   type InternalTokenClaims,
 } from './internal-token.js';
 

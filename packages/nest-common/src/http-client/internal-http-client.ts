@@ -7,8 +7,14 @@ import {
   type CircuitBreakerPolicy,
 } from 'cockatiel';
 
-import type { InternalTokenClaims, InternalTokenSigner } from '../auth/internal-token.js';
-import { getOrganizationContext, type OrganizationContext } from '../auth/organization-context.js';
+import type {
+  InternalTokenClaims,
+  InternalTokenSigner,
+} from '../auth/internal-token/internal-token.js';
+import {
+  getOrganizationContext,
+  type OrganizationContext,
+} from '../auth/context/organization-context.js';
 import { REQUEST_ID_HEADER, requestIdOf } from '../logging/request-id.js';
 import { PROBLEM_CONTENT_TYPE, ProblemException, type ProblemStatus } from '../problem/problem.js';
 import { currentRequest, remainingBudgetMs, REQUEST_TIMEOUT_HEADER } from './request-deadline.js';

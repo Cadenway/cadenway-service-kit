@@ -19,21 +19,21 @@ import type { Observable } from 'rxjs';
 import request, { type Response } from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createApplication } from '../bootstrap/create-application.js';
-import { InternalHttpClient } from '../http-client/internal-http-client.js';
-import { ProblemException } from '../problem/problem.js';
-import { generateSigningJwk, publicJwkOf } from '../testing/internal-token-keys.js';
-import {
-  requestOrganizationContextOf,
-  setRequestOrganizationContext,
-} from './internal-token.guard.js';
+import { createApplication } from '../../bootstrap/create-application.js';
+import { InternalHttpClient } from '../../http-client/internal-http-client.js';
+import { ProblemException } from '../../problem/problem.js';
+import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
+import type { InternalPrincipal } from '../context/internal-principal.js';
+import { setRequestOrganizationContext } from '../context/request-organization-context.js';
 import {
   InternalTokenSigner,
   InternalTokenVerifier,
   type Ed25519PrivateJwk,
-  type InternalPrincipal,
 } from './internal-token.js';
-import { getOrganizationContext, type OrganizationContext } from './organization-context.js';
+import {
+  getOrganizationContext,
+  type OrganizationContext,
+} from '../context/organization-context.js';
 
 /**
  * Constant camille
@@ -448,48 +448,5 @@ describe('setRequestOrganizationContext in a gateway that verifies its callers i
     expect(response.body).toMatchObject({ code: 'internal.unexpected' });
     expect(AttachingGuard.refusals).toHaveLength(1);
     expect(AttachingGuard.refusals[0]).toMatch(/carries a verified internal token/u);
-  });
-});
-
-describe('setRequestOrganizationContext', () => {
-  it('attaches a frozen copy that the request identity then reads', () => {
-    const incoming: object = {};
-    const scopes: string[] = ['tasks:write'];
-
-    setRequestOrganizationContext(incoming, { ...camille, scopes });
-    scopes.push('tasks:delete');
-    const attached: OrganizationContext | undefined = requestOrganizationContextOf(incoming);
-
-    expect(attached).toEqual(camille);
-    expect(Object.isFrozen(attached)).toBe(true);
-    expect(Object.isFrozen(attached?.actor)).toBe(true);
-    expect(Object.isFrozen(attached?.scopes)).toBe(true);
-    expect(Object.keys(incoming)).toEqual([]);
-  });
-
-  it('refuses a second context on the same request', () => {
-    const incoming: object = {};
-    setRequestOrganizationContext(incoming, camille);
-
-    expect(() => {
-      setRequestOrganizationContext(incoming, { ...camille, organizationId: null });
-    }).toThrow(/already carries an organization context/u);
-    expect(requestOrganizationContextOf(incoming)?.organizationId).toBe(camille.organizationId);
-  });
-
-  it('refuses a context an internal token could not carry', () => {
-    expect(() => {
-      setRequestOrganizationContext({}, { ...camille, organizationId: 'atelier-nord' });
-    }).toThrow(/Inconsistent organization context/u);
-    expect(() => {
-      setRequestOrganizationContext({}, { ...camille, actor: { type: 'anonymous', id: null } });
-    }).toThrow(/Inconsistent organization context/u);
-    expect(() => {
-      setRequestOrganizationContext({}, { ...camille, actor: { type: 'user', id: null } });
-    }).toThrow(/Inconsistent organization context/u);
-  });
-
-  it('gives a request without identity no context', () => {
-    expect(requestOrganizationContextOf({})).toBeUndefined();
   });
 });
