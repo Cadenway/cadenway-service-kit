@@ -9,6 +9,7 @@ test('authored code follows the Cadenway architecture', () => {
     rootDir: fileURLToPath(new URL('../..', import.meta.url)),
     tsconfig: 'tsconfig.json',
     profile: 'kit',
+    convention: 'strict',
   });
   assert.equal(
     findings.length,

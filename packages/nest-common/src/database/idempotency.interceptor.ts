@@ -12,13 +12,13 @@ import { Reflector } from '@nestjs/core';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { from, lastValueFrom, type Observable } from 'rxjs';
 
-import { requestOrganizationContextOf } from '../auth/internal-token.guard.js';
+import { requestOrganizationContextOf } from '../auth/context/request-organization-context.js';
 import {
   getOrganizationContext,
   runWithOrganizationContext,
   type InternalActor,
   type OrganizationContext,
-} from '../auth/organization-context.js';
+} from '../auth/context/organization-context.js';
 import { ProblemException } from '../problem/problem.js';
 import idempotencyKeys from './idempotency.schema.js';
 import {

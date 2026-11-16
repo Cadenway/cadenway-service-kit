@@ -11,9 +11,12 @@ import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { InternalAccess } from '../auth/internal-token.guard.js';
-import { InternalTokenSigner, type Ed25519PrivateJwk } from '../auth/internal-token.js';
-import { InternalTokenModule } from '../auth/internal-token.module.js';
+import { InternalAccess } from '../auth/internal-token/internal-token.guard.js';
+import {
+  InternalTokenSigner,
+  type Ed25519PrivateJwk,
+} from '../auth/internal-token/internal-token.js';
+import { InternalTokenModule } from '../auth/internal-token/internal-token.module.js';
 import { ProblemFilter } from '../problem/problem.filter.js';
 import { ProblemException } from '../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../testing/internal-token-keys.js';

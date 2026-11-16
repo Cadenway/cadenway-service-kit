@@ -7,10 +7,10 @@ import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { HealthModule } from '../health/health.module.js';
-import { LoggingModule } from '../logging/logging.module.js';
-import { ProblemFilter } from '../problem/problem.filter.js';
-import { generateSigningJwk, publicJwkOf } from '../testing/internal-token-keys.js';
+import { HealthModule } from '../../health/health.module.js';
+import { LoggingModule } from '../../logging/logging.module.js';
+import { ProblemFilter } from '../../problem/problem.filter.js';
+import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import { InternalAccess } from './internal-token.guard.js';
 import { InternalTokenSigner, type Ed25519PrivateJwk } from './internal-token.js';
 import { InternalTokenModule } from './internal-token.module.js';
@@ -18,7 +18,7 @@ import {
   getOrganizationContext,
   requireOrganizationId,
   type OrganizationContext,
-} from './organization-context.js';
+} from '../context/organization-context.js';
 
 /**
  * Type LogLine

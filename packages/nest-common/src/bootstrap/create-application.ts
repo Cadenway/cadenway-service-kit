@@ -4,11 +4,11 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from 'nestjs-pino';
 import type pino from 'pino';
 
-import { OrganizationContextInterceptor } from '../auth/internal-token.guard.js';
+import { OrganizationContextInterceptor } from '../auth/context/organization-context.interceptor.js';
 import {
   InternalTokenModule,
   type InternalTokenModuleOptions,
-} from '../auth/internal-token.module.js';
+} from '../auth/internal-token/internal-token.module.js';
 import type { BaseConfig } from '../config/base-config.js';
 import { ConfigModule } from '../config/config.module.js';
 import { EtagInterceptor } from '../concurrency/etag.js';

@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Pool, PoolClient } from 'pg';
 
-import { requireOrganizationId } from '../auth/organization-context.js';
+import { requireOrganizationId } from '../auth/context/organization-context.js';
 import { ORGANIZATION_SETTING, SYSTEM_ACCESS_SETTING } from './organization-policy.js';
 
 /**

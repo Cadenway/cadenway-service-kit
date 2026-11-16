@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ConfigShape } from '../config/base-config.js';
+import type { ConfigShape } from '../../config/base-config.js';
 import type { Ed25519PrivateJwk, Ed25519PublicJwk } from './internal-token.js';
 
 /**
