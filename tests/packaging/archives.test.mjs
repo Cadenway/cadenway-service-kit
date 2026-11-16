@@ -110,13 +110,18 @@ function peerVersions(archives, minimal) {
   return Object.fromEntries(versions);
 }
 
-function install(directory, dependencies, imports) {
+function install(directory, dependencies, imports, { historical = false } = {}) {
   mkdirSync(directory);
   writeFileSync(
     join(directory, 'package.json'),
     JSON.stringify({ private: true, type: 'module', dependencies }),
   );
-  writeFileSync(join(directory, 'pnpm-workspace.yaml'), 'autoInstallPeers: false\n');
+  const settings = ['autoInstallPeers: false'];
+  if (historical) {
+    // The released messaging archive requires this peer in its metadata and uses no runtime import.
+    settings.push('peerDependencyRules:', '  ignoreMissing:', "    - '@cadenway/contracts'");
+  }
+  writeFileSync(join(directory, 'pnpm-workspace.yaml'), `${settings.join('\n')}\n`);
   writeFileSync(join(directory, '.npmrc'), '@cadenway:registry=https://npm.pkg.github.com\n');
   writeFileSync(
     join(directory, 'consumer.mts'),
@@ -191,7 +196,7 @@ test('packed Service Kit preserves the released public API and supports isolated
     minimalEntries,
   );
   install(full, { ...fullPeers, ...dependencies(archives) }, entryPoints);
-  install(reference, { ...fullPeers, ...baseline }, entryPoints);
+  install(reference, { ...fullPeers, ...baseline }, entryPoints, { historical: true });
 
   const runtimeEntries = [...entryPoints, ...preloadEntries];
   checkRuntime(limited, [...minimalEntries, ...preloadEntries], true);
