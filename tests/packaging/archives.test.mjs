@@ -23,7 +23,6 @@ const baseline = {
   '@cadenway/nest-messaging': '0.1.3',
   '@cadenway/nest-jobs': '0.2.0',
 };
-const contractsPeerVersion = '0.5.0';
 const entryPoints = [
   '@cadenway/nest-common',
   '@cadenway/nest-common/database',
@@ -181,10 +180,11 @@ test('packed Service Kit preserves the released public API and supports isolated
   const reference = join(scratch, 'reference');
   const dependencies = (selected) =>
     Object.fromEntries(selected.map(({ name, archive }) => [name, archive]));
-  const fullPeers = {
-    ...peerVersions(archives, false),
-    '@cadenway/contracts': contractsPeerVersion,
-  };
+  const fullPeers = peerVersions(archives, false);
+  const messaging = archives.find(({ name }) => name === '@cadenway/nest-messaging');
+  // The kit consumes a structural schema interface. The services supply the generated contracts.
+  assert.ok(messaging.manifest.peerDependencies?.['@cadenway/contracts']);
+  assert.equal(messaging.manifest.peerDependenciesMeta?.['@cadenway/contracts']?.optional, true);
   install(
     limited,
     { ...peerVersions(minimalArchives, true), ...dependencies(minimalArchives) },
