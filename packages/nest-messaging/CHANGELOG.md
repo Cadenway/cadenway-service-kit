@@ -1,5 +1,14 @@
 # @cadenway/nest-messaging
 
+## 0.1.4
+
+### Patch Changes
+
+- a931a52: Separate JetStream subscriptions, delivery and recovery behind the existing `EventConsumers`
+  provider, and share the rebuild reply codec between the receiver and emitter.
+- Updated dependencies [54356a9]
+  - @cadenway/nest-common@0.4.3
+
 ## 0.1.3
 
 ### Patch Changes

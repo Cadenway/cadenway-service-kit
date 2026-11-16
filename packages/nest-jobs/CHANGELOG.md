@@ -1,5 +1,11 @@
 # @cadenway/nest-jobs
 
+## 0.2.1
+
+### Patch Changes
+
+- 4d2185e: Separate worker registration, runtime lifecycle and schema provisioning behind the existing jobs API.
+
 ## 0.2.0
 
 ### Minor Changes
