@@ -84,7 +84,7 @@ export {
   RebuildFlushTimeoutError,
   RebuildItemError,
   RebuildRejectedError,
-  type RebuildRejection,
   type RebuildTarget,
 } from './rebuild/rebuild-emitter.js';
+export type { RebuildRejection } from './rebuild/rebuild-reply-codec.js';
 export { durableConsumerName, eventSubject } from './subjects.js';

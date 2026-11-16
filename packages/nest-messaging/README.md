@@ -242,6 +242,11 @@ does not change.
 
 ## Consuming
 
+`EventConsumers` owns the Nest lifecycle and shares a shutdown signal across the durable
+subscriptions and rebuild receivers. Internally, `consumer/subscriptions/` registers and opens the
+durables, `consumer/recovery/` maintains their pull loops, and `consumer/delivery/` handles one
+message at a time. The rebuild receiver and emitter use the same reply codec in `rebuild/`.
+
 A handler consumes one event through its own durable pull consumer, `<service>__<handler>`, with
 the single filter subject of that event. Register it explicitly, from `onApplicationBootstrap` of
 a provider:

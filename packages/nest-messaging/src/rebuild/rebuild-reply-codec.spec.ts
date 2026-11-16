@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { decodeRebuildReply, encodeRebuildReply } from './rebuild-emitter.js';
+import { decodeRebuildReply, encodeRebuildReply } from './rebuild-reply-codec.js';
 
 describe('rebuild reply', () => {
   it('writes the stable reply format', () => {
