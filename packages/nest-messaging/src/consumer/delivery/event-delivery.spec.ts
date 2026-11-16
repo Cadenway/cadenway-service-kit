@@ -1,7 +1,7 @@
 import { ClosedConnectionError } from '@nats-io/transport-node';
 import { describe, expect, it } from 'vitest';
 
-import { answerSafely, contextActorOf } from './event-consumers.js';
+import { answerSafely, contextActorOf } from './event-delivery.js';
 
 describe('contextActorOf', () => {
   it.each(['user', 'automation', 'git', 'system'])(

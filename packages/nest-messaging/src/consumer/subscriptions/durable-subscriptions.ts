@@ -1,0 +1,310 @@
+import {
+  AckPolicy,
+  DeliverPolicy,
+  JetStreamApiCodes,
+  JetStreamApiError,
+  type Consumer,
+  type ConsumerConfig,
+  type ConsumerInfo,
+  type JetStreamManager,
+} from '@nats-io/jetstream';
+import { nanos } from '@nats-io/transport-node';
+import type { Logger } from '@nestjs/common';
+
+import {
+  isJetStreamApiError,
+  type MessagingConnection,
+} from '../../connection/messaging-connection.js';
+import type {
+  EventEnvelope,
+  EventNameOf,
+  EventPayloadOf,
+  EventSchemas,
+} from '../../events/event-envelope.js';
+import { validateEvent } from '../../events/event-validation.js';
+import { ACK_WAIT_MS, eventRoute, type ResolvedMessagingOptions } from '../../messaging-options.js';
+import type { MessagingTuning } from '../../messaging-tuning.js';
+import { durableConsumerName } from '../../subjects.js';
+import type { EventContext } from '../delivery/event-context.js';
+import type { EventDelivery } from '../delivery/event-delivery.js';
+import { ConsumerRecovery } from '../recovery/consumer-recovery.js';
+import { maxDeliveriesOf } from '../retry-delays.js';
+import type { EventSubscription } from './event-subscription.js';
+import type { EventTarget } from './event-target.js';
+import type { RunningConsumer } from './running-consumer.js';
+
+/**
+ * Class DurableSubscriptions
+ *
+ * @description
+ * Registers event handlers and prepares their durable consumers before handing them to the pull loop.
+ */
+export class DurableSubscriptions {
+  // #region Properties
+  /**
+   * Property consumers
+   *
+   * @description
+   * Durable consumers being pulled, by name.
+   *
+   * @type {Map<string, RunningConsumer>}
+   * @readonly
+   */
+  private readonly consumers: Map<string, RunningConsumer> = new Map<string, RunningConsumer>();
+
+  /**
+   * Property recovery
+   *
+   * @description
+   * Pull loop and recovery of the durable subscriptions.
+   *
+   * @type {ConsumerRecovery}
+   * @readonly
+   */
+  private readonly recovery: ConsumerRecovery;
+  // #endregion
+
+  // #region Constructor
+  /**
+   * Constructor
+   *
+   * @description
+   * Shares registration and recovery policy for all durable handlers of the application.
+   *
+   * @param {MessagingConnection} connection - NATS connection of the application.
+   * @param {ResolvedMessagingOptions} options - Routing and consumer policy.
+   * @param {MessagingTuning} tuning - Retry and recovery timing.
+   * @param {Logger} logger - Shared consumer logger.
+   * @param {AbortSignal} shutdown - Stops registrations and recovery on application shutdown.
+   * @param {EventDelivery} delivery - Processes messages pulled by the loop.
+   * @constructor
+   */
+  public constructor(
+    private readonly connection: MessagingConnection,
+    private readonly options: ResolvedMessagingOptions,
+    private readonly tuning: MessagingTuning,
+    private readonly logger: Logger,
+    private readonly shutdown: AbortSignal,
+    delivery: EventDelivery,
+  ) {
+    this.recovery = new ConsumerRecovery(
+      connection,
+      logger,
+      shutdown,
+      tuning.consumerRecoveryDelaysMs,
+      (target: EventTarget, startFrom: Date | undefined): Promise<Consumer> =>
+        this.openConsumer(target, startFrom),
+      delivery,
+    );
+  }
+  // #endregion
+
+  // #region Methods
+  /**
+   * Method subscribe
+   *
+   * @description
+   * Registers a handler for one event and starts delivering to it. With `manageConsumers` on,
+   * the durable consumer is created, or its acknowledgement settings updated; otherwise the
+   * handler binds to the existing consumer.
+   *
+   * @param {EventSubscription<TSchemas, TName>} subscription - Handler name, event and handler.
+   * @returns {Promise<void>} Resolves once the consumer exists and is being pulled.
+   * @throws {Error} When the handler is already registered, the stream is missing, the consumer is missing while `manageConsumers` is off, the server refuses to create or update it, or it filters another subject.
+   */
+  public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
+    subscription: EventSubscription<TSchemas, TName>,
+  ): Promise<void> {
+    if (this.shutdown.aborted) {
+      throw new Error('The application is shutting down: no handler can be registered.');
+    }
+    const name: string = durableConsumerName(this.options.service, subscription.handler);
+    if (this.consumers.has(name)) {
+      throw new Error(`The handler ${subscription.handler} is already registered.`);
+    }
+    const target: EventTarget = {
+      consumer: name,
+      event: subscription.event,
+      route: eventRoute(this.options, subscription.event),
+      deliverPolicy: subscription.deliverPolicy ?? 'all',
+      validate: (candidate: unknown): EventEnvelope =>
+        validateEvent(subscription.schemas, subscription.event, candidate),
+      handle: (payload: EventEnvelope, eventContext: EventContext): Promise<void> =>
+        subscription.handle(payload as EventPayloadOf<TSchemas, TName>, eventContext),
+    };
+    const running: RunningConsumer = {
+      target,
+      startedAt: Date.now(),
+      lastHandledAt: undefined,
+      retrying: new Map<number, number>(),
+      messages: undefined,
+      done: Promise.resolve(),
+    };
+    const consumer: Consumer = await this.openConsumer(target, undefined);
+    this.consumers.set(name, running);
+    running.done = this.recovery.run(running, consumer);
+    this.logger.log(
+      { consumer: name, stream: target.route.stream, subject: target.route.subject },
+      'event consumer started',
+    );
+  }
+
+  /**
+   * Method close
+   *
+   * @description
+   * Stops pulling each consumer and returns the completions for the shutdown deadline.
+   *
+   * @returns {Promise<void>[]} Completions of the running consumers.
+   */
+  public close(): Promise<void>[] {
+    const running: Promise<void>[] = [];
+    for (const consumer of this.consumers.values()) {
+      running.push(consumer.done);
+      void consumer.messages?.close().catch(() => undefined);
+    }
+    return running;
+  }
+
+  /**
+   * Method openConsumer
+   *
+   * @description
+   * Returns the durable consumer of a handler, after creating or updating it when the module
+   * manages consumers, and checks that it filters the expected subject. It reads the consumer
+   * with `$JS.API.CONSUMER.INFO.<stream>.<name>` and never lists nor deletes consumers.
+   *
+   * @param {EventTarget} target - Registered handler.
+   * @param {Date | undefined} startFrom - Start time of a consumer created again, for `deliverPolicy: 'new'`.
+   * @returns {Promise<Consumer>} The consumer, ready to be pulled.
+   */
+  private async openConsumer(target: EventTarget, startFrom: Date | undefined): Promise<Consumer> {
+    const name: string = target.consumer;
+    const stream: string = target.route.stream;
+    try {
+      if (this.options.manageConsumers) {
+        await this.ensureConsumer(target, startFrom);
+      }
+      const consumer: Consumer = await this.connection.jetstream.consumers.get(stream, name);
+      const info: ConsumerInfo = await consumer.info(true);
+      if (info.config.filter_subject !== target.route.subject) {
+        throw new Error(
+          `The consumer ${name} of the stream ${stream} does not filter ${target.route.subject}: a handler consumes exactly one event. Rename the handler to consume another event.`,
+        );
+      }
+      return consumer;
+    } catch (error) {
+      if (isJetStreamApiError(error, JetStreamApiCodes.StreamNotFound)) {
+        throw new Error(
+          `The stream ${stream} does not exist: the streams are created by cadenway-ops, or by MessagingModule with manageStreams in local tests.`,
+          { cause: error },
+        );
+      }
+      if (isJetStreamApiError(error, JetStreamApiCodes.ConsumerNotFound)) {
+        throw new Error(
+          `The durable consumer ${name} does not exist on the stream ${stream}: with manageConsumers off it is created by the platform.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Method ensureConsumer
+   *
+   * @description
+   * Creates the durable pull consumer of a handler, or aligns the acknowledgement wait and the
+   * delivery limit of an existing one, through `$JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>`.
+   * No server-side backoff is set: its first entry would replace the acknowledgement wait.
+   *
+   * The kit never deletes a consumer: when the server refuses the creation or the update, for
+   * instance because a field that cannot change differs, it fails with an error naming the
+   * consumer, and an operator removes the obsolete consumer. A creation that loses the race with
+   * another replica uses the consumer that replica created.
+   *
+   * @param {EventTarget} target - Registered handler.
+   * @param {Date | undefined} startFrom - Start time of a consumer created again, for `deliverPolicy: 'new'`.
+   * @returns {Promise<void>} Resolves once the consumer exists with the expected settings.
+   * @throws {Error} When the server refuses to create or update the consumer.
+   */
+  private async ensureConsumer(target: EventTarget, startFrom: Date | undefined): Promise<void> {
+    const name: string = target.consumer;
+    const stream: string = target.route.stream;
+    const manager: JetStreamManager = await this.connection.manager();
+    const ackWait: number = nanos(ACK_WAIT_MS);
+    const maxDeliver: number = maxDeliveriesOf(this.tuning.retryDelaysMs);
+    const existing: ConsumerInfo | undefined = await this.consumerInfo(manager, stream, name);
+    try {
+      if (existing === undefined) {
+        const start: Partial<ConsumerConfig> =
+          startFrom === undefined
+            ? {
+                deliver_policy:
+                  target.deliverPolicy === 'new' ? DeliverPolicy.New : DeliverPolicy.All,
+              }
+            : { deliver_policy: DeliverPolicy.StartTime, opt_start_time: startFrom.toISOString() };
+        try {
+          await manager.consumers.add(stream, {
+            durable_name: name,
+            name,
+            filter_subject: target.route.subject,
+            ack_policy: AckPolicy.Explicit,
+            ack_wait: ackWait,
+            max_deliver: maxDeliver,
+            ...start,
+          });
+        } catch (error) {
+          if ((await this.consumerInfo(manager, stream, name)) === undefined) {
+            throw error;
+          }
+        }
+        return;
+      }
+      if (
+        existing.config.filter_subject === target.route.subject &&
+        (existing.config.ack_wait !== ackWait || existing.config.max_deliver !== maxDeliver)
+      ) {
+        await manager.consumers.update(stream, name, {
+          ack_wait: ackWait,
+          max_deliver: maxDeliver,
+        });
+      }
+    } catch (error) {
+      if (error instanceof JetStreamApiError) {
+        throw new Error(
+          `The server refused to ${existing === undefined ? 'create' : 'update'} the durable consumer ${name} of the stream ${stream} (${error.message}). The kit never deletes a consumer: an operator removes the obsolete one.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Method consumerInfo
+   *
+   * @description
+   * Reads a consumer, telling a missing one from an error.
+   *
+   * @param {JetStreamManager} manager - JetStream management client.
+   * @param {string} stream - Name of the stream.
+   * @param {string} name - Name of the durable consumer.
+   * @returns {Promise<ConsumerInfo | undefined>} The consumer, or `undefined` when it does not exist.
+   */
+  private async consumerInfo(
+    manager: JetStreamManager,
+    stream: string,
+    name: string,
+  ): Promise<ConsumerInfo | undefined> {
+    try {
+      return await manager.consumers.info(stream, name);
+    } catch (error) {
+      if (isJetStreamApiError(error, JetStreamApiCodes.ConsumerNotFound)) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+  // #endregion
+}
