@@ -1,5 +1,12 @@
 # @cadenway/nest-common
 
+## 0.4.3
+
+### Patch Changes
+
+- 54356a9: Separate request context from internal token guards and verification so the database entry point
+  can read request identity without loading the guard.
+
 ## 0.4.2
 
 ### Patch Changes
