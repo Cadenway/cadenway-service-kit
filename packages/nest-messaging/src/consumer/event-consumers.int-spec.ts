@@ -599,7 +599,13 @@ describe('event consumers on a real NATS server, without a database', () => {
     });
     const publisher: EventPublisher = application.get(EventPublisher);
     await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-BEFORE' }));
-    await waitFor(() => received.length === 1);
+    await waitFor(async () => {
+      const consumer: ConsumerInfo = await manager.consumers.info(
+        'EVENTS_deleted',
+        'search-service__index-task',
+      );
+      return consumer.ack_floor.stream_seq >= 1 && consumer.num_waiting > 0;
+    });
 
     await manager.consumers.delete('EVENTS_deleted', 'search-service__index-task');
     await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-GAP' }));
