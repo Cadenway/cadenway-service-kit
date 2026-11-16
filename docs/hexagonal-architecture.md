@@ -32,7 +32,7 @@ src/
           change-task-status.output.ts
           change-task-status.use-case.spec.ts
         queries/<area>/<operation>/
-      {models,projections,mappers}/<area>/
+      {models,projections,mappers,services}/<area>/
       ports/outbound/<concern>/<area>/
     presentation/
       http/controllers/<resource>/
@@ -164,7 +164,7 @@ src/
 
 Socket.IO receives handshakes and messages in presentation. The application authorizes room membership and chooses the scope of each relay. Use separate ports for NATS input handling, presence and delivery. Bootstrap initializes the shared Redis connection and Socket.IO adapter. The capability owns its handlers and any adapter that implements its port. The same rule applies to technical gateways that need a shared clock or health check.
 
-Use the full capability path as its identifier in dependency checks and `MODULE.md`. `auth` and `routes/auth` are different owners. The four capability families are `routes/<resource>`, `aggregates/<area>`, `public/<flow>` and `relays/<event-family>`. `auth`, `rate-limit`, `connection` and `presence` are named owners. Technical paths for bootstrap, configuration, health, infrastructure, gateway problems and shared clients have explicit rules. An unknown layer within a recognized capability is a violation.
+Use the full capability path as its identifier in dependency checks and `MODULE.md`. `auth` and `routes/auth` are different owners. The four capability families are `routes/<resource>`, `aggregates/<area>`, `public/<flow>` and `relays/<event-family>`. `auth`, `rate-limit`, `connection` and `presence` are named owners. Technical paths for bootstrap, configuration, health, infrastructure, gateway problems and shared clients have explicit rules. Shared HTTP mapping, middleware and session transport helpers can live under `src/presentation/http/{mappers,middleware,session}/`. Only presentation and composition inside a capability can import them. They do not depend on capability internals. An unknown layer within a recognized capability is a violation.
 
 ## Worked examples
 
