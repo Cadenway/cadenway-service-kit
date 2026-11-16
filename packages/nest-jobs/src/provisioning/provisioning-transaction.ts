@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 
-import { describeError } from './describe-error.js';
+import { describeError } from '../jobs/describe-error.js';
 
 /**
  * Constant logger

@@ -15,14 +15,14 @@ import {
   type MockInstance,
 } from 'vitest';
 
-import type { Job, JobEnqueueResult } from './job.js';
+import type { Job, JobEnqueueResult } from '../jobs/job.js';
 import { JobsNotProvisionedError } from './jobs-not-provisioned.error.js';
-import { resolveJobsModuleOptions, type JobsModuleOptions } from './jobs-options.js';
+import { resolveJobsModuleOptions, type JobsModuleOptions } from '../jobs/jobs-options.js';
 import { JobsModule } from './jobs.module.js';
 import { JobsService } from './jobs.service.js';
-import { provisionJobs } from './provision-jobs.js';
+import { provisionJobs } from '../provisioning/provision-jobs.js';
 import { toRuntimeBossOptions } from './runtime-boss-options.js';
-import { CONFIGURATION, ConfigurationModule } from './testing/configuration.module.js';
+import { CONFIGURATION, ConfigurationModule } from '../testing/configuration.module.js';
 import {
   APP_ROLE,
   queryAs,
@@ -30,7 +30,7 @@ import {
   waitFor,
   type JobsTestDatabase,
   type JobsTestServer,
-} from './testing/jobs-database.js';
+} from '../testing/jobs-database.js';
 
 /**
  * Function start

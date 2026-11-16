@@ -17,6 +17,12 @@ rules it implements are the "Background Jobs" section of the
 A service has two PostgreSQL roles. pg-boss needs DDL to install its schema, so the package is
 split along the same line.
 
+The package root exports the Nest providers and the provisioning function. Internally, `jobs/`
+holds the declarations shared by both paths, `schema/` holds the schema contract, and
+`provisioning/` owns DDL. `runtime/` owns the application connection, worker registrations and
+dead-letter monitoring. It uses the shared declarations and schema contract. Nest calls the
+`JobsService` lifecycle hooks, which start and stop the runtime in order.
+
 | Entry point     | Role                               | Runs                                                                                                              | Where it is called                        |
 | --------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
 | `provisionJobs` | `<service>_migrator` (DDL)         | Every DDL statement: schema install and migration, index builds, queue creation and update, grants to the runtime | The one-off `src/migrate.ts` container    |

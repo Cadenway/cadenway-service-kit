@@ -1,6 +1,6 @@
 import type { ConstructorOptions } from 'pg-boss';
 
-import { JOBS_POOL_SIZE, type ResolvedJobsModuleOptions } from './jobs-options.js';
+import { JOBS_POOL_SIZE, type ResolvedJobsModuleOptions } from '../jobs/jobs-options.js';
 
 /**
  * Function toRuntimeBossOptions
