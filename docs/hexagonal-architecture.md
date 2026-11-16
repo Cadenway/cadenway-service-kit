@@ -1,6 +1,6 @@
 # Hexagonal architecture for Cadenway NestJS services and gateways
 
-Cadenway uses two architecture profiles. The `service` profile gives a business capability ownership of its rules, data and transactions. The `gateway` profile gives a technical capability ownership of routing, request aggregation, access checks or realtime delivery. Both profiles use presentation adapters, application ports and explicit Nest composition.
+Cadenway uses two architecture profiles. The `service` profile gives a business capability ownership of its rules, data and transactions. The `gateway` profile gives a technical capability ownership of routing, request aggregation, access checks or realtime delivery. Both profiles put capabilities under `src/modules/<module>/` and use presentation adapters, application use cases, outbound ports and explicit Nest composition.
 
 This is the target for `convention: 'strict'`. A repository can prepare for the target while it still runs the existing checks. See [Consumer rollout](#consumer-rollout) for the activation sequence.
 
@@ -48,7 +48,7 @@ src/
       messaging/{outbox,rebuild}/<area>/
       jobs/pg-boss/<area>/
       adapters/<integration>/
-    composition/
+    composition/                                  # optional NestJS wiring
       tokens/<area>/
       providers/{use-cases,adapters}/<area>/
 test/
@@ -57,21 +57,26 @@ test/
 
 Use kebab-case. File suffixes identify roles, such as `.use-case.ts`, `.input.ts`, `.output.ts`, `.port.ts`, `.controller.ts`, `.dto.ts`, `.handler.ts`, `.gateway.ts`, `.provider.ts`, `.token.ts`, `.schema.ts`, `.repository.ts` and `.mapper.ts`. Give each named exported contract its own file. Private types can stay with their implementation. Keep inputs and outputs beside their use case when they are specific to it. A reusable application model belongs under its own area.
 
-| Area                                    | Responsibility                                                                                                                                               | Dependencies within the module                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `domain/`                               | Apply business rules and model invariants, including the events and errors they produce.                                                                     | Domain.                                                       |
-| `application/`                          | Authorize and orchestrate operations, choose a transaction boundary, invoke ports and map application results. `execute` is the use case's inbound contract. | Application and domain.                                       |
-| `presentation/`                         | Validate the incoming protocol and verified context, call the use case and map the outcome back to the protocol.                                             | Presentation and application entry points.                    |
-| `infrastructure/`                       | Implement outbound ports and map SQL, HTTP, broker or provider representations at that boundary.                                                             | Infrastructure, domain and application ports.                 |
-| `composition/` and `<module>.module.ts` | Assemble the module's providers, controllers and imports.                                                                                                    | The module's layers and declared boundaries of other modules. |
+| Layer             | Responsibility                                                                                                                                               | Dependencies within the module                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `domain/`         | Apply business rules and model invariants, including the events and errors they produce.                                                                     | Domain.                                       |
+| `application/`    | Authorize and orchestrate operations, choose a transaction boundary, invoke ports and map application results. `execute` is the use case's inbound contract. | Application and domain.                       |
+| `presentation/`   | Validate the incoming protocol and verified context, call the use case and map the outcome back to the protocol.                                             | Presentation and application entry points.    |
+| `infrastructure/` | Implement outbound ports and map SQL, HTTP, broker or provider representations at that boundary.                                                             | Infrastructure, domain and application ports. |
 
-Keep Nest, Drizzle, generated wire DTOs, transport exceptions, provider SDKs, environment access and network clients at the edges. For HTTP, use `zodDto` with the generated validators and map the result to the application input. Use one Nest module per capability. Register HTTP controllers in `controllers` and handlers and WebSocket gateways in `providers`. A factory in `composition/providers/` constructs each plain TypeScript use case. A port injected separately has a symbol token declared under `composition/tokens/`. The unit of work constructs transaction-bound repositories from the current transaction.
+Keep Nest, Drizzle, generated wire DTOs, transport exceptions, provider SDKs, environment access and network clients at the edges. For HTTP, use `zodDto` with the generated validators and map the result to the application input. The unit of work constructs transaction-bound repositories from the current transaction.
+
+### NestJS wiring
+
+`<module>.module.ts` is the composition root. Keep small sets of provider declarations, factories and symbol tokens directly in that file. `composition/` is an optional NestJS wiring directory alongside the four layers. Use `composition/providers/` and `composition/tokens/` when splitting out wiring makes the module easier to read. The strict verifier accepts both layouts.
+
+The composition root can reference the module's layers and the declared public boundaries of other modules. Domain and application stay independent of NestJS. Use factories to construct plain TypeScript use cases and symbol tokens for separately injected ports. Register HTTP controllers in `controllers` and handlers and WebSocket gateways in `providers`.
 
 Service-wide configuration, connections, clocks, health and observability are technical concerns. Share reusable Nest mechanisms through the service kit. Keep business rules in their owning capability and use a port when they need technical services. PostgreSQL tables and migrations belong to one service. Use the [database runner and row-level security guidance](../packages/nest-common/README.md#transaction-runners) at the persistence boundary. Use the organization from verified request or event context when working in a tenant transaction. Work without an organization or across organizations uses an explicit system transaction where the owning module permits it.
 
 ### Public module boundaries
 
-Declare consumers in the owner's [module manifest](#modulemd-template). The adapter for a consuming module uses a port owned by that consumer. It maps to the owner's explicitly permitted operation, whose file under `public/<area>/<operation>.ts` exports one local use case class by name. The public file can export named input and output types from that operation and named models or projections from the owning application. In the owner's Nest module, put the same use case in `exports`. Only composition can import another module's declared wiring entry. Cross-service calls use released `@cadenway/contracts` and the generated client or a published event.
+Declare consumers in the owner's [module manifest](#modulemd-template). The adapter for a consuming module uses a port owned by that consumer. It maps to the owner's explicitly permitted operation, whose file under `public/<area>/<operation>.ts` exports one local use case class by name. The public file can export named input and output types from that operation and named models or projections from the owning application. In the owner's Nest module, put the same use case in `exports`. Only the consuming module's NestJS wiring can import another module's declared wiring entry. Cross-service calls use released `@cadenway/contracts` and the generated client or a published event.
 
 Named types reachable from `execute` parameters and results, including nested properties and generic arguments, must be public when they originate in a module. The rule applies to re-exports and aliases. Keep repositories, transaction types, private domain models and outbound ports inside the owning module. Constructor dependencies are part of composition. For example, the Accounts adapter can call the Sessions operation behind its own `SessionOpener` port. Compatible nested transaction runners join the same transaction, preserving the sign-in rollback guarantee.
 
@@ -83,88 +88,99 @@ Named types reachable from `execute` parameters and results, including nested pr
 
 ## Gateway profile
 
-A gateway capability owns technical policy and orchestration. It can apply scopes, rate limits and access checks. Business invariants and persistent business data belong to the owning service. The gateway profile has no business domain, PostgreSQL schemas, business repositories or transactional outbox. Redis stores technical state such as counters and presence.
+Gateway capabilities live under `src/modules/<module>/` and follow the same [NestJS wiring rules](#nestjs-wiring) as services. Each capability owns a `MODULE.md` and a `<module>.module.ts`. A gateway applies technical policy, such as scopes, rate limits and access checks. The services own business invariants and persistent business data. Gateways use Redis for technical state such as counters and presence. The gateway profile excludes a business domain, PostgreSQL schemas, business repositories and a transactional outbox.
+
+Every route, guard that orchestrates a capability, WebSocket entry point and event handler invokes an application use case. This includes a route that forwards a single request. The use case invokes its own outbound port, and composition binds the port to an infrastructure adapter. Presentation imports the use case and its input and output types. Outbound port types, adapter implementations and their injection tokens stay outside presentation.
+
+Gateway modules follow the [public module rules](#public-module-boundaries). A gateway module can also publish a named, decorated guard from `presentation/http/guards/<area>/<name>.guard.ts` through `public/<area>/<name>-guard.ts`. List the presentation consumers in `MODULE.md` and export the guard provider from the owning Nest module. A consuming module imports the declared entry from presentation and the module wiring from composition. For example, `auth` can publish a guard for `me`. The public guard rule is specific to gateways.
+
+Use the module directory name as the owner ID. For example, `auth` owns guard behavior and `auth-routes` owns the public authentication endpoints. A module's URL prefix does not determine its owner. Bootstrap, configuration, health, shared clients and shared Redis are technical wiring at the repository root. The API Gateway also keeps shared problem formatting in `src/problems/` and shared HTTP mappers, middleware and session transport helpers under `src/presentation/http/{mappers,middleware,session}/`. These root concerns stay independent of the individual modules' private ports, tokens and transport classes. Within a module, only presentation and composition use the shared HTTP helpers. An unknown layer under a module root is a violation.
 
 ### API Gateway profile
 
 ```text
 src/
   app.module.ts
-  routes/<resource>/
-    <resource>.module.ts
-    presentation/http/controllers/<resource>/
-    presentation/http/dto/{input,output}/<resource>/
-    presentation/http/mappers/<resource>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/<service>/
-    composition/
-  aggregates/<area>/
-    <area>.module.ts
-    presentation/http/controllers/<resource>/
-    application/use-cases/queries/<area>/<operation>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/<service>/
-    composition/
-  public/<flow>/
-    <flow>.module.ts
-    presentation/http/controllers/<resource>/
-    presentation/http/webhooks/<provider>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/<service>/
-    composition/
-  auth/
-    auth.module.ts
-    presentation/http/guards/<area>/
-    application/use-cases/queries/<area>/<operation>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/<service>/
-    composition/
-  rate-limit/
-    rate-limit.module.ts
-    presentation/http/guards/<area>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/redis/
-    composition/
   problems/
+  presentation/http/{mappers,middleware,session}/
   clients/
     clients.module.ts
     <service>.client.ts
     generated/
+  modules/
+    auth/
+      MODULE.md
+      auth.module.ts
+      public/<area>/<name>-guard.ts
+      presentation/http/guards/<area>/
+      application/use-cases/queries/<area>/verify-session/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<service>/
+      composition/{tokens,providers}/              # optional NestJS wiring
+    auth-routes/
+      MODULE.md
+      auth-routes.module.ts
+      presentation/http/{controllers,mappers}/<resource>/
+      presentation/http/dto/{input,output}/<resource>/
+      application/use-cases/{commands,queries}/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<service>/
+      composition/{tokens,providers}/              # optional NestJS wiring
+    me/
+      MODULE.md
+      me.module.ts
+      presentation/http/controllers/<resource>/
+      application/use-cases/queries/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<service>/
+      composition/{tokens,providers}/              # optional NestJS wiring
+    task-detail/                                  # when aggregation is implemented
+      MODULE.md
+      task-detail.module.ts
+      presentation/http/controllers/<resource>/
+      application/use-cases/queries/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<service>/
+      composition/{tokens,providers}/              # optional NestJS wiring
 ```
 
-Route and aggregate capabilities own their ports, adapters and injection tokens. A route that mirrors a single upstream call can inject its own outbound port and token in presentation. Aggregation has an application use case. The capability's adapter calls the technical client and maps its transport values to the port. `ClientsModule` exposes shared technical clients through its Nest exports. A capability imports it and binds its own port in its composition. Technical clients under `src/clients/` use the generated code and stay independent of the capabilities. `src/public/<flow>/` groups unauthenticated HTTP routes. A capability-local `public/<area>/<operation>.ts` is a cross-capability contract.
+`auth` owns guard orchestration, including `VerifySession`. `auth-routes` owns the public authentication endpoints. `me` owns the current-user endpoint. Add future aggregations, rate-limit policies and public flows as named modules when they have an implemented capability. A future webhook relay belongs to its owning named module under `presentation/http/webhooks/<provider>/`.
 
-A gateway capability can also publish a guard from its presentation layer. Re-export the named decorated guard from `presentation/http/guards/<area>/<name>.guard.ts` in `public/<area>/<name>-guard.ts`. List its presentation consumers in `MODULE.md` and export the guard provider from the owning Nest module. Consumers import the declared entry from presentation. This guard boundary applies to gateways.
+`ClientsModule` exports shared technical clients. Those clients invoke `src/clients/generated/` and work with wire types. Each consuming module imports `ClientsModule` for composition, adapts the technical client to a module-owned port and maps wire values at the adapter. An HTTP controller maps its request and response and invokes only the local application use case. Keep aggregation, deadline behavior and permitted partial results in the appropriate application use case and shared technical client.
 
 ### Realtime Gateway profile
 
 ```text
 src/
   app.module.ts
-  connection/
-    connection.module.ts
-    presentation/websocket/gateways/<channel>/
-    application/use-cases/{commands,queries}/<area>/<operation>/
-    application/ports/outbound/<concern>/<area>/
-    composition/
-  relays/<event-family>/
-    <event-family>.module.ts
-    presentation/messaging/handlers/<event-family>/
-    application/use-cases/commands/<area>/<operation>/
-    application/ports/outbound/<concern>/<area>/
-    composition/
-  presence/
-    presence.module.ts
-    application/use-cases/{commands,queries}/<area>/<operation>/
-    application/ports/outbound/<concern>/<area>/
-    infrastructure/adapters/redis/
-    composition/
   infrastructure/redis/
+  modules/
+    connection/
+      MODULE.md
+      connection.module.ts
+      presentation/websocket/gateways/<channel>/
+      application/use-cases/{commands,queries}/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<integration>/
+      composition/{tokens,providers}/              # optional NestJS wiring
+    <event-family>-relay/                         # when the relay is implemented
+      MODULE.md
+      <event-family>-relay.module.ts
+      presentation/messaging/handlers/<event-family>/
+      application/use-cases/commands/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/<integration>/
+      composition/{tokens,providers}/              # optional NestJS wiring
+    presence/                                     # when presence is implemented
+      MODULE.md
+      presence.module.ts
+      application/use-cases/{commands,queries}/<area>/<operation>/
+      application/ports/outbound/<concern>/<area>/
+      infrastructure/adapters/redis/
+      composition/{tokens,providers}/              # optional NestJS wiring
 ```
 
-Socket.IO receives handshakes and messages in presentation. The application authorizes room membership and chooses the scope of each relay. Use separate ports for NATS input handling, presence and delivery. Bootstrap initializes the shared Redis connection and Socket.IO adapter. The capability owns its handlers and any adapter that implements its port. The same rule applies to technical gateways that need a shared clock or health check.
-
-Use the full capability path as its identifier in dependency checks and `MODULE.md`. `auth` and `routes/auth` are different owners. The four capability families are `routes/<resource>`, `aggregates/<area>`, `public/<flow>` and `relays/<event-family>`. `auth`, `rate-limit`, `connection` and `presence` are named owners. Technical paths for bootstrap, configuration, health, infrastructure, gateway problems and shared clients have explicit rules. Shared HTTP mapping, middleware and session transport helpers can live under `src/presentation/http/{mappers,middleware,session}/`. Only presentation and composition inside a capability can import them. They do not depend on capability internals. An unknown layer within a recognized capability is a violation.
+`connection` owns the Socket.IO entry point and its connection policy. The application authorizes room membership before the transport joins the socket. A future relay family has a named module of its own. Its handler validates the event, and its use case chooses the scope of delivery. The presence capability owns its ports and any adapter that implements them. Bootstrap initializes the shared Redis connection and Socket.IO adapter.
 
 ## Worked examples
 
@@ -198,13 +214,15 @@ See [consuming events](../packages/nest-messaging/README.md#consuming) and [enqu
 
 See [the rebuild transport](../packages/nest-messaging/README.md#rebuild).
 
-### HTTP aggregate
+### HTTP mirror and aggregate
 
-An aggregate controller calls the query under `aggregates/<area>/application/use-cases/queries/`. The query issues independent reads concurrently through capability-local ports. The adapters use the internal client's request deadline. A required source failure fails the request. A secondary failure produces a partial result only when the public contract authorizes it. The controller maps the final result to the public DTO.
+The current-user controller in `src/modules/me/presentation/http/controllers/` calls its local application query. The query reads through its own port. The `me` adapter implements that port with a shared technical client and maps the response from the internal contract. A mirror keeps this boundary even when it makes one upstream request.
+
+The future task-detail controller calls a query in `src/modules/task-detail/application/use-cases/queries/`. That query issues independent reads concurrently through module-owned ports. The adapters use the internal client's request deadline. A required source failure fails the request. A secondary failure produces a partial result only when the public contract authorizes it. The controller maps the final result to the public DTO.
 
 ### Realtime relay
 
-The connection gateway validates the handshake, then calls the room use case to check organization membership and object access before joining. A NATS relay maps a validated event to a fan-out request. Application selects the recipients in scope, and the Redis-backed Socket.IO adapter sends to those rooms. The gateway handles incoming sockets in presentation. The shared Socket.IO server and its Redis fan-out adapter are part of the technical bootstrap.
+When room joining is implemented, the gateway in `src/modules/connection/presentation/websocket/gateways/` validates the handshake and calls the application use case to check organization membership and object access before joining. When a relay is implemented, its own module's NATS handler maps a validated event to a use case input. Application selects the recipients in scope, and the Redis-backed Socket.IO adapter sends to those rooms. The shared Socket.IO server and its Redis fan-out adapter are part of the technical bootstrap.
 
 ### Other boundaries
 
@@ -229,7 +247,7 @@ Publish the guide and checker before activation. An activation can merge once it
 
 ## MODULE.md template
 
-Replace the sample names and write `None` for sections without entries. Keep `Public entry points` as a machine-readable table. Paths are relative to the owning capability and omit `.ts`. List consumers by their owner IDs, separated by commas. A gateway may use an owner ID such as `routes/me`. Declare a wiring file separately when another capability needs to import it. Document request and event contracts in their owning specifications.
+Replace the sample names and write `None` for sections without entries. Keep `Public entry points` as a machine-readable table. Paths are relative to the owning module and omit `.ts`. List consumers by their module directory names, separated by commas. A gateway may use an owner ID such as `me` or `auth-routes`. Declare a wiring file separately when another module needs to import it. Document request and event contracts in their owning specifications.
 
 ```md
 # Tasks
