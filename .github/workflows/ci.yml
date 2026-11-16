@@ -43,6 +43,9 @@ jobs:
       - run: pnpm test:architecture
       - run: pnpm test:integration
       - run: pnpm build
+      - run: pnpm test:packaging
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   tooling:
     name: Agent tooling copies

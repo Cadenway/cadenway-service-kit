@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { ConfigError, loadConfig } from '../config/load-config.js';
+import { loadConfig, type ConfigError } from '../config/load-config.js';
 import { redisConfigShape, type RedisConfig } from './redis-config.js';
 
 /**
