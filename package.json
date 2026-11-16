@@ -14,14 +14,15 @@
     "build": "tsc -b",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint .",
-    "test:lint": "node --test rules/documentation.test.mjs",
+    "lint": "eslint . --max-warnings=0",
+    "test:lint": "node --test tests/lint/eslint-rules.test.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run --project unit",
     "test:architecture": "node --test tests/architecture/project.test.mjs",
+    "test:packaging": "node --test tests/packaging/archives.test.mjs",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "changeset": "changeset",
-    "quality": "pnpm format:check && pnpm test:lint && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build",
+    "quality": "pnpm format:check && pnpm test:lint && pnpm lint && pnpm typecheck && pnpm test && pnpm test:architecture && pnpm build && pnpm test:packaging",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
