@@ -461,6 +461,7 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
     await appendTaskUpdated(application, { taskId: 'CAD-HUNG' });
     await appendTaskUpdated(application, { taskId: 'CAD-NEXT' });
     await waitFor(() => handled.length === 2, 10_000);
+    await waitFor(() => settled('EVENTS_hung', 'search-service__index-task', 2));
     const index: unknown[] = await table(
       'select task_id, writes from search_index order by task_id',
     );
