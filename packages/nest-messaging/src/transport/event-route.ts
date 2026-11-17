@@ -8,19 +8,59 @@ import { eventSubject } from './subjects.js';
  */
 export interface EventRoutingOptions {
   // #region Properties
-  /** Stream for ordinary events. */
+  /**
+   * Property eventsStream
+   *
+   * @description
+   * Stream for ordinary events.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly eventsStream: string;
 
-  /** Stream for restricted events. */
+  /**
+   * Property restrictedStream
+   *
+   * @description
+   * Stream for restricted events.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly restrictedStream: string;
 
-  /** First token of ordinary event subjects. */
+  /**
+   * Property eventSubjectPrefix
+   *
+   * @description
+   * First token of ordinary event subjects.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly eventSubjectPrefix: string;
 
-  /** First token of restricted event subjects. */
+  /**
+   * Property restrictedSubjectPrefix
+   *
+   * @description
+   * First token of restricted event subjects.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly restrictedSubjectPrefix: string;
 
-  /** Names that use the restricted route. */
+  /**
+   * Property restrictedEvents
+   *
+   * @description
+   * Names that use the restricted route.
+   *
+   * @type {readonly string[]}
+   * @readonly
+   */
   readonly restrictedEvents: readonly string[];
   // #endregion
 }

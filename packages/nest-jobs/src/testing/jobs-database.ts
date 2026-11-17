@@ -107,9 +107,9 @@ export interface JobsTestServer {
    * Creates an empty database so each scenario starts from a known state.
    *
    * @param {boolean} [ownedByMigrator] - Whether the migrator role owns the database and may
-   * therefore create schemas in it. Defaults to `true`.
+   *   therefore create schemas in it. Defaults to `true`.
    * @param {boolean} [opsDefaultPrivileges] - Whether the database is set up as cadenway-ops sets
-   * up a service database, default privileges included. Defaults to `true`.
+   *   up a service database, default privileges included. Defaults to `true`.
    * @returns {Promise<JobsTestDatabase>} The database and its connections.
    */
   createDatabase(

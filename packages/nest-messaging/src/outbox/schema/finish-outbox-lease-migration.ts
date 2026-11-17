@@ -1,15 +1,29 @@
 import type { PoolClient, QueryResult } from 'pg';
 
-const MIGRATION_LOCK: string = 'cadenway:outbox-lease-migration';
-
-type IndexState = Readonly<{ valid: boolean; belongs_to_outbox: boolean }>;
+import { inspectOutboxLeaseSchema } from './inspect-outbox-lease-schema.js';
 
 /**
+ * Constant MIGRATION_LOCK
+ *
+ * @description
+ * Database advisory lock key that serializes finalization across migrator sessions.
+ *
+ * @type {string}
+ */
+const MIGRATION_LOCK: string = 'cadenway:outbox-lease-migration';
+
+/**
+ * Function finishOutboxLeaseMigration
+ *
+ * @description
  * Completes a service's additive outbox migration after its Drizzle transaction commits.
  * The caller supplies a dedicated migrator session and closes or releases it afterwards.
  *
+ * Rebuilds an invalid index only if its definition matches the expected expiry index.
+ *
  * @param {PoolClient} client - Connected PostgreSQL session outside a transaction.
- * @returns {Promise<void>} Resolves after the index and both checks are valid.
+ * @returns {Promise<void>} Resolves when both checks and the expected expiry index are valid.
+ * @throws When another migrator holds the lock, the schema differs, or PostgreSQL rejects validation.
  */
 export async function finishOutboxLeaseMigration(client: PoolClient): Promise<void> {
   const lock: QueryResult<{ acquired: boolean }> = await client.query(
@@ -23,19 +37,21 @@ export async function finishOutboxLeaseMigration(client: PoolClient): Promise<vo
   }
 
   try {
-    const index: QueryResult<IndexState> = await client.query(
-      `select indisvalid as valid, indrelid = 'public.outbox_events'::regclass as belongs_to_outbox
-         from pg_catalog.pg_index
-        where indexrelid = to_regclass('public.outbox_events_lease_expiry_index')`,
-    );
-    const existing: IndexState | undefined = index.rows[0];
-    if (existing !== undefined && !existing.belongs_to_outbox) {
-      throw new Error('The outbox lease expiry index belongs to another table.');
+    const schema = await inspectOutboxLeaseSchema(client, 'public.outbox_events');
+    if (schema === undefined) {
+      throw new Error(
+        'Apply the service outbox table migration before finalizing the lease expansion.',
+      );
     }
-    if (existing?.valid === false) {
+    if (schema.index_state === 'divergent') {
+      throw new Error(
+        "The outbox lease expiry index differs from the expected definition: (lease_expires_at, id) where status = 'leased'.",
+      );
+    }
+    if (schema.index_state === 'invalid') {
       await client.query('drop index concurrently public.outbox_events_lease_expiry_index');
     }
-    if (existing?.valid !== true) {
+    if (schema.index_state !== 'valid') {
       await client.query(
         `create index concurrently outbox_events_lease_expiry_index
            on public.outbox_events (lease_expires_at, id) where status = 'leased'`,

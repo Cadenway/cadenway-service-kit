@@ -15,10 +15,8 @@ import type {
   JobScheduleOptions,
   JobUnscheduleOptions,
 } from '../../jobs/scheduling/job-schedule-options.js';
-import {
-  resolveJobsModuleOptions,
-  type JobsModuleOptions,
-} from '../../jobs/configuration/jobs-options.js';
+import type { JobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
+import { resolveLegacyJobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
 import { JobsRuntime } from '../lifecycle/jobs-runtime.js';
 import { JOBS_MODULE_OPTIONS } from './jobs-module-options.js';
 
@@ -26,14 +24,10 @@ import { JOBS_MODULE_OPTIONS } from './jobs-module-options.js';
  * Service JobsService
  *
  * @description
- * Runtime of the durable background jobs of a service, on top of pg-boss, with the application
- * role.
+ * Compatibility API that combines transactional enqueue, workers and the scheduler.
  *
- * It starts with the module and fails the start-up of the application when the database was not
- * provisioned or when it is connected as a role that can run DDL in the pg-boss schema. It never
- * runs DDL. Its pool holds two connections, apart from the application pool. Delivery is at least
- * once: a job can run again after a crash, a timeout or a shutdown, so every handler must be
- * idempotent.
+ * The service validates the provisioned database as the application role before opening its
+ * separate two-connection pool. Delivery is at least once, so handlers must be idempotent.
  */
 @Injectable()
 export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
@@ -55,14 +49,17 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * Constructor
    *
    * @description
-   * Validates the module options and applies their defaults. No connection is opened here.
+   * Validates and resolves options before the application opens a jobs connection.
    *
    * @param {JobsModuleOptions} options - Options given to `JobsModule`.
-   * @throws {Error} When an option or a queue declaration is invalid.
    * @constructor
+   * @throws {Error} When an option or a queue declaration is invalid.
    */
   public constructor(@Inject(JOBS_MODULE_OPTIONS) options: JobsModuleOptions) {
-    this.runtime = new JobsRuntime(resolveJobsModuleOptions(options), new Logger(JobsService.name));
+    this.runtime = new JobsRuntime(
+      resolveLegacyJobsRuntimeOptions(options),
+      new Logger(JobsService.name),
+    );
   }
   // #endregion
 
@@ -71,15 +68,13 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * Method onModuleInit
    *
    * @description
-   * Starts pg-boss with the application role, refuses a role that can create objects in the
-   * pg-boss schema, checks that the schema and every declared queue were provisioned, warns about
-   * stored schedules of queues that are no longer declared, and starts the dead-letter watch. The
-   * module is global, so this runs before the `onModuleInit` of the modules that register workers.
+   * Checks provisioning on a temporary connection and then starts pg-boss as the application
+   * role. The global module starts before application modules register their workers.
    *
    * @returns {Promise<void>} Resolves once jobs can be enqueued and workers registered.
    * @throws {JobsNotProvisionedError} When the schema, a grant or a declared queue is missing.
    * @throws {Error} When the connected role can create objects in the schema and
-   * `allowPrivilegedRole` is not set.
+   *   `allowPrivilegedRole` is not set.
    */
   public async onModuleInit(): Promise<void> {
     await this.runtime.start();
@@ -150,7 +145,7 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * @param {JobWorkOptions} [options] - Concurrency and polling interval.
    * @returns {Promise<void>} Resolves once the worker polls the queue.
    * @throws {Error} When the runtime is not started, the queue is not declared or already has a
-   * worker, or an option is out of bounds.
+   *   worker, or an option is out of bounds.
    */
   public async work<TPayload>(
     queue: string,
@@ -175,7 +170,7 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * @param {JobScheduleOptions} options - Mandatory time zone, payload and key.
    * @returns {Promise<void>} Resolves once the schedule is stored.
    * @throws {Error} When the runtime is not started, the queue is not declared, the time zone is
-   * missing or unknown, or the expression is invalid.
+   *   missing or unknown, or the expression is invalid.
    */
   public async schedule(queue: string, cron: string, options: JobScheduleOptions): Promise<void> {
     await this.runtime.schedule(queue, cron, options);
@@ -190,7 +185,7 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * more, so the schedule of a queue that left the declarations can still be removed.
    *
    * @param {string} queue - Queue of the schedule, declared or not.
-   * @param {JobUnscheduleOptions} [options] - Key of the schedule; the empty key when omitted.
+   * @param {JobUnscheduleOptions} [options] - Omitting the key removes the schedule with the empty key.
    * @returns {Promise<void>} Resolves once the schedule is removed, or was not there.
    * @throws {Error} When the runtime is not started or the queue name is not a valid name.
    */

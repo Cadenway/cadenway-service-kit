@@ -1,7 +1,11 @@
 import pino from 'pino';
 
 import { ConfigError } from '../../config/load-config.js';
-import { redactedKeySet, sanitizeSerializedError } from '../../logging/redaction.js';
+import {
+  redactedKeySet,
+  sanitizeLogValue,
+  sanitizeSerializedError,
+} from '../../logging/redaction.js';
 import { readPackageVersion } from '../application/package-version.js';
 
 /**
@@ -95,11 +99,15 @@ export interface RunApplicationOptions {
  */
 function serializeStartupError(error: unknown): Record<string, unknown> {
   const cause: Error = error instanceof Error ? error : new Error(String(error));
-  const serialized: Record<string, unknown> = { ...pino.stdSerializers.err(cause) };
+  const keys: ReadonlySet<string> = redactedKeySet();
+  const serialized: Record<string, unknown> = sanitizeSerializedError(
+    pino.stdSerializers.err(cause),
+    keys,
+  );
   if (cause instanceof ConfigError) {
-    serialized.issues = [...cause.issues];
+    serialized.issues = sanitizeLogValue(cause.issues, keys);
   }
-  return sanitizeSerializedError(serialized, redactedKeySet());
+  return serialized;
 }
 
 /**

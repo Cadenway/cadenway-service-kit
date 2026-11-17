@@ -27,10 +27,10 @@ remains the compatibility entry for `JobsModule`, `JobsService`, and `provisionJ
 | `provisionJobs`     | `<service>_migrator` (DDL)         | Every DDL statement: schema install and migration, index builds, queue creation and update, grants to the runtime | The one-off `src/migrate.ts` container                           |
 | `JobsRuntimeModule` | `<service>_app` (no DDL, with RLS) | Only DML for the selected capabilities: enqueue, work, schedules and supervision                                  | The application or a dedicated process, once, in the root module |
 
-The runtime starts pg-boss with `migrate: false` and `createSchema: false`: at start-up it only
-reads the installed schema version. It never creates, alters or drops an object, and its
-integration tests run it as a role that owns nothing and has no `CREATE` right on the database or
-on the schema. It refuses to start as a role that can create objects in the pg-boss schema.
+The runtime checks the schema version, the application role and the declared queues before it
+starts pg-boss with `migrate: false` and `createSchema: false`. The integration tests use a role
+with no ownership or `CREATE` right on the database or schema. A role that can create objects in
+the pg-boss schema is refused by default.
 
 The deployment order is therefore: run the migration container, then start the service. The
 runtime only starts on the exact schema version its pg-boss expects: when a release of this package
@@ -249,7 +249,7 @@ supervision and dead-letter monitoring to the scheduler.
 | `schema`                         | `pgboss`          | Schema of the pg-boss tables, the one given to `provisionJobs`.                                                    |
 | `runInOrganization`              | calls the handler | `(organizationId, work) => Promise<void>`: wraps each handler call in the organization context of its job.         |
 | `shutdownTimeoutMs`              | `30000`           | Time running handlers get to finish at shutdown, at least 1000.                                                    |
-| `deadLetterCheckIntervalSeconds` | `60`              | Whole seconds between checks for jobs retained in the dead-letter queues. `0` turns the watch off.                 |
+| `deadLetterCheckIntervalSeconds` | `60`              | Whole seconds between checks of retained dead letters, up to 2,147,483. `0` turns the watch off.                   |
 | `allowPrivilegedRole`            | `false`           | Lets the runtime start as a role that can create objects in the schema. For a local stack with a single role only. |
 
 A default never changes without a major release.
@@ -257,8 +257,10 @@ A default never changes without a major release.
 **Connections.** The worker and scheduler use one pg-boss pool apart from the application pool.
 Size it per replica and include it in the deployment's aggregate PostgreSQL budget. Worker
 `concurrency` and `pollingIntervalSeconds` control processing and polling separately from connection
-capacity. A producer-only process uses one temporary connection to verify its schema and role at
-start-up, then uses only the caller's transaction, including for pg-boss queue metadata queries.
+capacity. Every process verifies provisioning on one temporary connection, with a 10-second
+connection timeout and a 10-second timeout per query. It closes that session before enabling
+its capabilities. A producer-only process then uses only the caller's transaction, including
+for pg-boss queue metadata queries.
 
 **Compatibility.** The root `JobsModule` and `JobsService` still combine the three capabilities,
 with their original two-connection pool. Replace each `JobsService` injection by the relevant
@@ -271,9 +273,10 @@ when the schema is missing or at another version, when the connected role lacks 
 when a declared queue or its dead-letter queue does not exist. The message says what is missing.
 The fix is always to run `provisionJobs`. It also fails, with a plain error, when the connected
 role can create objects in the pg-boss schema: that is the migrator role, an owner or a superuser,
-not the application role. Invalid options are refused before any connection opens. A stored
-schedule whose queue is not declared is logged as a warning. Dead-letter monitoring starts in
-the background. A failed check is logged and retried on the configured interval.
+not the application role. Invalid options are refused before any connection opens. A scheduler
+logs a warning for a stored schedule whose queue is no longer declared. Dead-letter monitoring
+starts in the background. A failed monitoring check is logged and retried on the configured
+interval.
 
 **Shutdown.** In `beforeApplicationShutdown` the module asks pg-boss to stop fetching and cancels
 the dead-letter check in flight. The `shutdownTimeoutMs` grace starts immediately. At expiry the

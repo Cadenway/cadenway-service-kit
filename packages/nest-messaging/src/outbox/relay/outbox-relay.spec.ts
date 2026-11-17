@@ -9,11 +9,8 @@ import { PermissionViolationError, TimeoutError } from '@nats-io/transport-node'
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  EventStreamUnavailableError,
-  type EventPublisher,
-  type OutgoingEvent,
-} from '../../publisher/event-publisher.js';
+import type { EventPublisher, OutgoingEvent } from '../../publisher/event-publisher.js';
+import { EventStreamUnavailableError } from '../../publisher/event-stream-unavailable-error.js';
 import { resolveOutboxOptions } from '../wiring/outbox-options.js';
 import type { PendingRow } from './outbox-relay-store.js';
 import { OutboxRelay } from './outbox-relay.js';
@@ -42,6 +39,20 @@ function systemWith(query: TransactionClient['query']): SystemTransactionRunner<
     run: <TResult>(work: (tx: TransactionScope<DatabaseSchema>) => Promise<TResult>) =>
       work({ client: { query } } as TransactionScope<DatabaseSchema>),
   } as SystemTransactionRunner<DatabaseSchema>;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: Error) => void = () => undefined;
+  const promise: Promise<T> = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('stopsPass', () => {
@@ -129,6 +140,48 @@ describe('OutboxRelay', () => {
       ['first'],
       [],
     ]);
+  });
+
+  it('drains independent manual passes during shutdown even when one transaction fails', async () => {
+    const ack = deferred<undefined>();
+    const publishing = deferred<undefined>();
+    const selectionFailure = deferred<{ rows: unknown[] }>();
+    const transactionError = new Error('transaction failed');
+    const query = vi
+      .fn<TransactionClient['query']>()
+      .mockResolvedValueOnce({ rows: [pendingRow('first')] })
+      .mockReturnValueOnce(selectionFailure.promise)
+      .mockResolvedValue({ rows: [] });
+    const publishEnvelope = vi.fn((): Promise<void> => {
+      publishing.resolve(undefined);
+      return ack.promise;
+    });
+    const relay = new OutboxRelay(
+      systemWith(query),
+      { publishEnvelope } as unknown as EventPublisher,
+      resolveOutboxOptions({ relay: false }),
+    );
+    relay.onApplicationBootstrap();
+
+    const first = relay.publishPending();
+    await publishing.promise;
+    const second = expect(relay.publishPending()).rejects.toThrow(transactionError);
+    const stopped = vi.fn();
+    const shutdown = relay.beforeApplicationShutdown().then(stopped);
+    try {
+      await expect(relay.publishPending()).rejects.toThrow('shutting down');
+      selectionFailure.reject(transactionError);
+      await second;
+      expect(stopped).not.toHaveBeenCalled();
+    } finally {
+      selectionFailure.reject(transactionError);
+      ack.resolve(undefined);
+    }
+    await expect(first).resolves.toEqual({ published: 1, failed: 0, interrupted: false });
+    await shutdown;
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(publishEnvelope).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(3);
   });
 
   it('immediately resumes a partial batch deferred by the budget, then returns to its poll interval', async () => {

@@ -32,7 +32,7 @@ export function assertOccurrenceKey(occurrenceKey: unknown): asserts occurrenceK
  * @param {string} queue - Queue the job is enqueued in.
  * @param {string | null} organizationId - Organization of the enqueuing transaction, or `null`.
  * @param {string} occurrenceKey - Key that identifies the occurrence within the queue and the
- * organization.
+ *   organization.
  * @returns {string} A lowercase UUID, stable for the triple.
  * @throws {Error} When the key is not a non-empty string.
  */

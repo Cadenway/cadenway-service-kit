@@ -62,7 +62,7 @@ export function toJobEnvelope(organizationId: unknown, payload: unknown): JobEnv
  * @param {unknown} data - Data stored on the job.
  * @returns {JobEnvelope} The envelope the job was enqueued with.
  * @throws {Error} When the data was not written by this package; the attempt then fails and
- * follows the queue's retry policy to the dead-letter queue.
+ *   follows the queue's retry policy to the dead-letter queue.
  */
 export function readJobEnvelope(data: unknown): JobEnvelope {
   if (

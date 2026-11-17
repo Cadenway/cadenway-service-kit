@@ -5,10 +5,8 @@ import type { ResolvedMessagingOptions } from '../../configuration/messaging-opt
  * Constant REDACTED_PAYLOAD_KEY
  *
  * @description
- * Key, set to `true`, that marks the payload of an outbox row the relay redacted. The contracts
- * name their fields in camelCase, so no event field can take this name. The requeue and the relay
- * read it to never publish a redacted payload again. Other versions of the kit read it: it changes
- * only in a major.
+ * Persisted marker set to `true` when the relay removes a payload. Its name is outside the
+ * contracts' camelCase fields and must remain stable across versions to prevent replay.
  *
  * @type {string}
  */
@@ -18,10 +16,8 @@ export const REDACTED_PAYLOAD_KEY: string = '$redacted';
  * Constant REDACTED_PAYLOAD_SQL
  *
  * @description
- * SQL expression of the redacted payload of the row an `update outbox_events` statement changes:
- * the envelope fields every reader of the table relies on (`id`, `occurredAt`, `organizationId`,
- * `actor`, `version`) and the redaction marker, nothing else. It is never null, so the not-null
- * constraint of `payload` cannot fail and echo the row in its error.
+ * Expression for replacing a stored payload with its envelope and redaction marker. Always
+ * returns an object so it satisfies the payload's not-null constraint.
  *
  * @type {string}
  */
@@ -38,7 +34,7 @@ export const REDACTED_PAYLOAD_SQL: string = `jsonb_build_object(
  * Type RestrictedNames
  *
  * @description
- * The options of the messaging module that make a stored route restricted.
+ * Stream and subject prefix used to identify restricted outbox rows.
  *
  * @type {Pick<ResolvedMessagingOptions, 'restrictedStream' | 'restrictedSubjectPrefix'>}
  */
@@ -51,7 +47,7 @@ export type RestrictedNames = Pick<
  * Interface StoredRoute
  *
  * @description
- * Route the writer stored with an outbox row.
+ * Destination recorded by the writer in the outbox transaction.
  */
 export interface StoredRoute {
   // #region Properties
@@ -59,7 +55,7 @@ export interface StoredRoute {
    * Property subject
    *
    * @description
-   * Subject of the row.
+   * Resolved subject used by the relay instead of deriving it again.
    *
    * @type {string}
    * @readonly
@@ -70,7 +66,7 @@ export interface StoredRoute {
    * Property stream
    *
    * @description
-   * Stream of the row.
+   * Stream expected to acknowledge the publish.
    *
    * @type {string}
    * @readonly
@@ -83,14 +79,12 @@ export interface StoredRoute {
  * Function isRestrictedRoute
  *
  * @description
- * Tells whether the route stored with an outbox row is the restricted one: the restricted stream,
- * or a subject under the restricted prefix. It reads the stored route, never `restrictedEvents`,
- * so a replica that does not list the event yet still treats its row as restricted. The SQL of
- * Automatic maintenance applies the same predicate to legacy sent rows.
+ * Matches the persisted restricted route by stream or subject prefix. A writer and relay can
+ * disagree about the event list during a rollout, so maintenance uses the same route check.
  *
- * @param {RestrictedNames} options - Restricted stream and subject prefix of the module.
- * @param {StoredRoute} route - Subject and stream of the row.
- * @returns {boolean} `true` for a restricted row.
+ * @param {RestrictedNames} options - Configured stream and prefix that identify restricted routes.
+ * @param {StoredRoute} route - Route persisted by the writer.
+ * @returns {boolean} Whether the stored route is restricted.
  */
 export function isRestrictedRoute(options: RestrictedNames, route: StoredRoute): boolean {
   return (
@@ -103,12 +97,10 @@ export function isRestrictedRoute(options: RestrictedNames, route: StoredRoute):
  * Function isRedactedPayload
  *
  * @description
- * Tells whether an outbox payload was redacted by the relay: its event was published once and its
- * content is gone, so it can never be published again. A value that is not an object, which only
- * a hand-written row can hold, is not redacted: its publish fails like any invalid row.
+ * Identifies the envelope-only payload of a previously sent event, which cannot be replayed.
  *
- * @param {EventEnvelope | null} payload - Payload read from the outbox.
- * @returns {boolean} `true` when the payload carries the redaction marker.
+ * @param {EventEnvelope | null} payload - Stored event body, which may have been reduced to its envelope.
+ * @returns {boolean} Whether the stored payload carries the redaction marker.
  */
 export function isRedactedPayload(payload: EventEnvelope | null): boolean {
   return payload !== null && Object.hasOwn(payload, REDACTED_PAYLOAD_KEY);

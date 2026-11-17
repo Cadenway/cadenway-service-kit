@@ -194,8 +194,6 @@ function configToProvide(options: CreateApplicationOptions): Readonly<object> {
  * (`runApplication`); NestJS would otherwise print the buffered lines, and those its other
  * modules still write while the creation unwinds, through its console logger. The next
  * application created in the same process, such as the next test, installs its own logger.
- *
- * @returns {void}
  */
 function silenceNestLogger(): void {
   NestLogger.overrideLogger(false);

@@ -10,15 +10,35 @@ import type {
 import { executeTransaction } from './transaction-executor.js';
 
 // The policies cast the organization id to uuid in PostgreSQL.
+/**
+ * Constant UUID_PATTERN
+ *
+ * @description
+ * Rejects organization ids PostgreSQL could not cast to a UUID in the row-level policies.
+ *
+ * @type {RegExp}
+ */
 const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /**
+ * Class TenantTransactionRunner
+ *
+ * @description
  * Runs a transaction for the organization of the verified request context. Its RLS setting
  * restricts rows to that organization, in addition to the explicit filters of the queries.
  */
 export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<string, never>> {
   // #region Constructor
-  /** Binds the runner to the service's pool and optional schema. */
+  /**
+   * Constructor
+   *
+   * @description
+   * Binds the runner to the service's pool and optional schema.
+   *
+   * @param {Pool} pool - PostgreSQL pool that owns the checked-out connection.
+   * @param {TSchema | undefined} schema - Optional Drizzle schema for the scoped database.
+   * @constructor
+   */
   public constructor(
     private readonly pool: Pool,
     private readonly schema?: TSchema,
@@ -27,8 +47,15 @@ export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<str
 
   // #region Methods
   /**
-   * Joins a compatible transaction of the same organization, or opens one and commits it on
+   * Method run
+   *
+   * @description
+   * Joins a transaction of the same organization, pool and schema, or opens one and commits it on
    * success. Rejects missing organization context or a nested request that would change access.
+   *
+   * @param {(scope: TransactionScope<TSchema>) => Promise<TResult>} work - Callback that runs with the checked-out transaction scope.
+   * @param {TransactionOptions} options - Isolation and read-only requirements for the transaction.
+   * @returns {Promise<TResult>} The work result after commit when this runner owns the transaction.
    */
   public async run<TResult>(
     work: (scope: TransactionScope<TSchema>) => Promise<TResult>,
@@ -39,6 +66,7 @@ export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<str
       throw new Error('The organization id of the context is not a UUID.');
     }
     const active: TransactionScope<TSchema> | undefined = joinActiveTransaction<TSchema>(
+      { pool: this.pool, schema: this.schema },
       options,
       (scope: TransactionScope<DatabaseSchema>) => {
         if (scope.kind !== 'tenant' || scope.organizationId !== organizationId) {

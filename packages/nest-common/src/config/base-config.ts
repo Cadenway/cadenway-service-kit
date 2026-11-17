@@ -83,7 +83,7 @@ export interface BaseConfig {
  * Zod shape whose parsed output is the given configuration type. Spread several shapes into one
  * `z.object` to compose the schema of an application.
  *
- * @type {{ readonly [TKey in keyof TConfig]: z.ZodType<TConfig[TKey]> }}
+ * @type {{ readonly [TKey in keyof TConfig]: z.ZodType<TConfig[TKey]>; }}
  */
 export type ConfigShape<TConfig> = { readonly [TKey in keyof TConfig]: z.ZodType<TConfig[TKey]> };
 

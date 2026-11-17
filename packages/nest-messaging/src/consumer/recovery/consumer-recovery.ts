@@ -200,6 +200,9 @@ export class ConsumerRecovery {
   private async pump(running: RunningConsumer, messages: ConsumerMessages): Promise<void> {
     try {
       for await (const message of messages) {
+        if (this.stopped()) {
+          return;
+        }
         await this.delivery.deliver(running.target, message);
       }
     } catch (error) {

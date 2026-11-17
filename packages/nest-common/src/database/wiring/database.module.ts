@@ -109,7 +109,7 @@ export interface DatabaseModuleAsyncOptions<
    * @description
    * Modules exporting the providers named in `inject`, when they are not global.
    *
-   * @type {ModuleMetadata['imports']}
+   * @type {ModuleMetadata['imports'] | undefined}
    * @readonly
    */
   readonly imports?: ModuleMetadata['imports'];
@@ -120,7 +120,7 @@ export interface DatabaseModuleAsyncOptions<
    * @description
    * Tokens of the providers handed to `useFactory`, in order, such as `CONFIG`.
    *
-   * @type {FactoryProvider['inject']}
+   * @type {FactoryProvider['inject'] | undefined}
    * @readonly
    */
   readonly inject?: FactoryProvider['inject'];
@@ -147,7 +147,7 @@ export interface DatabaseModuleAsyncOptions<
  * @description
  * Injection token of the resolved options of the module, internal to it.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 const DATABASE_OPTIONS: unique symbol = Symbol('cadenway.database.options');
 

@@ -2,7 +2,8 @@ import { expect, it, vi } from 'vitest';
 
 import type { MessagingConnection } from '../../connection/messaging-connection.js';
 import { resolveMessagingOptions } from '../../configuration/resolve-messaging-options.js';
-import { RebuildEmitter, RebuildFlushTimeoutError } from './rebuild-emitter.js';
+import { RebuildFlushTimeoutError } from '../../index.js';
+import { RebuildEmitter } from './rebuild-emitter.js';
 
 it('times out a rebuild flush when the broker leaves it pending', async () => {
   vi.useFakeTimers();

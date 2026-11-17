@@ -12,12 +12,9 @@ import {
   type InternalTokenSignerConfig,
   type InternalTokenVerifierConfig,
 } from './internal-token.config.js';
-import {
-  InternalTokenSigner,
-  InternalTokenVerifier,
-  type Ed25519PrivateJwk,
-  type InternalTokenClaims,
-} from './internal-token.js';
+import { InternalTokenSigner } from './internal-token-signer.js';
+import { InternalTokenVerifier } from './internal-token-verifier.js';
+import type { Ed25519PrivateJwk, InternalTokenClaims } from './internal-token.js';
 
 /**
  * Constant userClaims

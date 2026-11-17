@@ -1,20 +1,56 @@
 import { metrics, type Histogram, type Meter, type MeterProvider } from '@opentelemetry/api';
 
-/** Instruments for the checkout and connection-holding phases of a transaction. */
+/**
+ * Interface TransactionMetrics
+ *
+ * @description
+ * Instruments for the checkout and connection-holding phases of a transaction.
+ */
 interface TransactionMetrics {
   // #region Properties
-  /** Records successful and failed acquisition times. */
+  /**
+   * Property poolAcquireDuration
+   *
+   * @description
+   * Records successful and failed acquisition times.
+   *
+   * @type {Histogram}
+   * @readonly
+   */
   readonly poolAcquireDuration: Histogram;
 
-  /** Records time spent holding an acquired connection. */
+  /**
+   * Property transactionDuration
+   *
+   * @description
+   * Records time spent holding an acquired connection.
+   *
+   * @type {Histogram}
+   * @readonly
+   */
   readonly transactionDuration: Histogram;
   // #endregion
 }
 
+/**
+ * Property instruments
+ *
+ * @description
+ * Caches transaction instruments for the active meter provider and refreshes them when the SDK starts.
+ *
+ * @type {{ readonly provider: MeterProvider; readonly metrics: TransactionMetrics; } | undefined}
+ */
 let instruments:
   { readonly provider: MeterProvider; readonly metrics: TransactionMetrics } | undefined;
 
-/** Returns instruments for the currently installed provider, including SDK startup after import. */
+/**
+ * Function transactionMetrics
+ *
+ * @description
+ * Returns instruments for the currently installed provider, including SDK startup after import.
+ *
+ * @returns {TransactionMetrics} Histograms attached to the current meter provider.
+ */
 export function transactionMetrics(): TransactionMetrics {
   const provider: MeterProvider = metrics.getMeterProvider();
   if (instruments?.provider === provider) {

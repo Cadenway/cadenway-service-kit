@@ -7,10 +7,8 @@ import {
   type CircuitBreakerPolicy,
 } from 'cockatiel';
 
-import type {
-  InternalTokenClaims,
-  InternalTokenSigner,
-} from '../../auth/internal-token/internal-token.js';
+import type { InternalTokenSigner } from '../../auth/internal-token/internal-token-signer.js';
+import type { InternalTokenClaims } from '../../auth/internal-token/internal-token.js';
 import {
   getOrganizationContext,
   type OrganizationContext,
@@ -27,6 +25,7 @@ import {
   REQUEST_TIMEOUT_HEADER,
 } from '../deadline/request-deadline.js';
 import { readUpstreamProblem } from './read-upstream-problem.js';
+import { UpstreamFailure } from './upstream-failure.js';
 
 /**
  * Constant MAX_CALL_TIMEOUT_MS
@@ -164,39 +163,15 @@ export interface InternalRequestInit extends RequestInit {
   // #endregion
 }
 
-/** The response and the signal that still bounds reading its body. */
-type AttemptResponse = readonly [response: Response, signal: AbortSignal];
-
 /**
- * Class UpstreamFailure
+ * Type AttemptResponse
  *
  * @description
- * Failed attempt, as counted by the circuit breaker: the called service did not answer, or
- * answered a server error.
+ * The response and the signal that still bounds reading its body.
+ *
+ * @type {readonly [ response: Response, signal: AbortSignal ]}
  */
-class UpstreamFailure extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Records what went wrong with one attempt.
-   *
-   * @param {'unreachable' | 'timeout' | 'unavailable' | 'failed'} kind - Kind of failure; `unavailable` is a 503, `failed` another server error.
-   * @param {boolean} counted - Whether the circuit breaker counts the failure against the called service.
-   * @param {unknown} cause - Underlying error, kept for the logs.
-   * @constructor
-   */
-  public constructor(
-    public readonly kind: 'unreachable' | 'timeout' | 'unavailable' | 'failed',
-    public readonly counted: boolean,
-    cause?: unknown,
-  ) {
-    super(`upstream ${kind}`, { cause });
-    this.name = 'UpstreamFailure';
-  }
-  // #endregion
-}
+type AttemptResponse = readonly [response: Response, signal: AbortSignal];
 
 /**
  * Constant IDEMPOTENT_METHODS
@@ -215,14 +190,29 @@ const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * Function isRelayedStatus
+ *
+ * @description
+ * Identifies client-error statuses the caller may receive unchanged.
+ *
+ * @param {number} status - HTTP status received from the called service.
+ * @returns {status is ProblemStatus} True when the status can be relayed without changing it.
+ */
+function isRelayedStatus(status: number): status is ProblemStatus {
+  return RELAYED_STATUSES.has(status);
+}
+
+/**
  * Constant RELAYED_STATUSES
  *
  * @description
- * Client-error statuses of a called service that are relayed to the caller as they are.
+ * Limits the upstream client errors returned with their original HTTP status.
  *
  * @type {ReadonlySet<number>}
  */
-const RELAYED_STATUSES: ReadonlySet<number> = new Set<number>([400, 403, 404, 409, 412, 422, 429]);
+const RELAYED_STATUSES: ReadonlySet<number> = new Set([
+  400, 403, 404, 409, 412, 422, 429,
+] satisfies ProblemStatus[]);
 
 /**
  * Function claimsOf
@@ -490,7 +480,7 @@ export class InternalHttpClient {
    * Builds the problem thrown when the called service could not serve the call.
    *
    * @param {string} reason - Last part of the `upstream.*` code.
-   * @param {unknown} cause - Underlying error, kept for the logs.
+   * @param {unknown | undefined} cause - Underlying error, kept for the logs.
    * @returns {ProblemException} A 503 problem naming the called service.
    */
   private unavailable(reason: string, cause?: unknown): ProblemException {
@@ -507,21 +497,21 @@ export class InternalHttpClient {
    * Method clientError
    *
    * @description
-   * Converts a client-error response of the called service into the problem to throw: relayed
-   * with its code when the status is one a caller may see, replaced by a 503 otherwise.
+   * Relays permitted client errors and masks an upstream internal-token rejection as a 503.
    *
-   * @param {Response} response - Response whose status is between 400 and 499.
-   * @param {AbortSignal} signal - Deadline and cancellation of this response.
-   * @returns {Promise<ProblemException>} The problem to throw.
+   * @param {Response} response - Upstream response whose body may be read or canceled.
+   * @param {AbortSignal} signal - Signal that cancels reading the upstream response body.
+   * @returns {Promise<ProblemException>} The translated problem without the internal-token rejection body.
    */
   private async clientError(response: Response, signal: AbortSignal): Promise<ProblemException> {
-    const upstream: Record<string, unknown> = await readUpstreamProblem(response, signal);
     if (response.status === 401) {
+      void response.body?.cancel().catch(() => undefined);
       return this.unavailable('unauthorized');
     }
+    const upstream: Record<string, unknown> = await readUpstreamProblem(response, signal);
     const upstreamDetails: unknown = upstream.details;
     return new ProblemException({
-      status: (RELAYED_STATUSES.has(response.status) ? response.status : 400) as ProblemStatus,
+      status: isRelayedStatus(response.status) ? response.status : 400,
       code: typeof upstream.code === 'string' ? upstream.code : 'upstream.error',
       ...(typeof upstream.title === 'string' ? { title: upstream.title } : {}),
       ...(typeof upstream.detail === 'string' ? { detail: upstream.detail } : {}),

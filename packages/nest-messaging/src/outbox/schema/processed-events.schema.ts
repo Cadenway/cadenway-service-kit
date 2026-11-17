@@ -1,20 +1,14 @@
 import { index, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 /**
- * Table `processed_events`, published as `processedEvents` by the `/outbox` entry point.
+ * Constant processedEvents
  *
- * One row per event a durable consumer handled: the consumer name (`<service>__<handler>`) and
- * the event id. The row is inserted in the transaction of the handler, so it exists if and only
- * if the handler committed; a redelivery of the same id finds it and skips the handler. This
- * table is the real guard against duplicates: the server only deduplicates inside its two-minute
- * window.
+ * @description
+ * Deduplicates each event ID per durable consumer. The row and the handler's work commit in the
+ * same transaction, so a redelivery can skip that work while the row is retained.
  *
- * The table holds no business data and no `organization_id`, so it carries no row-level security
- * policy. `processed_at` is indexed for the purge of old rows.
- *
- * It is a default export so that its column types stay inferred, like the outbox table.
- *
- * A change to this table ships a migration note for every service.
+ * The table has only consumer and event identifiers and the indexed retention timestamp.
+ * It carries no organization policy.
  */
 export default pgTable(
   'processed_events',

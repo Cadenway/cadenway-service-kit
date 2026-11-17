@@ -10,6 +10,10 @@ import {
 import { rebuildSubject } from '../../transport/subjects.js';
 
 import { decodeRebuildReply, type RebuildRejection } from '../codec/rebuild-reply-codec.js';
+import { RebuildConsumerUnavailableError } from './rebuild-consumer-unavailable-error.js';
+import { RebuildFlushTimeoutError } from './rebuild-flush-timeout-error.js';
+import { RebuildItemError } from './rebuild-item-error.js';
+import { RebuildRejectedError } from './rebuild-rejected-error.js';
 
 /**
  * Interface RebuildTarget
@@ -55,125 +59,6 @@ export interface RebuildTarget<TItem> {
 }
 
 /**
- * Class RebuildRejectedError
- *
- * @description
- * Raised by `RebuildEmitter.emit`, in the `reply` mode, when the consumer answered that it did
- * not apply the item. The emitter may send the item again: a rebuild is restartable.
- */
-export class RebuildRejectedError extends Error {
-  // #region Properties
-  /**
-   * Property reason
-   *
-   * @description
-   * Why the consumer refused the item.
-   *
-   * @type {RebuildRejection}
-   * @readonly
-   */
-  public readonly reason: RebuildRejection;
-  // #endregion
-
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error.
-   *
-   * @param {string} subject - Rebuild subject the item was sent on.
-   * @param {RebuildRejection} reason - Why the consumer refused the item.
-   * @constructor
-   */
-  public constructor(subject: string, reason: RebuildRejection) {
-    super(`The consumer of ${subject} refused a rebuild item: ${reason}.`);
-    this.name = 'RebuildRejectedError';
-    this.reason = reason;
-  }
-  // #endregion
-}
-
-/**
- * Class RebuildItemError
- *
- * @description
- * Raised by `RebuildEmitter.emit` when the item does not match the schema it was given with.
- * Nothing is sent, and the message names fields only, never a value.
- */
-export class RebuildItemError extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error from the fields that do not match.
-   *
-   * @param {string} subject - Rebuild subject the item was meant for.
-   * @param {readonly string[]} fields - Dotted paths of the fields that do not match.
-   * @constructor
-   */
-  public constructor(subject: string, fields: readonly string[]) {
-    super(
-      `A rebuild item for ${subject} does not match its schema (${fields.join(', ') || 'item'}).`,
-    );
-    this.name = 'RebuildItemError';
-  }
-  // #endregion
-}
-
-/**
- * Class RebuildConsumerUnavailableError
- *
- * @description
- * Raised by `RebuildEmitter.emit`, in the `reply` mode, when no consumer listens on the rebuild
- * subject: the consuming service is down or did not register the entity.
- */
-export class RebuildConsumerUnavailableError extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error.
-   *
-   * @param {string} subject - Rebuild subject nobody listens on.
-   * @param {unknown} cause - Error of the NATS client.
-   * @constructor
-   */
-  public constructor(subject: string, cause: unknown) {
-    super(`No consumer listens on ${subject}.`, { cause });
-    this.name = 'RebuildConsumerUnavailableError';
-  }
-  // #endregion
-}
-
-/**
- * Class RebuildFlushTimeoutError
- *
- * @description
- * Raised by `RebuildEmitter.emit` and `flush`, in the `none` mode, when the server did not
- * confirm the items within `rebuildTimeoutMs`, as during a NATS outage.
- */
-export class RebuildFlushTimeoutError extends Error {
-  // #region Constructor
-  /**
-   * Constructor
-   *
-   * @description
-   * Builds the error.
-   *
-   * @param {number} timeoutMs - Time waited, in milliseconds.
-   * @constructor
-   */
-  public constructor(timeoutMs: number) {
-    super(`The server did not confirm the rebuild items within ${String(timeoutMs)} ms.`);
-    this.name = 'RebuildFlushTimeoutError';
-  }
-  // #endregion
-}
-
-/**
  * Class RebuildEmitter
  *
  * @description
@@ -214,10 +99,10 @@ export class RebuildEmitter {
    * Constructor
    *
    * @description
-   * Stores the connection and the options.
+   * Uses the module's rebuild route, acknowledgement mode and timeout.
    *
-   * @param {MessagingConnection} connection - NATS connection of the application.
-   * @param {ResolvedMessagingOptions} options - Options of the module.
+   * @param {MessagingConnection} connection - Connection used for publication, requests and flushes.
+   * @param {ResolvedMessagingOptions} options - Routing, acknowledgement and batching options.
    * @constructor
    */
   public constructor(

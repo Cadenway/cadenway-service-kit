@@ -1,14 +1,13 @@
 import {
   Module,
-  Injectable,
   type DynamicModule,
   type FactoryProvider,
-  Logger,
   type ModuleMetadata,
   type Provider,
 } from '@nestjs/common';
 
 import { PostgresEventDeduplicationModule } from '../../consumer/postgres/postgres-event-deduplication.module.js';
+import { LegacyOutboxNotice } from './legacy-outbox-notice.js';
 import {
   OUTBOX_OPTIONS,
   resolveOutboxOptions,
@@ -22,8 +21,7 @@ import { OutboxWriter } from '../writer/outbox-writer.js';
  * Interface OutboxModuleAsyncOptions
  *
  * @description
- * Options of `OutboxModule.forRootAsync`, for options built from injected providers such as the
- * validated configuration.
+ * Configures the legacy outbox module from injected providers.
  */
 export interface OutboxModuleAsyncOptions {
   // #region Properties
@@ -31,9 +29,9 @@ export interface OutboxModuleAsyncOptions {
    * Property imports
    *
    * @description
-   * Modules whose exported providers `useFactory` injects, when they are not global.
+   * Modules exporting non-global providers used by `useFactory`.
    *
-   * @type {ModuleMetadata['imports']}
+   * @type {ModuleMetadata['imports'] | undefined}
    * @readonly
    */
   readonly imports?: ModuleMetadata['imports'];
@@ -42,10 +40,9 @@ export interface OutboxModuleAsyncOptions {
    * Property inject
    *
    * @description
-   * Tokens of the providers handed to `useFactory`, in order: global providers, or providers
-   * exported by `imports`.
+   * Provider tokens in the order accepted by `useFactory`.
    *
-   * @type {FactoryProvider['inject']}
+   * @type {FactoryProvider['inject'] | undefined}
    * @readonly
    */
   readonly inject?: FactoryProvider['inject'];
@@ -54,7 +51,7 @@ export interface OutboxModuleAsyncOptions {
    * Property useFactory
    *
    * @description
-   * Builds the options of the module from the injected providers.
+   * Builds the relay settings from the injected providers.
    *
    * @type {(...dependencies: never[]) => OutboxModuleOptions | Promise<OutboxModuleOptions>}
    * @readonly
@@ -65,23 +62,11 @@ export interface OutboxModuleAsyncOptions {
   // #endregion
 }
 
-@Injectable()
-class LegacyOutboxNotice {
-  // #region Methods
-  /** Announces the compatibility entry point during bootstrap. */
-  public onApplicationBootstrap(): void {
-    new Logger(OutboxModule.name).warn(
-      'OutboxModule is deprecated; compose OutboxWriterModule, OutboxRelayModule and PostgresEventDeduplicationModule as needed.',
-    );
-  }
-  // #endregion
-}
-
 /**
  * Constant OUTBOX_PROVIDERS
  *
  * @description
- * Providers of the module that do not depend on how the options are given.
+ * Legacy providers shared by both module registration paths.
  *
  * @type {Provider[]}
  */
@@ -91,7 +76,7 @@ const OUTBOX_PROVIDERS: Provider[] = [LegacyOutboxNotice, OutboxWriter, OutboxRe
  * Constant OUTBOX_EXPORTS
  *
  * @description
- * What the module makes injectable in the whole application.
+ * Providers the legacy module makes available outside its own composition root.
  *
  * @type {NonNullable<DynamicModule['exports']>}
  */
@@ -105,14 +90,10 @@ const OUTBOX_EXPORTS: NonNullable<DynamicModule['exports']> = [
  * Class OutboxModule
  *
  * @description
- * Gives a service with a database the outbox writer, the relay and the PostgreSQL deduplicator,
- * globally. Importing it registers the deduplicator as the deduplicator of the application:
- * every handler registered with `EventConsumers` then runs at most once per event, in a
- * transaction.
+ * Registers the writer, legacy relay and PostgreSQL deduplicator globally. A durable handler's
+ * committed work and its processed event ID share a transaction, so redelivery can skip it.
  *
- * It requires `DatabaseModule` of `@cadenway/nest-common/database`, for the two transaction
- * runners, and `MessagingModule` of this package, both imported by the application. The three
- * tables it uses come from the migrations of the service: see the README.
+ * The application imports `DatabaseModule` and `MessagingModule` and owns the table migrations.
  */
 @Module({})
 export class OutboxModule {
@@ -121,11 +102,11 @@ export class OutboxModule {
    * Method forRoot
    *
    * @description
-   * Registers the module.
+   * Registers the global module with explicit or default relay settings.
    *
-   * @param {OutboxModuleOptions} options - Relay settings; every option has a default.
-   * @returns {DynamicModule} The global module.
-   * @throws {Error} When the batch size or the poll interval is not positive.
+   * @param {OutboxModuleOptions} options - Legacy relay settings. Omitted values take the documented defaults.
+   * @returns {DynamicModule} Global module with writer, relay and deduplication providers.
+   * @throws When the batch size or poll interval is not positive.
    */
   public static forRoot(options: OutboxModuleOptions = {}): DynamicModule {
     return {
@@ -144,11 +125,10 @@ export class OutboxModule {
    * Method forRootAsync
    *
    * @description
-   * Same as `forRoot`, with options built from injected providers:
-   * `OutboxModule.forRootAsync({ inject: [CONFIG], useFactory: (config) => ({ relay: config.OUTBOX_RELAY }) })`.
+   * Registers the global module with relay settings built from injected providers.
    *
-   * @param {OutboxModuleAsyncOptions} options - Imports, injection tokens and the factory of the options.
-   * @returns {DynamicModule} The global module.
+   * @param {OutboxModuleAsyncOptions} options - Factory and dependency tokens used to resolve legacy relay settings.
+   * @returns {DynamicModule} Global module resolving its legacy settings from the injected dependencies.
    */
   public static forRootAsync(options: OutboxModuleAsyncOptions): DynamicModule {
     const factory: (

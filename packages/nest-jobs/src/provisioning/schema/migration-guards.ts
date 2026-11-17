@@ -117,11 +117,11 @@ interface InputGrant {
  * @param {string} schema - Schema that holds the pg-boss tables.
  * @param {string} appRole - Role the runtime connects as.
  * @param {boolean} managed - Whether the access of the application role is managed, which it is not
- * when the application role is the migrator role itself.
+ *   when the application role is the migrator role itself.
  * @returns {Promise<boolean>} `true` when the schema was prepared for the installation, `false` when
- * pg-boss turned out to be installed already.
+ *   pg-boss turned out to be installed already.
  * @throws {Error} When the application role can still use the schema afterwards: it is a superuser,
- * owns the schema, or belongs to a role that keeps its privileges.
+ *   owns the schema, or belongs to a role that keeps its privileges.
  */
 export async function closeSchemaForInstall(
   client: Client,
@@ -290,7 +290,7 @@ export async function holdIndexBuilds(
  * @param {boolean} release - Whether the builds were held and must be released.
  * @returns {Promise<void>} Resolves once the tables are closed and the builds released.
  * @throws {Error} When a role that can use the schema can write `bam` or `version`; the builds then
- * stay held.
+ *   stay held.
  */
 export async function closeMigratorInputs(
   client: Client,

@@ -17,25 +17,74 @@ import {
 import type { ResolvedMessagingOptions } from '../configuration/messaging-options.js';
 import { isJetStreamApiError } from './jetstream-api-error.js';
 
+/**
+ * Constant DAY_MS
+ *
+ * @description
+ * Number of milliseconds used to convert stream retention from days.
+ *
+ * @type {number}
+ */
 const DAY_MS: number = 86_400_000;
 
+/**
+ * Interface ManagedStream
+ *
+ * @description
+ * Identifies a stream and its storage limits when Messaging manages JetStream resources.
+ */
 interface ManagedStream {
   // #region Properties
-  /** Stream name. */
+  /**
+   * Property name
+   *
+   * @description
+   * Stream name.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly name: string;
 
-  /** Wildcard subject stored by the stream. */
+  /**
+   * Property subject
+   *
+   * @description
+   * Wildcard subject stored by the stream.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly subject: string;
 
-  /** Retention duration in milliseconds. */
+  /**
+   * Property maxAgeMs
+   *
+   * @description
+   * Retention duration in milliseconds.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly maxAgeMs: number;
 
-  /** Stream byte limit, or -1 for unlimited. */
+  /**
+   * Property maxBytes
+   *
+   * @description
+   * Stream byte limit, or -1 for unlimited.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly maxBytes: number;
   // #endregion
 }
 
 /**
+ * Function prepareStreams
+ *
+ * @description
  * Checks the streams this service uses, or provisions all three for a managed installation.
  *
  * @param {JetStreamManager} manager - Administrative client on the application's connection.
@@ -78,6 +127,16 @@ export async function prepareStreams(
   }
 }
 
+/**
+ * Function checkStreams
+ *
+ * @description
+ * Checks only the streams required by the enabled capabilities and reports all missing ones together.
+ *
+ * @param {JetStreamManager} manager - JetStream client with permission to inspect the configured streams.
+ * @param {ResolvedMessagingOptions} options - Enabled capabilities and the names of their streams.
+ * @returns {Promise<void>} Resolves when the streams required by the configured capabilities exist.
+ */
 async function checkStreams(
   manager: JetStreamManager,
   options: ResolvedMessagingOptions,
@@ -103,6 +162,16 @@ async function checkStreams(
   }
 }
 
+/**
+ * Function streamExists
+ *
+ * @description
+ * Checks stream existence without treating broker or permission failures as a missing stream.
+ *
+ * @param {JetStreamManager} manager - JetStream client used to inspect the stream.
+ * @param {string} stream - Name of the stream to check.
+ * @returns {Promise<boolean>} Resolves to whether the named stream exists. Other JetStream errors are propagated.
+ */
 async function streamExists(manager: JetStreamManager, stream: string): Promise<boolean> {
   try {
     await manager.streams.info(stream);
@@ -115,6 +184,17 @@ async function streamExists(manager: JetStreamManager, stream: string): Promise<
   }
 }
 
+/**
+ * Function ensureStream
+ *
+ * @description
+ * Updates the configured limits of an existing stream or provisions it with file storage and oldest-first discard.
+ *
+ * @param {JetStreamManager} manager - JetStream client with permission to create or update streams.
+ * @param {ManagedStream} stream - Subject, age and byte limits to apply.
+ * @param {Logger} logger - Logger for stream creation.
+ * @returns {Promise<void>} Resolves once the stream has the requested configuration.
+ */
 async function ensureStream(
   manager: JetStreamManager,
   stream: ManagedStream,

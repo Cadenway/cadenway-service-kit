@@ -1,20 +1,56 @@
 import type { HealthIndicator } from './health-indicators.js';
 
-/** The outcome of a readiness check, including the request's waiting limit. */
+/**
+ * Type ProbeOutcome
+ *
+ * @description
+ * The outcome of a readiness check, including the request's waiting limit.
+ *
+ * @type {'up' | 'unreachable' | 'timeout'}
+ */
 type ProbeOutcome = 'up' | 'unreachable' | 'timeout';
 
-/** Waiters on one underlying driver operation. */
+/**
+ * Type ProbeWaiters
+ *
+ * @description
+ * Waiters on one underlying driver operation.
+ *
+ * @type {Set<(outcome: ProbeOutcome) => void>}
+ */
 type ProbeWaiters = Set<(outcome: ProbeOutcome) => void>;
 
-/** Keeps one driver operation per indicator until it actually settles. */
+/**
+ * Class ReadinessProbes
+ *
+ * @description
+ * Keeps one driver operation per indicator until it actually settles.
+ */
 export class ReadinessProbes {
   // #region Properties
-  /** In-flight operations keyed by the configured indicator instance. */
+  /**
+   * Property pending
+   *
+   * @description
+   * In-flight operations keyed by the configured indicator instance.
+   *
+   * @type {WeakMap<HealthIndicator, ProbeWaiters>}
+   * @readonly
+   */
   private readonly pending = new WeakMap<HealthIndicator, ProbeWaiters>();
   // #endregion
 
   // #region Methods
-  /** Waits for the indicator within this readiness request's timeout. */
+  /**
+   * Method wait
+   *
+   * @description
+   * Waits for the indicator within this readiness request's timeout.
+   *
+   * @param {HealthIndicator} indicator - Configured readiness dependency to probe.
+   * @param {number} timeoutMs - Maximum time this request waits for the probe, in milliseconds.
+   * @returns {Promise<ProbeOutcome>} The driver outcome, or a timeout limited to this caller.
+   */
   public wait(indicator: HealthIndicator, timeoutMs: number): Promise<ProbeOutcome> {
     const waiters: ProbeWaiters = this.pending.get(indicator) ?? this.start(indicator);
     return new Promise((resolve) => {
@@ -28,6 +64,15 @@ export class ReadinessProbes {
     });
   }
 
+  /**
+   * Method start
+   *
+   * @description
+   * Starts one shared driver operation and notifies remaining callers when it settles.
+   *
+   * @param {HealthIndicator} indicator - Configured readiness dependency to probe.
+   * @returns {ProbeWaiters} The shared set of callbacks waiting for this driver operation.
+   */
   private start(indicator: HealthIndicator): ProbeWaiters {
     const waiters: ProbeWaiters = new Set();
     this.pending.set(indicator, waiters);

@@ -12,9 +12,9 @@ import {
   type JetStreamManager,
   type StoredMsg,
 } from '@nats-io/jetstream';
-import type { NatsConnection } from '@nats-io/transport-node';
+import { nanos, type NatsConnection } from '@nats-io/transport-node';
 import type { TestingModule } from '@nestjs/testing';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_DEDUPLICATOR,
@@ -41,7 +41,7 @@ import {
 import { startTestNats, type TestNats } from '../../testing/nats.js';
 import { appendTaskUpdated, asMember, migrateOutbox, startService } from '../../testing/outbox.js';
 import { startTestDatabase, type TestDatabase } from '../../testing/postgres.js';
-import { delay, waitFor } from '../../testing/wait.js';
+import { deferred, delay, waitFor } from '../../testing/wait.js';
 import { MessagingModule } from '../../wiring/messaging.module.js';
 import { PostgresEventDeduplicationModule } from './postgres-event-deduplication.module.js';
 import { PostgresEventDeduplicator } from './postgres-event-deduplicator.js';
@@ -555,5 +555,85 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
       { task_id: 'CAD-NEXT', writes: 1 },
     ]);
     expect(processed).toHaveLength(2);
+  });
+
+  it('redelivers an unsettled commit after shutdown and skips its effect on another instance', async () => {
+    const names = isolatedNames('shutdowncommit');
+    const options = { ...names, service: 'search-service', shutdownTimeoutMs: 100 };
+    const first: TestingModule = await startService(database, nats, options, { relay: false });
+    const durable: string = 'search-service__index-task';
+    const committed = deferred<undefined>();
+    const release = deferred<undefined>();
+    let second: TestingModule | undefined;
+    let firstClosed: boolean = false;
+    try {
+      const deduplicator: PostgresEventDeduplicator = first.get(PostgresEventDeduplicator);
+      const run = deduplicator.run.bind(deduplicator);
+      vi.spyOn(deduplicator, 'run').mockImplementation(async (delivery, handle) => {
+        const outcome: DeduplicationOutcome = await run(delivery, handle);
+        committed.resolve(undefined);
+        await release.promise;
+        return outcome;
+      });
+      await first.get(EventConsumers).subscribe({
+        handler: 'index-task',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: async (payload): Promise<void> => {
+          await first
+            .get(TenantTransactionRunner)
+            .run((tx) =>
+              tx.client.query('insert into search_index (task_id, version) values ($1, $2)', [
+                payload.taskId,
+                payload.version,
+              ]),
+            );
+        },
+      });
+      // Leave enough time for the first replica to close, then let JetStream redeliver.
+      await manager.consumers.update('EVENTS_shutdowncommit', durable, { ack_wait: nanos(2_000) });
+      const sent: PublishedEvent = await first
+        .get(EventPublisher)
+        .publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await committed.promise;
+
+      await first.close();
+      firstClosed = true;
+      release.resolve(undefined);
+      expect((await manager.consumers.info(sent.stream, durable)).num_ack_pending).toBe(1);
+
+      second = await startService(
+        database,
+        nats,
+        { ...options, manageConsumers: false },
+        {
+          relay: false,
+        },
+      );
+      const secondDeduplicator: PostgresEventDeduplicator = second.get(PostgresEventDeduplicator);
+      const observe = vi.spyOn(secondDeduplicator, 'run');
+      const handle = vi.fn((): Promise<void> => Promise.resolve());
+      await second.get(EventConsumers).subscribe({
+        handler: 'index-task',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle,
+      });
+      await waitFor(() => settled(sent.stream, durable, sent.streamSequence));
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(handle).not.toHaveBeenCalled();
+      expect(await table('select task_id, writes from search_index')).toEqual([
+        { task_id: 'CAD-482', writes: 1 },
+      ]);
+      expect(await table('select consumer, event_id from processed_events')).toEqual([
+        { consumer: durable, event_id: sent.id },
+      ]);
+    } finally {
+      release.resolve(undefined);
+      if (!firstClosed) {
+        await first.close();
+      }
+      await second?.close();
+    }
   });
 });

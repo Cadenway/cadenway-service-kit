@@ -1,6 +1,8 @@
 /** Application-role jobs runtime and its injectable capabilities. @packageDocumentation */
 export { JobsRuntimeModule } from './nest/jobs-runtime.module.js';
-export { JobProducer, JobScheduler, JobWorkerRegistry } from './nest/job-capabilities.js';
+export { JobProducer } from './nest/job-producer.js';
+export { JobScheduler } from './nest/job-scheduler.js';
+export { JobWorkerRegistry } from './nest/job-worker-registry.js';
 export { JobsNotProvisionedError } from './postgres/jobs-not-provisioned.error.js';
 export type { JobsRuntimeModuleAsyncOptions } from './nest/jobs-runtime-module-options.js';
 export type {

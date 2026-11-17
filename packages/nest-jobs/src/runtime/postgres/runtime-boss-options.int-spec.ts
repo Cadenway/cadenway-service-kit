@@ -5,7 +5,7 @@ import type { QueryResult } from 'pg';
 import { PgBoss, type Job as BossJob } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { resolveJobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
+import { resolveLegacyJobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
 import { provisionJobs } from '../../provisioning/provision-jobs.js';
 import { toRuntimeBossOptions } from './runtime-boss-options.js';
 import {
@@ -58,7 +58,7 @@ describe('toRuntimeBossOptions against PostgreSQL', () => {
     const errors: Error[] = [];
     const boss: PgBoss = new PgBoss(
       toRuntimeBossOptions(
-        resolveJobsModuleOptions({
+        resolveLegacyJobsRuntimeOptions({
           connection: database.app,
           queues: [{ name: 'reminders', expireInSeconds: 1, deleteAfterSeconds: 1 }],
         }),

@@ -4,6 +4,9 @@ import { EVENT_DEDUPLICATOR } from '../delivery/event-deduplicator.js';
 import { PostgresEventDeduplicator } from './postgres-event-deduplicator.js';
 
 /**
+ * Class PostgresEventDeduplicationModule
+ *
+ * @description
  * Registers the PostgreSQL deduplicator for the application's event consumers.
  * Import DatabaseModule and MessagingModule alongside it.
  */

@@ -4,7 +4,7 @@
  * @description
  * Injection token of the readiness options given to `HealthModule.forRoot`.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const HEALTH_OPTIONS: unique symbol = Symbol('cadenway.health.options');
 

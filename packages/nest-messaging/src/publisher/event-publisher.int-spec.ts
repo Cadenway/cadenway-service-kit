@@ -10,7 +10,7 @@ import { context, ROOT_CONTEXT, trace, TraceFlags } from '@opentelemetry/api';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { EventValidationError } from '../events/event-validation.js';
+import { EventValidationError } from '../events/event-validation-error.js';
 import { MessagingModule } from '../wiring/messaging.module.js';
 import {
   disableTracePropagation,

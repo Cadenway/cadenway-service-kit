@@ -102,6 +102,19 @@ class SampleController {
   public fail(): never {
     throw new HttpException('No mailbox for camille.martin@ateliernord.example', 503);
   }
+
+  /** Emits a wrapped SQL error through the normal logger serializer. */
+  @Get(':sampleId/sql-error')
+  public logSqlError(): { ok: boolean } {
+    const cause = Object.assign(new Error('Diagnostic fixture\nContinuation fixture'), {
+      query: 'query fixture',
+      params: ['param fixture'],
+      severity: 'ERROR',
+      code: '23505',
+    });
+    this.logger.error({ err: new Error('Work failed', { cause }) }, 'database failure');
+    return { ok: true };
+  }
   // #endregion
 }
 
@@ -204,6 +217,24 @@ describe('LoggingModule', () => {
     expect(raw.join('')).not.toContain('ateliernord.example');
   });
 
+  it('preserves a wrapped SQLSTATE and stack frames without logging multiline SQL data', async () => {
+    await request(app.getHttpServer()).get('/samples/42/sql-error').expect(200);
+
+    const failure = lines.find((line) => line.msg === 'database failure');
+    expect(failure).toMatchObject({
+      err: {
+        message: 'Database operation failed.',
+        code: '23505',
+      },
+    });
+    expect((failure?.err as Record<string, unknown> | undefined)?.stack).toContain(
+      'at SampleController.logSqlError',
+    );
+    expect(raw.join('')).not.toMatch(
+      /diagnostic fixture|continuation fixture|query fixture|param fixture/iu,
+    );
+  });
+
   it('generates a request id when the caller sends none or a malformed one', async () => {
     const absent: Response = await request(app.getHttpServer()).get('/samples/42').expect(200);
     const malformed: Response = await request(app.getHttpServer())
@@ -270,13 +301,12 @@ describe('redaction helpers', () => {
       sanitizeSerializedError(
         {
           type: 'DrizzleQueryError',
-          message:
-            'Failed query: insert into "users" ("email", "password_hash") values ($1, $2)\nparams: camille@ateliernord.example,$argon2id$hash',
+          message: 'Failed query: select $1\nparams: param fixture\ncontinuation fixture',
           stack:
-            'Error: Failed query: insert into "users"\nparams: camille@ateliernord.example,$argon2id$hash\n    at file.ts:1:1',
-          query: 'insert into "users" ("email", "password_hash") values ($1, $2)',
-          params: ['camille@ateliernord.example', '$argon2id$hash'],
-          detail: 'Key (email)=(camille@ateliernord.example) already exists.',
+            'DrizzleQueryError: Failed query: select $1\nparams: param fixture\ncontinuation fixture\n    at file.ts:1:1',
+          query: 'select $1',
+          params: ['param fixture\ncontinuation fixture'],
+          detail: 'row detail fixture',
           where: 'SQL statement',
           code: '23505',
         },
@@ -284,8 +314,8 @@ describe('redaction helpers', () => {
       ),
     ).toEqual({
       type: 'DrizzleQueryError',
-      message: 'Failed query: insert into "users" ("email", "password_hash") values ($1, $2)',
-      stack: 'Error: Failed query: insert into "users"\n    at file.ts:1:1',
+      message: 'Database operation failed.',
+      stack: 'Database operation failed.\n    at file.ts:1:1',
       code: '23505',
     });
   });

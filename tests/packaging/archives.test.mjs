@@ -8,7 +8,6 @@ import {
   createScratch,
   entryPoints,
   install,
-  legacyEntryPoints,
   minimalEntries,
   pack,
   peerVersions,
@@ -18,9 +17,9 @@ import {
 import { readPublicApi } from './public-api.mjs';
 
 const baseline = {
-  '@cadenway/nest-common': '0.4.3',
-  '@cadenway/nest-messaging': '0.1.4',
-  '@cadenway/nest-jobs': '0.2.1',
+  '@cadenway/nest-common': '0.5.0',
+  '@cadenway/nest-messaging': '0.2.0',
+  '@cadenway/nest-jobs': '0.3.0',
 };
 
 test('packed Service Kit preserves the released public API and supports isolated optional peers', (context) => {
@@ -50,11 +49,11 @@ test('packed Service Kit preserves the released public API and supports isolated
       registryPackage(name, version, scratch).url,
     ]),
   );
-  install(reference, { ...fullPeers, ...released }, legacyEntryPoints);
+  install(reference, { ...fullPeers, ...released }, entryPoints);
 
   const runtimeEntries = [...entryPoints, ...preloadEntries];
   checkRuntime(limited, [...minimalEntries, ...preloadEntries], true);
-  const releasedEntries = [...legacyEntryPoints, ...preloadEntries];
+  const releasedEntries = [...entryPoints, ...preloadEntries];
   const releasedRuntime = checkRuntime(reference, releasedEntries, false);
   const candidateRuntime = checkRuntime(full, runtimeEntries, false);
   for (const entry of releasedEntries) {
@@ -66,7 +65,7 @@ test('packed Service Kit preserves the released public API and supports isolated
   readPublicApi(limited, minimalEntries);
   const candidateApi = readPublicApi(full, entryPoints);
   const differences = [];
-  for (const [entry, signatures] of readPublicApi(reference, legacyEntryPoints)) {
+  for (const [entry, signatures] of readPublicApi(reference, entryPoints)) {
     for (const [name, declarations] of signatures) {
       const candidate = candidateApi.get(entry)?.get(name);
       if (!isDeepStrictEqual(candidate, declarations)) {

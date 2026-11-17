@@ -8,7 +8,7 @@ import { DEFAULT_RETRY_DELAYS_MS } from '../consumer/delivery/retry-delays.js';
  * internal to the package: specs override it with `overrideProvider` because they cannot wait
  * two minutes for a redelivery.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const MESSAGING_TUNING: unique symbol = Symbol('cadenway.messaging.tuning');
 

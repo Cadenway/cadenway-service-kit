@@ -13,32 +13,140 @@ import {
 } from './outbox-maintenance-batch.js';
 import type { RestrictedNames } from './outbox-redaction.js';
 
-/** Intervals and retention settings needed by automatic maintenance. */
+/**
+ * Type MaintenanceOptions
+ *
+ * @description
+ * Intervals and retention settings needed by automatic maintenance.
+ *
+ * @type {Pick<ResolvedOutboxOptions, 'pollIntervalMs' | 'purgeIntervalMs' | 'retentionDays' | 'processedRetentionDays'>}
+ */
 type MaintenanceOptions = Pick<
   ResolvedOutboxOptions,
   'pollIntervalMs' | 'purgeIntervalMs' | 'retentionDays' | 'processedRetentionDays'
 >;
 
+/**
+ * Constant MAX_TIMER_DELAY_MS
+ *
+ * @description
+ * Largest delay the Node.js timer can schedule in one step, in milliseconds.
+ *
+ * @type {number}
+ */
 const MAX_TIMER_DELAY_MS: number = 2_147_483_647;
+/**
+ * Constant MAX_RETRY_DELAY_MS
+ *
+ * @description
+ * Maintenance failure backoff ceiling before applying any longer configured polling interval, in milliseconds.
+ *
+ * @type {number}
+ */
 const MAX_RETRY_DELAY_MS: number = 30_000;
 
-/** Schedules bounded maintenance transactions independently of publication. */
+/**
+ * Class OutboxMaintenanceRunner
+ *
+ * @description
+ * Schedules bounded maintenance transactions independently of publication.
+ */
 export class OutboxMaintenanceRunner {
   // #region Properties
-  /** Logs failures and committed changes of a completed phase. */
+  /**
+   * Property logger
+   *
+   * @description
+   * Logs failures and committed changes of a completed phase.
+   *
+   * @type {Logger}
+   * @readonly
+   */
   private readonly logger: Logger = new Logger('OutboxMaintenance');
 
+  /**
+   * Property started
+   *
+   * @description
+   * Whether the retention scheduler may create another timer.
+   *
+   * @type {boolean}
+   */
   private started: boolean = false;
+
+  /**
+   * Property timer
+   *
+   * @description
+   * Next scheduled check, canceled before the database closes.
+   *
+   * @type {NodeJS.Timeout | undefined}
+   */
   private timer: NodeJS.Timeout | undefined;
+
+  /**
+   * Property batch
+   *
+   * @description
+   * Active maintenance transaction that shutdown must drain.
+   *
+   * @type {Promise<void> | undefined}
+   */
   private batch: Promise<void> | undefined;
+
+  /**
+   * Property phase
+   *
+   * @description
+   * Retention operation repeated until a batch no longer fills the configured limit.
+   *
+   * @type {MaintenancePhase}
+   */
   private phase: MaintenancePhase = 'redact';
+
+  /**
+   * Property changedRows
+   *
+   * @description
+   * Committed row count for the current phase across successive batches.
+   *
+   * @type {number}
+   */
   private changedRows: number = 0;
+
+  /**
+   * Property failedBatches
+   *
+   * @description
+   * Consecutive failed maintenance transactions used to calculate backoff.
+   *
+   * @type {number}
+   */
   private failedBatches: number = 0;
+
+  /**
+   * Property nextCycleAt
+   *
+   * @description
+   * Monotonic deadline for the next retention cycle, in milliseconds.
+   *
+   * @type {number}
+   */
   private nextCycleAt: number = 0;
   // #endregion
 
   // #region Constructor
-  /** Uses system transactions to maintain the service's outbox and processed ids. */
+  /**
+   * Constructor
+   *
+   * @description
+   * Uses system transactions to maintain the service's outbox and processed ids.
+   *
+   * @param {SystemTransactionRunner<DatabaseSchema>} system - Opens system transactions for retention and redaction.
+   * @param {MaintenanceOptions} options - Polling, purge and retention configuration for maintenance.
+   * @param {RestrictedNames} restricted - Persisted route rules for identifying restricted rows.
+   * @constructor
+   */
   public constructor(
     private readonly system: SystemTransactionRunner<DatabaseSchema>,
     private readonly options: MaintenanceOptions,
@@ -47,7 +155,12 @@ export class OutboxMaintenanceRunner {
   // #endregion
 
   // #region Methods
-  /** Schedules the initial restricted-payload sweep even when periodic purges are disabled. */
+  /**
+   * Method start
+   *
+   * @description
+   * Schedules the initial restricted-payload sweep even when periodic purges are disabled.
+   */
   public start(): void {
     if (this.started) {
       return;
@@ -56,7 +169,14 @@ export class OutboxMaintenanceRunner {
     this.schedule(0);
   }
 
-  /** Cancels future work and waits for the current transaction before the database closes. */
+  /**
+   * Method stop
+   *
+   * @description
+   * Cancels future work and waits for the current transaction before the database closes.
+   *
+   * @returns {Promise<void>} Resolves after any active maintenance transaction has settled.
+   */
   public async stop(): Promise<void> {
     this.started = false;
     clearTimeout(this.timer);
@@ -64,6 +184,14 @@ export class OutboxMaintenanceRunner {
     await this.batch;
   }
 
+  /**
+   * Method schedule
+   *
+   * @description
+   * Schedules the next maintenance step and splits waits that exceed Node.js timer limits.
+   *
+   * @param {number} delayMs - Requested wait before the next step, in milliseconds.
+   */
   private schedule(delayMs: number): void {
     if (!this.started) {
       return;
@@ -83,7 +211,14 @@ export class OutboxMaintenanceRunner {
     );
   }
 
-  /** Runs one transaction, retaining the current phase until all its rows have been handled. */
+  /**
+   * Method tick
+   *
+   * @description
+   * Runs one transaction, retaining the current phase until all its rows have been handled.
+   *
+   * @returns {Promise<void>} Resolves after the active step finishes and any follow-up is scheduled.
+   */
   private async tick(): Promise<void> {
     let delayMs: number | undefined;
     try {
@@ -116,6 +251,14 @@ export class OutboxMaintenanceRunner {
     }
   }
 
+  /**
+   * Method finishPhase
+   *
+   * @description
+   * Reports the committed count, advances the phase and chooses when to resume maintenance.
+   *
+   * @returns {number | undefined} Delay in milliseconds before the next step, or undefined when maintenance should stop.
+   */
   private finishPhase(): number | undefined {
     const changed: number = this.changedRows;
     this.changedRows = 0;

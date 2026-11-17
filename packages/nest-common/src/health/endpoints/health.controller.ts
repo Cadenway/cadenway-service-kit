@@ -80,6 +80,15 @@ export class HealthController implements OnModuleDestroy {
    */
   private readonly logger: Logger = new Logger('Health');
 
+  /**
+   * Property probes
+   *
+   * @description
+   * Shares in-flight checks across readiness requests with independent waiting limits.
+   *
+   * @type {ReadinessProbes}
+   * @readonly
+   */
   private readonly probes: ReadinessProbes = new ReadinessProbes();
 
   /**
@@ -153,7 +162,7 @@ export class HealthController implements OnModuleDestroy {
    * application is shutting down it answers 503 with the dependency `shutdown` down, without
    * running the indicators.
    *
-   * @param {{ status(code: number): unknown }} response - Response, to set 503 while keeping the Terminus body.
+   * @param {{ status(code: number): unknown; }} response - Response, to set 503 while keeping the Terminus body.
    * @returns {Promise<HealthCheckResult>} The readiness result.
    */
   @Get('ready')
@@ -213,7 +222,6 @@ export class HealthController implements OnModuleDestroy {
    * dependencies change, an info line when it is back up, nothing when the result repeats.
    *
    * @param {Partial<HealthIndicatorResult> | undefined} failing - Failing dependencies of the check, or `undefined` when all are up.
-   * @returns {void}
    */
   private recordOutcome(failing: Partial<HealthIndicatorResult> | undefined): void {
     if (failing === undefined) {

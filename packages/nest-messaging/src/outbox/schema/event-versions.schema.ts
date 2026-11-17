@@ -2,21 +2,14 @@ import { organizationPolicy } from '@cadenway/nest-common/database';
 import { bigint, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 
 /**
- * Table `event_versions`, published as `eventVersions` by the `/outbox` entry point.
+ * Constant eventVersions
  *
- * One row per aggregate a durable consumer keeps up to date: the consumer name, the organization
- * of the event (null for an event outside any organization), a key the handler chooses for the
- * aggregate (such as `task:<id>`) and the highest event `version` the consumer applied to it.
- * The organization is part of the key, with nulls treated as equal, so the versions of two
- * organizations never compete. `claimVersion` of the handler context raises the version only
- * when the event is newer, so a late redelivery of an older event changes nothing.
+ * @description
+ * Tracks the highest event version a durable consumer applied per organization and aggregate.
+ * Null organization IDs compare equal. `claimVersion` advances a row only for a newer event,
+ * so a late redelivery cannot overwrite a newer version.
  *
- * The table carries the organization policy like any tenant table; the migration of the service
- * adds `ALTER TABLE "event_versions" FORCE ROW LEVEL SECURITY`.
- *
- * It is a default export so that its column types stay inferred, like the outbox table.
- *
- * A change to this table ships a migration note for every service.
+ * The service migration forces row-level security for the organization policy.
  */
 export default pgTable(
   'event_versions',

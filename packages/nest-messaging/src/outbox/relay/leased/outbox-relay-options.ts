@@ -1,26 +1,78 @@
 import { resolveOutboxOptions, type OutboxModuleOptions } from '../../wiring/outbox-options.js';
 
-/** Configuration of the lease-based relay. */
+/**
+ * Interface OutboxRelayOptions
+ *
+ * @description
+ * Configuration of the lease-based relay.
+ */
 export interface OutboxRelayOptions extends Omit<OutboxModuleOptions, 'relay' | 'batchSize'> {
   // #region Properties
-  /** Starts polling and maintenance on bootstrap. Defaults to true. */
+  /**
+   * Property autoStart
+   *
+   * @description
+   * Starts polling and maintenance on bootstrap. Defaults to true.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
   readonly autoStart?: boolean;
 
-  /** Maximum publications in flight per replica. Defaults to four. */
+  /**
+   * Property concurrency
+   *
+   * @description
+   * Maximum publications in flight per replica. Defaults to four.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
   readonly concurrency?: number;
 
-  /** Minimum lease duration in milliseconds. Defaults to 30 seconds. */
+  /**
+   * Property leaseMs
+   *
+   * @description
+   * Minimum lease duration in milliseconds. Defaults to 30 seconds.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
   readonly leaseMs?: number;
 
-  /** Time allowed to finish the active batch at shutdown. Defaults to 10 seconds. */
+  /**
+   * Property shutdownTimeoutMs
+   *
+   * @description
+   * Time allowed to finish the active batch at shutdown. Defaults to 10 seconds.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
   readonly shutdownTimeoutMs?: number;
   // #endregion
 }
 
-/** Relay options with component defaults applied. */
+/**
+ * Type ResolvedOutboxRelayOptions
+ *
+ * @description
+ * Relay options with component defaults applied.
+ *
+ * @type {Required<OutboxRelayOptions>}
+ */
 export type ResolvedOutboxRelayOptions = Required<OutboxRelayOptions>;
 
-/** Applies relay defaults and rejects invalid concurrency or timer configuration. */
+/**
+ * Function resolveOutboxRelayOptions
+ *
+ * @description
+ * Applies relay defaults and rejects invalid concurrency or timer configuration.
+ *
+ * @param {OutboxRelayOptions} options - Lease relay settings supplied by the caller.
+ * @returns {ResolvedOutboxRelayOptions} Resolved lease relay options within supported timer and concurrency bounds.
+ */
 export function resolveOutboxRelayOptions(
   options: OutboxRelayOptions = {},
 ): ResolvedOutboxRelayOptions {

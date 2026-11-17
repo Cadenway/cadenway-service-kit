@@ -31,8 +31,8 @@ import { MESSAGING_TUNING, type MessagingTuning } from '../../configuration/mess
  * there the handler is skipped. Otherwise the handler runs inside that same transaction: a
  * `run` of the same runner in the handler joins it, so the writes of the handler, the processed
  * id and the version claims commit together or not at all. The message is acknowledged after the
- * commit; a handler failure, or the handler deadline, rolls everything back and the redelivery
- * starts over.
+ * commit. A handler that fails or is abandoned before commit rolls back its writes and claims.
+ * A redelivery after commit but before acknowledgement skips the handler.
  *
  * Two deliveries of the same event handled at the same time meet on the primary key: the second
  * waits for the first transaction for at most five seconds (`lock_timeout`), then fails and is

@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
  *
  * @returns {number} Schema version of the pg-boss release this package depends on.
  * @throws {Error} When the manifest carries no such number, which means the pg-boss dependency was
- * changed without this package.
+ *   changed without this package.
  */
 export function expectedSchemaVersion(): number {
   const manifest: unknown = createRequire(import.meta.url)('pg-boss/package.json');

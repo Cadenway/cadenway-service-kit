@@ -18,10 +18,8 @@ import {
 import type { Job } from '../../jobs/execution/job.js';
 import type { JobEnqueueResult } from '../../jobs/enqueue/job-enqueue-options.js';
 import { JobsNotProvisionedError } from '../postgres/jobs-not-provisioned.error.js';
-import {
-  resolveJobsModuleOptions,
-  type JobsModuleOptions,
-} from '../../jobs/configuration/jobs-options.js';
+import type { JobsModuleOptions } from '../../jobs/configuration/jobs-options.js';
+import { resolveLegacyJobsRuntimeOptions } from '../../jobs/configuration/jobs-runtime-options.js';
 import { JobsModule } from './jobs.module.js';
 import { JobsService } from './jobs.service.js';
 import { provisionJobs } from '../../provisioning/provision-jobs.js';
@@ -99,7 +97,16 @@ async function runtimeSessions(database: JobsTestDatabase): Promise<number> {
   return result.rows[0]?.count ?? -1;
 }
 
-/** Checks that a runtime PostgreSQL query is waiting on a lock held by the test. */
+/**
+ * Function hasBlockedRuntimeQuery
+ *
+ * @description
+ * Observes an application-role query waiting on a PostgreSQL lock held by the test.
+ *
+ * @param {JobsTestDatabase} database - Disposable database whose sessions are queried.
+ * @param {string} queryPattern - PostgreSQL LIKE pattern for the blocked query text.
+ * @returns {Promise<boolean>} Whether a matching runtime session is waiting on a lock.
+ */
 async function hasBlockedRuntimeQuery(
   database: JobsTestDatabase,
   queryPattern: string,
@@ -108,10 +115,10 @@ async function hasBlockedRuntimeQuery(
     database.admin,
     `SELECT EXISTS (
        SELECT 1 FROM pg_stat_activity
-       WHERE datname = $1 AND application_name LIKE 'pgboss%'
+       WHERE datname = $1 AND usename = $3
          AND wait_event_type = 'Lock' AND query LIKE $2
      ) AS blocked`,
-    [database.name, queryPattern],
+    [database.name, queryPattern, APP_ROLE],
   );
   return result.rows[0]?.blocked === true;
 }
@@ -172,6 +179,7 @@ describe('JobsModule', () => {
       appRole: APP_ROLE,
       queues: [{ name: 'reminders' }],
     });
+    const starts = vi.spyOn(PgBoss.prototype, 'start');
 
     const failure: unknown = await start(
       JobsModule.forRoot({
@@ -184,7 +192,39 @@ describe('JobsModule', () => {
     expect((failure as Error).message).toMatch(
       /^These queues do not exist in the pg-boss schema "pgboss": digests, digests\.dead-letter\. Run provisionJobs\(\)/,
     );
+    expect(starts).not.toHaveBeenCalled();
     await waitFor(async (): Promise<boolean> => (await runtimeSessions(database)) === 0, 5_000);
+  });
+
+  it('times out a blocked provisioning check and releases the session before starting pg-boss', async () => {
+    const database: JobsTestDatabase = await server.createDatabase();
+    const queues: JobsModuleOptions['queues'] = [{ name: 'reminders' }];
+    await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+    const starts = vi.spyOn(PgBoss.prototype, 'start');
+    const lock: Client = new Client(database.admin);
+    await lock.connect();
+    try {
+      await lock.query('BEGIN');
+      await lock.query('LOCK TABLE pgboss.version IN ACCESS EXCLUSIVE MODE');
+      const failure: Promise<unknown> = start(
+        JobsModule.forRoot({ connection: database.app, queues }),
+      )
+        .then(async (app: INestApplicationContext): Promise<void> => app.close())
+        .catch((error: unknown): unknown => error);
+
+      await waitFor(
+        () => hasBlockedRuntimeQuery(database, 'SELECT version from pgboss.version'),
+        5_000,
+      );
+      const error: unknown = await failure;
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(JobsNotProvisionedError);
+      expect((error as Error).message).toMatch(/statement timeout|query read timeout/iu);
+      expect(starts).not.toHaveBeenCalled();
+      await waitFor(async () => (await runtimeSessions(database)) === 0, 5_000);
+    } finally {
+      await lock.end();
+    }
   });
 
   it('fails start-up when the connected role was not granted access to the schema', async () => {
@@ -594,7 +634,9 @@ describe('JobsModule', () => {
       deadLetterCheckIntervalSeconds: 1,
     };
     const app: INestApplicationContext = await start(JobsModule.forRoot(options));
-    const worker: PgBoss = new PgBoss(toRuntimeBossOptions(resolveJobsModuleOptions(options)));
+    const worker: PgBoss = new PgBoss(
+      toRuntimeBossOptions(resolveLegacyJobsRuntimeOptions(options)),
+    );
     const client: Client = new Client({ ...database.app });
     try {
       const enqueued: JobEnqueueResult = await enqueueCommitted(
@@ -666,7 +708,9 @@ describe('JobsModule', () => {
         'crashed',
       );
       // A worker of another process claims the job, then dies without settling it.
-      const dead: PgBoss = new PgBoss(toRuntimeBossOptions(resolveJobsModuleOptions(options)));
+      const dead: PgBoss = new PgBoss(
+        toRuntimeBossOptions(resolveLegacyJobsRuntimeOptions(options)),
+      );
       await dead.start();
       const claimed: BossJob[] = await dead.fetch('crashed');
       await dead.stop();
@@ -676,7 +720,7 @@ describe('JobsModule', () => {
       // Once the attempt has expired, the supervision pass of any live instance fails it in SQL.
       await sleep(2_200);
       const supervisor: PgBoss = new PgBoss(
-        toRuntimeBossOptions(resolveJobsModuleOptions(options)),
+        toRuntimeBossOptions(resolveLegacyJobsRuntimeOptions(options)),
       );
       await supervisor.start();
       await supervisor.supervise();
@@ -732,6 +776,7 @@ describe('JobsModule', () => {
     const database: JobsTestDatabase = await server.createDatabase();
     const queues: JobsModuleOptions['queues'] = [{ name: 'reminders' }];
     await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
+    const starts = vi.spyOn(PgBoss.prototype, 'start');
 
     const failure: unknown = await start(
       JobsModule.forRoot({ connection: database.migrator, queues }),
@@ -742,6 +787,7 @@ describe('JobsModule', () => {
     expect((failure as Error).message).toMatch(
       /^The runtime is connected as "svc_migrator", a role that can create objects in the pg-boss schema "pgboss"\. Connect as the application role/,
     );
+    expect(starts).not.toHaveBeenCalled();
     await waitFor(async (): Promise<boolean> => (await runtimeSessions(database)) === 0, 5_000);
 
     const app: INestApplicationContext = await start(

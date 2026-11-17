@@ -4,21 +4,103 @@ import type { EventEnvelope } from '../../events/event-envelope.js';
 import { REDACTED_PAYLOAD_SQL } from '../maintenance/outbox-redaction.js';
 import type { FailedOutboxAttempt } from './outbox-retry-policy.js';
 
-/** Columns selected from a pending row. The writer validates the envelope before insertion. */
+/**
+ * Interface PendingRow
+ *
+ * @description
+ * Columns selected from a pending row. The writer validates the envelope before insertion.
+ */
 export interface PendingRow {
   // #region Properties
-  /** Event id and row primary key. */
+  /**
+   * Property id
+   *
+   * @description
+   * Event id and row primary key.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly id: string;
+
+  /**
+   * Property event_name
+   *
+   * @description
+   * Contract event name persisted by the writer.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly event_name: string;
+
+  /**
+   * Property subject
+   *
+   * @description
+   * Broker subject chosen by the writer for the event.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly subject: string;
+
+  /**
+   * Property stream
+   *
+   * @description
+   * Stream expected to acknowledge publication on the stored subject.
+   *
+   * @type {string}
+   * @readonly
+   */
   readonly stream: string;
+
+  /**
+   * Property payload
+   *
+   * @description
+   * Validated event envelope and payload, or the envelope with its redaction marker.
+   *
+   * @type {EventEnvelope}
+   * @readonly
+   */
   readonly payload: EventEnvelope;
+
+  /**
+   * Property traceparent
+   *
+   * @description
+   * Original W3C trace context, when the writer had an active span.
+   *
+   * @type {string | null}
+   * @readonly
+   */
   readonly traceparent: string | null;
+
+  /**
+   * Property attempts
+   *
+   * @description
+   * Row-specific failures recorded before the current pass.
+   *
+   * @type {number}
+   * @readonly
+   */
   readonly attempts: number;
   // #endregion
 }
 
-/** Locks at most one batch of due rows, skipping those held by other relay replicas. */
+/**
+ * Function lockPendingRows
+ *
+ * @description
+ * Locks at most one batch of due rows, skipping those held by other relay replicas.
+ *
+ * @param {TransactionClient} client - Client of the system transaction that will own the row locks.
+ * @param {number} batchSize - Maximum number of eligible rows to lock.
+ * @returns {Promise<readonly PendingRow[]>} Eligible rows locked by this transaction.
+ */
 export async function lockPendingRows(
   client: TransactionClient,
   batchSize: number,
@@ -35,7 +117,17 @@ export async function lockPendingRows(
   return selected.rows as PendingRow[];
 }
 
-/** Records a broker-wide failure without charging an attempt to the row. */
+/**
+ * Function recordOutboxInterruption
+ *
+ * @description
+ * Records a broker-wide failure without charging an attempt to the row.
+ *
+ * @param {TransactionClient} client - Transaction client that owns the row lock.
+ * @param {string} id - Event ID of the row interrupted by a broker-wide failure.
+ * @param {string} errorClass - Safe error class to store for diagnostics.
+ * @returns {Promise<void>} Resolves after recording the infrastructure error.
+ */
 export async function recordOutboxInterruption(
   client: TransactionClient,
   id: string,
@@ -44,7 +136,18 @@ export async function recordOutboxInterruption(
   await client.query('update outbox_events set last_error = $2 where id = $1', [id, errorClass]);
 }
 
-/** Records a row-specific failure and its next eligibility for publication. */
+/**
+ * Function recordOutboxFailure
+ *
+ * @description
+ * Records a row-specific failure and its next eligibility for publication.
+ *
+ * @param {TransactionClient} client - Transaction client that owns the row lock.
+ * @param {string} id - Event ID of the row whose publication failed.
+ * @param {string} errorClass - Safe error class to store for diagnostics.
+ * @param {FailedOutboxAttempt} attempt - Updated attempt count, backoff and parking decision.
+ * @returns {Promise<void>} Resolves once the pending or parked state is saved.
+ */
 export async function recordOutboxFailure(
   client: TransactionClient,
   id: string,
@@ -67,8 +170,16 @@ export async function recordOutboxFailure(
 }
 
 /**
+ * Function settleOutboxRows
+ *
+ * @description
  * Marks acknowledged and previously redacted rows sent. Restricted payloads are replaced in the
  * same statement so a rollback leaves both the payload and sent status unchanged.
+ *
+ * @param {TransactionClient} client - Transaction client that owns the row locks.
+ * @param {readonly string[]} ids - IDs to mark sent, including any already redacted rows.
+ * @param {readonly string[]} redactIds - Restricted IDs whose payload must be redacted atomically with the sent update.
+ * @returns {Promise<void>} Resolves once sent state and any restricted payload redaction are saved.
  */
 export async function settleOutboxRows(
   client: TransactionClient,

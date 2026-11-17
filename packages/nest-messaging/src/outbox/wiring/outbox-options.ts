@@ -2,9 +2,9 @@
  * Constant OUTBOX_OPTIONS
  *
  * @description
- * Injection token of the options of `OutboxModule`, with every default applied.
+ * Injection token for the resolved `OutboxModule` options.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const OUTBOX_OPTIONS: unique symbol = Symbol('cadenway.messaging.outbox.options');
 
@@ -12,7 +12,7 @@ export const OUTBOX_OPTIONS: unique symbol = Symbol('cadenway.messaging.outbox.o
  * Constant DEFAULT_OUTBOX_RETENTION_DAYS
  *
  * @description
- * How long a sent outbox row is kept, in days, so it can be published again after a NATS loss.
+ * Days a sent outbox row remains available for replay after a NATS loss.
  *
  * @type {number}
  */
@@ -22,8 +22,7 @@ export const DEFAULT_OUTBOX_RETENTION_DAYS: number = 7;
  * Constant DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS
  *
  * @description
- * How long a processed event id is kept, in days: the seven days a message stays in the stream
- * plus the seven days an outbox row can still be published again.
+ * Days to keep a processed event ID, covering both stream retention and the outbox replay window.
  *
  * @type {number}
  */
@@ -33,8 +32,7 @@ export const DEFAULT_PROCESSED_EVENTS_RETENTION_DAYS: number = 14;
  * Interface OutboxModuleOptions
  *
  * @description
- * Options of `OutboxModule.forRoot`. Every option has the default documented on it and in the
- * README.
+ * Polling, batch and retention settings for the legacy outbox module.
  */
 export interface OutboxModuleOptions {
   // #region Properties
@@ -42,9 +40,8 @@ export interface OutboxModuleOptions {
    * Property relay
    *
    * @description
-   * Runs the relay that publishes pending outbox rows. Defaults to `true`. Several replicas may
-   * run it; a service that wants a single relay turns it off in the others. With `false` the
-   * outbox is still written and nothing is published by this process.
+   * Enables automatic relay polling, defaulting to `true`. With `false`, writing and explicit
+   * publication passes remain available.
    *
    * @type {boolean | undefined}
    * @readonly
@@ -55,8 +52,7 @@ export interface OutboxModuleOptions {
    * Property pollIntervalMs
    *
    * @description
-   * Pause between two passes of the relay when nothing woke it, in milliseconds. Defaults to
-   * 1000.
+   * Idle time between passes in milliseconds, defaulting to 1000.
    *
    * @type {number | undefined}
    * @readonly
@@ -67,7 +63,7 @@ export interface OutboxModuleOptions {
    * Property batchSize
    *
    * @description
-   * Maximum number of rows one pass locks and publishes. Defaults to 100.
+   * Maximum rows one pass locks and publishes, defaulting to 100.
    *
    * @type {number | undefined}
    * @readonly
@@ -78,8 +74,7 @@ export interface OutboxModuleOptions {
    * Property purgeIntervalMs
    *
    * @description
-   * Pause between two purges of old rows by the relay, in milliseconds. Defaults to one hour;
-   * `0` disables the purge, which the service then schedules itself.
+   * Milliseconds between scheduled purges. One hour by default, or `0` to disable them.
    *
    * @type {number | undefined}
    * @readonly
@@ -90,7 +85,7 @@ export interface OutboxModuleOptions {
    * Property retentionDays
    *
    * @description
-   * How long the purge keeps a sent outbox row, in days. Defaults to 7.
+   * Minimum age in days for purging a sent row, defaulting to 7.
    *
    * @type {number | undefined}
    * @readonly
@@ -101,8 +96,7 @@ export interface OutboxModuleOptions {
    * Property processedRetentionDays
    *
    * @description
-   * How long the purge keeps a processed event id, in days. Defaults to 14. A shorter value
-   * could let a late redelivery be handled twice.
+   * Days to retain processed event IDs. Less than the default 14 can allow repeat handling.
    *
    * @type {number | undefined}
    * @readonly
@@ -115,7 +109,7 @@ export interface OutboxModuleOptions {
  * Type ResolvedOutboxOptions
  *
  * @description
- * Options of `OutboxModule` with every default applied.
+ * Legacy relay settings with all defaults applied.
  *
  * @type {Readonly<Required<OutboxModuleOptions>>}
  */
@@ -125,11 +119,11 @@ export type ResolvedOutboxOptions = Readonly<Required<OutboxModuleOptions>>;
  * Function resolveOutboxOptions
  *
  * @description
- * Applies the documented default of every option left unset.
+ * Applies the documented relay defaults.
  *
- * @param {OutboxModuleOptions} options - Options given to `OutboxModule`.
- * @returns {ResolvedOutboxOptions} The complete options.
- * @throws {Error} When the batch size or the poll interval is not positive.
+ * @param {OutboxModuleOptions} options - Legacy relay and retention settings supplied by the caller.
+ * @returns {ResolvedOutboxOptions} Legacy settings with documented defaults applied.
+ * @throws When the batch size or the poll interval is not positive.
  */
 export function resolveOutboxOptions(options: OutboxModuleOptions = {}): ResolvedOutboxOptions {
   const resolved: ResolvedOutboxOptions = {

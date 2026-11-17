@@ -8,7 +8,7 @@ import type { JobsModuleOptions } from '../../jobs/configuration/jobs-options.js
  * @description
  * Injection token of the options given to `JobsModule`. Internal to the package.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const JOBS_MODULE_OPTIONS: unique symbol = Symbol('JOBS_MODULE_OPTIONS');
 

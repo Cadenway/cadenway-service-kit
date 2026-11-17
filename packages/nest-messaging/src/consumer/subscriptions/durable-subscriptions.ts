@@ -12,12 +12,7 @@ import type { Logger } from '@nestjs/common';
 
 import { isJetStreamApiError } from '../../connection/jetstream-api-error.js';
 import type { MessagingConnection } from '../../connection/messaging-connection.js';
-import type {
-  EventEnvelope,
-  EventNameOf,
-  EventPayloadOf,
-  EventSchemas,
-} from '../../events/event-envelope.js';
+import type { EventNameOf, EventSchemas } from '../../events/event-envelope.js';
 import { validateEvent } from '../../events/event-validation.js';
 import { ACK_WAIT_MS } from '../../configuration/messaging-defaults.js';
 import { eventRoute } from '../../transport/event-route.js';
@@ -29,7 +24,7 @@ import type { EventDelivery } from '../delivery/event-delivery.js';
 import { ConsumerRecovery } from '../recovery/consumer-recovery.js';
 import { maxDeliveriesOf } from '../delivery/retry-delays.js';
 import type { EventSubscription } from './event-subscription.js';
-import type { EventTarget } from './event-target.js';
+import type { EventTarget, PreparedEvent } from './event-target.js';
 import type { RunningConsumer } from './running-consumer.js';
 
 /**
@@ -122,10 +117,14 @@ export class DurableSubscriptions {
       consumer: name,
       event: subscription.event,
       route: eventRoute(this.options, subscription.event),
-      validate: (candidate: unknown): EventEnvelope =>
-        validateEvent(subscription.schemas, subscription.event, candidate),
-      handle: (payload: EventEnvelope, eventContext: EventContext): Promise<void> =>
-        subscription.handle(payload as EventPayloadOf<TSchemas, TName>, eventContext),
+      prepare: (candidate: unknown): PreparedEvent => {
+        const payload = validateEvent(subscription.schemas, subscription.event, candidate);
+        return {
+          envelope: payload,
+          handle: (eventContext: EventContext): Promise<void> =>
+            subscription.handle(payload, eventContext),
+        };
+      },
     };
     const running: RunningConsumer = {
       target,
@@ -167,7 +166,12 @@ export class DurableSubscriptions {
     return running;
   }
 
-  /** Checks the shutdown signal on either side of the broker request. */
+  /**
+   * Method assertAcceptingRegistrations
+   *
+   * @description
+   * Checks the shutdown signal on either side of the broker request.
+   */
   private assertAcceptingRegistrations(): void {
     if (this.shutdown.aborted) {
       throw new Error('The application is shutting down: no handler can be registered.');

@@ -8,7 +8,7 @@ import { Redis, type Command, type RedisOptions } from 'ioredis';
  * ioredis options of a client that keeps the classic reply mapping (`legacy`, the ioredis
  * default), which `ResilientRedisClient` is typed with and `@socket.io/redis-adapter` reads.
  *
- * @type {Omit<RedisOptions, 'replyMapping'> & { replyMapping?: 'legacy' }}
+ * @type {Omit<RedisOptions, 'replyMapping'> & { replyMapping?: 'legacy'; }}
  */
 type LegacyRedisOptions = Omit<RedisOptions, 'replyMapping'> & { replyMapping?: 'legacy' };
 
@@ -266,7 +266,7 @@ export class ResilientRedisClient extends Redis {
    * Sends a command as ioredis does, after attaching the handler that settles its promise.
    *
    * @param {Command} command - Command to send.
-   * @param {Parameters<Redis['sendCommand']>[1]} stream - Stream of a pipeline, if any.
+   * @param {Parameters<Redis['sendCommand']>[1] | undefined} stream - Stream of a pipeline, if any.
    * @returns {unknown} What ioredis returns: the promise of the command.
    */
   public override sendCommand(
@@ -290,7 +290,6 @@ export class ResilientRedisClient extends Redis {
    * the commands it rejects are not logged.
    *
    * @param {boolean} reconnect - Whether ioredis reconnects afterwards. Defaults to `false`.
-   * @returns {void}
    */
   public override disconnect(reconnect: boolean = false): void {
     if (!reconnect) {
@@ -338,7 +337,6 @@ export class ResilientRedisClient extends Redis {
    *
    * @param {string} name - Name of the command, such as `publish`.
    * @param {unknown} error - Rejection reason of the command.
-   * @returns {void}
    */
   private reportFailure(name: string, error: unknown): void {
     if (this.shuttingDown || this.status !== 'ready') {
@@ -358,7 +356,6 @@ export class ResilientRedisClient extends Redis {
    * outages and is not closing.
    *
    * @param {string} reason - Error code, such as `ECONNREFUSED`, or `connection lost`.
-   * @returns {void}
    */
   private reportOutage(reason: string): void {
     if (!this.reportsOutages || this.shuttingDown || this.outageLogged) {

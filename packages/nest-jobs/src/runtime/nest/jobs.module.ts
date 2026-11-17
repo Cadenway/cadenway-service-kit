@@ -26,7 +26,7 @@ export class JobsModule {
    * Registers the runtime with options known when the module is declared.
    *
    * @param {JobsModuleOptions} options - Application-role connection, queue declarations and
-   * optional settings.
+   *   optional settings.
    * @returns {DynamicModule} A global module that provides `JobsService`.
    */
   public static forRoot(options: JobsModuleOptions): DynamicModule {

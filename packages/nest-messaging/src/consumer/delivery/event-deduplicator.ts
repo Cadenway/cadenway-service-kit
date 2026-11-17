@@ -8,7 +8,7 @@ import type { EventEnvelope } from '../../events/event-envelope.js';
  * `@cadenway/nest-messaging/outbox` provides the PostgreSQL one; without any, every delivery
  * reaches the handler.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const EVENT_DEDUPLICATOR: unique symbol = Symbol('cadenway.messaging.deduplicator');
 

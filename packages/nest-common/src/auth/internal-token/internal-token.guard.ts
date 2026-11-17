@@ -11,7 +11,7 @@ import { ProblemException } from '../../problem/problem.js';
 import type { InternalPrincipal } from '../context/internal-principal.js';
 import type { InternalActorType } from '../context/organization-context.js';
 import { setVerifiedInternalPrincipal } from '../context/request-organization-context.js';
-import { InternalTokenVerifier } from './internal-token.js';
+import { InternalTokenVerifier } from './internal-token-verifier.js';
 
 /**
  * Interface InternalAccessOptions

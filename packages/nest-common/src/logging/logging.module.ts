@@ -261,8 +261,12 @@ export function createLoggerParams(options: LoggingModuleOptions): Params {
       },
     },
     serializers: {
-      err: (error: Error) =>
-        sanitizeSerializedError({ ...pino.stdSerializers.err(error) }, redactedKeys),
+      // pino-http already serializes errors and retains the original on `raw`.
+      err: (error: unknown) =>
+        sanitizeSerializedError(
+          error instanceof Error ? pino.stdSerializers.err(error) : error,
+          redactedKeys,
+        ),
     },
     genReqId: (request: IncomingMessage, response: ServerResponse) => {
       const id: string = resolveRequestId(request.headers['x-request-id'], acceptIncoming);

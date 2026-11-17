@@ -32,9 +32,9 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * Core NATS connection.
    *
-   * @internal
    * @type {NatsConnection}
    * @readonly
+   * @internal
    */
   public readonly nats: NatsConnection;
 
@@ -44,9 +44,9 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * JetStream client bound to the connection.
    *
-   * @internal
    * @type {JetStreamClient}
    * @readonly
+   * @internal
    */
   public readonly jetstream: JetStreamClient;
 
@@ -129,9 +129,9 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * With a user, replies are received under `_INBOX.<user>`, the only inbox prefix the broker
    * lets that user subscribe to.
    *
-   * @internal
    * @param {ResolvedMessagingOptions} options - Options of the module.
    * @returns {Promise<MessagingConnection>} The open connection.
+   * @internal
    * @throws {Error} When the server refuses the credentials, a stream it uses is missing, or a managed stream cannot be created or updated.
    */
   public static async open(options: ResolvedMessagingOptions): Promise<MessagingConnection> {
@@ -168,8 +168,8 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * Returns the JetStream management client. It does not probe the account, so it needs no
    * permission on `$JS.API.INFO`.
    *
-   * @internal
    * @returns {Promise<JetStreamManager>} The management client.
+   * @internal
    */
   public manager(): Promise<JetStreamManager> {
     this.jetstreamManager ??= jetstreamManager(this.nats, {
@@ -210,10 +210,9 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * Records whether a durable consumer of this application works. The event consumers call it.
    *
-   * @internal
    * @param {string} consumer - Name of the durable consumer.
    * @param {string | null} problem - What is wrong with it, or `null` once it works again.
-   * @returns {void}
+   * @internal
    */
   public reportConsumer(consumer: string, problem: string | null): void {
     if (problem === null) {
@@ -229,8 +228,8 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @description
    * Describes the first durable consumer that does not work, for readiness.
    *
-   * @internal
    * @returns {string | undefined} `<consumer>: <problem>`, or `undefined` when every consumer works.
+   * @internal
    */
   public consumerProblem(): string | undefined {
     for (const [consumer, problem] of this.unhealthyConsumers) {

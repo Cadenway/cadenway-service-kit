@@ -37,3 +37,28 @@ export async function waitFor(
     await delay(25);
   }
 }
+
+/** Lets a spec hold work at an exact point and settle it after observing another action. */
+interface Deferred<TResult> {
+  // #region Properties
+  /** Work held until the spec settles the gate. */
+  readonly promise: Promise<TResult>;
+
+  /** Releases the gate successfully. */
+  readonly resolve: (value: TResult) => void;
+
+  /** Releases the gate with a failure. */
+  readonly reject: (reason: unknown) => void;
+  // #endregion
+}
+
+/** Creates a gate that a spec can resolve or reject explicitly. */
+export function deferred<TResult>(): Deferred<TResult> {
+  let resolve: (value: TResult) => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<TResult>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

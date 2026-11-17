@@ -34,7 +34,7 @@ export interface MessagingModuleAsyncOptions {
    * @description
    * Modules whose exported providers `useFactory` injects, when they are not global.
    *
-   * @type {ModuleMetadata['imports']}
+   * @type {ModuleMetadata['imports'] | undefined}
    * @readonly
    */
   readonly imports?: ModuleMetadata['imports'];
@@ -46,7 +46,7 @@ export interface MessagingModuleAsyncOptions {
    * Tokens of the providers handed to `useFactory`, in order: global providers, or providers
    * exported by `imports`.
    *
-   * @type {FactoryProvider['inject']}
+   * @type {FactoryProvider['inject'] | undefined}
    * @readonly
    */
   readonly inject?: FactoryProvider['inject'];
@@ -57,7 +57,7 @@ export interface MessagingModuleAsyncOptions {
    * @description
    * Builds the options of the module from the injected providers.
    *
-   * @type {(...dependencies: never[]) => MessagingModuleOptions | Promise<MessagingModuleOptions>}
+   * @type {( ...dependencies: never[] ) => MessagingModuleOptions | Promise<MessagingModuleOptions>}
    * @readonly
    */
   readonly useFactory: (
@@ -128,11 +128,11 @@ export class MessagingModule {
    * Method forRoot
    *
    * @description
-   * Registers the module with literal options.
+   * Registers the global module with options validated before connecting to NATS.
    *
-   * @param {MessagingModuleOptions} options - Service name, servers and optional settings.
-   * @returns {DynamicModule} The global module.
-   * @throws {Error} When the service name or the servers are missing.
+   * @param {MessagingModuleOptions} options - Service name, NATS servers and optional configuration.
+   * @returns {DynamicModule} Global module with validated options and messaging providers.
+   * @throws {Error} When the options are invalid.
    */
   public static forRoot(options: MessagingModuleOptions): DynamicModule {
     const resolved: ResolvedMessagingOptions = resolveMessagingOptions(options);

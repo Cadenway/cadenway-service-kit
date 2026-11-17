@@ -22,15 +22,19 @@ export {
 export {
   INTERNAL_TOKEN_ALGORITHM,
   INTERNAL_TOKEN_LIFETIME_SECONDS,
-  InternalTokenSigner,
-  InternalTokenVerifier,
   type Ed25519PrivateJwk,
   type Ed25519PublicJwk,
   type InternalTokenClaims,
+} from './auth/internal-token/internal-token.js';
+export {
+  InternalTokenSigner,
   type InternalTokenSignerOptions,
+} from './auth/internal-token/internal-token-signer.js';
+export {
+  InternalTokenVerifier,
   type InternalTokenVerifierOptions,
   type InvalidTokenReason,
-} from './auth/internal-token/internal-token.js';
+} from './auth/internal-token/internal-token-verifier.js';
 export {
   InternalTokenModule,
   type InternalTokenModuleOptions,

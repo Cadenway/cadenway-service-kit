@@ -5,7 +5,12 @@ import { check, index, jsonb, pgTable, timestamp, uuid } from 'drizzle-orm/pg-co
 import type { EventEnvelope } from '../../events/event-envelope.js';
 import { outboxEventColumns } from './outbox-event-columns.js';
 
-/** Outbox table declaration for services with the additive leased-relay migration. */
+/**
+ * Constant outboxEvents
+ *
+ * @description
+ * Outbox table declaration for services with the additive leased-relay migration.
+ */
 export default pgTable(
   'outbox_events',
   {

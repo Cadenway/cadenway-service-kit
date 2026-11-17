@@ -1,7 +1,23 @@
-/** Largest upstream error document accepted, measured before UTF-8 decoding. */
+/**
+ * Constant MAX_PROBLEM_BYTES
+ *
+ * @description
+ * Largest upstream error document accepted, measured before UTF-8 decoding.
+ *
+ * @type {number}
+ */
 const MAX_PROBLEM_BYTES: number = 65_536;
 
-/** Reads a bounded JSON error document and cancels a rejected or timed-out body. */
+/**
+ * Function readUpstreamProblem
+ *
+ * @description
+ * Reads a bounded JSON error document and cancels a rejected or timed-out body.
+ *
+ * @param {Response} response - Upstream response whose body may be read or canceled.
+ * @param {AbortSignal} signal - Signal that cancels reading the upstream response body.
+ * @returns {Promise<Record<string, unknown>>} A bounded decoded document, or an empty record if it cannot be read.
+ */
 export async function readUpstreamProblem(
   response: Response,
   signal: AbortSignal,

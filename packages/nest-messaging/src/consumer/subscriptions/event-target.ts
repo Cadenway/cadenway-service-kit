@@ -3,10 +3,42 @@ import type { EventRoute } from '../../transport/event-route.js';
 import type { EventContext } from '../delivery/event-context.js';
 
 /**
+ * Interface PreparedEvent
+ *
+ * @description
+ * Holds a validated envelope together with the handler bound to its typed payload.
+ */
+export interface PreparedEvent {
+  // #region Properties
+  /**
+   * Property envelope
+   *
+   * @description
+   * Envelope used to scope and deduplicate the delivery.
+   *
+   * @type {EventEnvelope}
+   * @readonly
+   */
+  readonly envelope: EventEnvelope;
+
+  /**
+   * Property handle
+   *
+   * @description
+   * Invokes the registered handler with the result of schema validation.
+   *
+   * @type {(context: EventContext) => Promise<void>}
+   * @readonly
+   */
+  readonly handle: (context: EventContext) => Promise<void>;
+  // #endregion
+}
+
+/**
  * Interface EventTarget
  *
  * @description
- * One registered event handler, with its types erased.
+ * Identifies a registered durable handler and prepares validated deliveries for it.
  */
 export interface EventTarget {
   // #region Properties
@@ -44,25 +76,14 @@ export interface EventTarget {
   readonly route: EventRoute;
 
   /**
-   * Property validate
+   * Property prepare
    *
    * @description
-   * Validates a decoded message with the schema of the event.
+   * Validates a decoded message before binding it to the handler.
    *
-   * @type {(candidate: unknown) => EventEnvelope}
+   * @type {(candidate: unknown) => PreparedEvent}
    * @readonly
    */
-  readonly validate: (candidate: unknown) => EventEnvelope;
-
-  /**
-   * Property handle
-   *
-   * @description
-   * Handler of the event.
-   *
-   * @type {(payload: EventEnvelope, context: EventContext) => Promise<void>}
-   * @readonly
-   */
-  readonly handle: (payload: EventEnvelope, context: EventContext) => Promise<void>;
+  readonly prepare: (candidate: unknown) => PreparedEvent;
   // #endregion
 }

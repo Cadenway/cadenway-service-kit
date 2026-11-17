@@ -7,8 +7,9 @@ import { z } from 'zod';
 
 import { EventConsumers } from '../consumer/event-consumers.js';
 import { MessagingModule } from '../wiring/messaging.module.js';
-import { EventPublisher, EventStreamUnavailableError } from '../publisher/event-publisher.js';
-import { RebuildEmitter, RebuildFlushTimeoutError } from '../rebuild/emitter/rebuild-emitter.js';
+import { EventStreamUnavailableError, RebuildFlushTimeoutError } from '../index.js';
+import { EventPublisher } from '../publisher/event-publisher.js';
+import { RebuildEmitter } from '../rebuild/emitter/rebuild-emitter.js';
 import { isolatedNames, messagingOptions, startApplication } from '../testing/application.js';
 import { eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';

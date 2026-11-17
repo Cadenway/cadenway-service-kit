@@ -65,11 +65,12 @@ export interface EventSubscription<
    * Property handle
    *
    * @description
-   * Handler of the event. It runs inside the organization context of the event and a consumer
-   * span. Resolving acknowledges the message; rejecting schedules a redelivery. It must be
-   * idempotent and finish within `handlerTimeoutMs`, after which the attempt is abandoned.
+   * Receives the validated schema output in the event's organization context. A success is
+   * acknowledged after any deduplication transaction commits. A rejection uses the retry
+   * schedule. Handlers must be idempotent and honor `context.signal` when their deadline or
+   * shutdown grace expires.
    *
-   * @type {(payload: EventPayloadOf<TSchemas, TName>, context: EventContext) => Promise<void>}
+   * @type {( payload: EventPayloadOf<TSchemas, TName>, context: EventContext, ) => Promise<void>}
    * @readonly
    */
   readonly handle: (

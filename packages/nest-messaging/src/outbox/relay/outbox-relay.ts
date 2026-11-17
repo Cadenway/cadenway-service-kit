@@ -27,6 +27,9 @@ import type { RelayPass } from './relay-pass.js';
 export type { RelayPass } from './relay-pass.js';
 
 /**
+ * Class OutboxRelay
+ *
+ * @description
  * Schedules publication of committed outbox rows and retention work. Replicas skip each other's
  * locked rows. If a commit fails after JetStream has acknowledged a publish, the row stays
  * pending and is published with the same event id on the next pass.
@@ -34,22 +37,124 @@ export type { RelayPass } from './relay-pass.js';
 @Injectable()
 export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShutdown {
   // #region Properties
-  /** Logs failures of the scheduled publication loop. */
+  /**
+   * Property logger
+   *
+   * @description
+   * Logs failures of the scheduled publication loop.
+   *
+   * @type {Logger}
+   * @readonly
+   */
   private readonly logger: Logger = new Logger('OutboxRelay');
+
+  /**
+   * Property batch
+   *
+   * @description
+   * Publisher for rows locked in the system transaction.
+   *
+   * @type {OutboxBatchPublisher}
+   * @readonly
+   */
   private readonly batch: OutboxBatchPublisher;
+
+  /**
+   * Property maintenance
+   *
+   * @description
+   * Independent scheduler for redaction and retention transactions.
+   *
+   * @type {OutboxMaintenanceRunner}
+   * @readonly
+   */
   private readonly maintenance: OutboxMaintenanceRunner;
 
+  /**
+   * Property manualPasses
+   *
+   * @description
+   * Tracks manual calls separately so each caller keeps its own pass and result.
+   *
+   * @type {Set<Promise<RelayBatch>>}
+   * @readonly
+   */
+  private readonly manualPasses = new Set<Promise<RelayBatch>>();
+
+  /**
+   * Property started
+   *
+   * @description
+   * Whether periodic publication can schedule a new pass.
+   *
+   * @type {boolean}
+   */
   private started: boolean = false;
+
+  /**
+   * Property shuttingDown
+   *
+   * @description
+   * Whether manual and scheduled publication admission has closed.
+   *
+   * @type {boolean}
+   */
+  private shuttingDown: boolean = false;
+
+  /**
+   * Property timer
+   *
+   * @description
+   * Scheduled publication wake-up, canceled on shutdown or an early wake.
+   *
+   * @type {NodeJS.Timeout | undefined}
+   */
   private timer: NodeJS.Timeout | undefined;
+
+  /**
+   * Property pass
+   *
+   * @description
+   * Active scheduled pass that shutdown must drain.
+   *
+   * @type {Promise<void> | undefined}
+   */
   private pass: Promise<void> | undefined;
+
+  /**
+   * Property woken
+   *
+   * @description
+   * Whether a commit requested another pass while the current pass was running.
+   *
+   * @type {boolean}
+   */
   private woken: boolean = false;
+
+  /**
+   * Property failedPasses
+   *
+   * @description
+   * Consecutive broker-wide or transaction failures used for polling backoff.
+   *
+   * @type {number}
+   */
   private failedPasses: number = 0;
   // #endregion
 
   // #region Constructor
   /**
+   * Constructor
+   *
+   * @description
    * Uses the system transaction runner. Without messaging options, the default stream and
    * subject prefix identify restricted rows.
+   *
+   * @param {SystemTransactionRunner<DatabaseSchema>} system - Opens the system transaction protecting a batch until settlement.
+   * @param {EventPublisher} publisher - Publishes committed events and awaits acknowledgements.
+   * @param {ResolvedOutboxOptions} options - Resolved settings for automatic polling, batch size and retention.
+   * @param {ResolvedMessagingOptions | undefined} messaging - Messaging configuration supplying restricted stream and prefix names.
+   * @constructor
    */
   public constructor(
     system: SystemTransactionRunner<DatabaseSchema>,
@@ -68,9 +173,14 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
   // #endregion
 
   // #region Methods
-  /** Starts polling unless automatic publication is disabled for this process. */
+  /**
+   * Method onApplicationBootstrap
+   *
+   * @description
+   * Starts polling unless automatic publication is disabled for this process.
+   */
   public onApplicationBootstrap(): void {
-    if (!this.options.relay) {
+    if (!this.options.relay || this.shuttingDown) {
       return;
     }
     this.started = true;
@@ -78,15 +188,28 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
     this.maintenance.start();
   }
 
-  /** Stops polling and waits for the scheduled pass in progress before resources close. */
+  /**
+   * Method beforeApplicationShutdown
+   *
+   * @description
+   * Closes admission and drains the scheduled pass, manual passes, and maintenance.
+   *
+   * @returns {Promise<void>} Resolves after all admitted passes and maintenance work settle.
+   */
   public async beforeApplicationShutdown(): Promise<void> {
+    this.shuttingDown = true;
     this.started = false;
     clearTimeout(this.timer);
     this.timer = undefined;
-    await Promise.all([this.pass, this.maintenance.stop()]);
+    await Promise.allSettled([this.pass, ...this.manualPasses, this.maintenance.stop()]);
   }
 
-  /** Asks for a pass after a use case commits, while the relay is running outside backoff. */
+  /**
+   * Method wake
+   *
+   * @description
+   * Asks for a pass after a use case commits, while the relay is running outside backoff.
+   */
   public wake(): void {
     if (!this.started || this.failedPasses > 0) {
       return;
@@ -100,15 +223,36 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
   }
 
   /**
+   * Method publishPending
+   *
+   * @description
    * Publishes and settles up to one batch of due rows within the publication budget. It can be
-   * called while automatic publication is disabled. A transaction failure rejects the pass and
-   * leaves the rows pending.
+   * called while automatic publication is disabled. A transaction failure leaves the rows pending.
+   *
+   * @returns {Promise<RelayPass>} Outcome of this caller’s independent publication pass.
+   * @throws When shutdown has started or the publication transaction fails.
    */
   public async publishPending(): Promise<RelayPass> {
-    const batch: RelayBatch = await this.batch.run();
-    return batch.result;
+    if (this.shuttingDown) {
+      throw new Error('The outbox relay is shutting down.');
+    }
+    const pass: Promise<RelayBatch> = this.batch.run();
+    this.manualPasses.add(pass);
+    try {
+      return (await pass).result;
+    } finally {
+      this.manualPasses.delete(pass);
+    }
   }
 
+  /**
+   * Method schedule
+   *
+   * @description
+   * Schedules a pass only while automatic publication remains active.
+   *
+   * @param {number} delayMs - Milliseconds before the next publication pass.
+   */
   private schedule(delayMs: number): void {
     if (!this.started) {
       return;
@@ -119,6 +263,14 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
     }, delayMs);
   }
 
+  /**
+   * Method tick
+   *
+   * @description
+   * Runs one scheduled pass, updates backoff and arranges the next poll.
+   *
+   * @returns {Promise<void>} Resolves after the next automatic pass is scheduled, if polling is still active.
+   */
   private async tick(): Promise<void> {
     let batch: RelayBatch | undefined;
     try {

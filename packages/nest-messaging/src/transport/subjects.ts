@@ -28,7 +28,6 @@ const TOKEN_PATTERN: RegExp = /^[A-Za-z0-9_-]+$/u;
  *
  * @param {string} value - Value to check.
  * @param {string} label - What the value is, for the error text.
- * @returns {void}
  * @throws {Error} When the value is empty or holds a wildcard, whitespace or an empty token.
  */
 function assertSubject(value: string, label: string): void {
@@ -47,7 +46,6 @@ function assertSubject(value: string, label: string): void {
  *
  * @param {string} value - Value to check.
  * @param {string} label - What the value is, for the error text.
- * @returns {void}
  * @throws {Error} When the value is empty or holds anything but letters, digits, hyphens and underscores.
  */
 function assertToken(value: string, label: string): void {

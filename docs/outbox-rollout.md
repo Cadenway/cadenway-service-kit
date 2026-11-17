@@ -14,10 +14,12 @@ table to migrate.
 2. Build the partial index `outbox_events_lease_expiry_index` on
    `(lease_expires_at, id) WHERE status = 'leased'`. On an existing table, build it
    concurrently outside the Drizzle transaction. A cancelled concurrent build can
-   leave an invalid index. Check validity before enabling the relay and retry the
-   build through the migrator. Call `finishOutboxLeaseMigration(client)` from
+   leave an invalid index. Call `finishOutboxLeaseMigration(client)` from
    `@cadenway/nest-messaging/outbox/schema` on the dedicated migrator connection
-   after Drizzle commits. This call also validates both checks.
+   after Drizzle commits. It rebuilds an invalid index with the expected definition
+   and validates both status and lease checks. If an index with the same name has
+   a different definition, inspect and correct it before retrying. The relay checks
+   both constraints and the expected valid index before it starts polling.
 3. Retain the old status behavior during expansion. The deployed writer still
    inserts `pending`, and the historic relay still selects `pending`. Verify the
    additive migration with the previous image before releasing the new runtime.

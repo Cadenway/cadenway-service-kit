@@ -4,7 +4,7 @@ import type { VersionClaim } from './event-deduplicator.js';
  * Interface EventContext
  *
  * @description
- * What a handler receives next to the payload of an event.
+ * Delivery metadata, cancellation and version tracking for an event handler.
  */
 export interface EventContext {
   // #region Properties
@@ -12,7 +12,7 @@ export interface EventContext {
    * Property deliveryCount
    *
    * @description
-   * One-based number of this delivery to the consumer: 1 the first time, up to 5.
+   * One-based attempt number for this delivery to the consumer.
    *
    * @type {number}
    * @readonly
@@ -34,7 +34,7 @@ export interface EventContext {
    * Property redelivered
    *
    * @description
-   * `true` when the server delivered this message before.
+   * Whether the server delivered this message before.
    *
    * @type {boolean}
    * @readonly
@@ -60,8 +60,8 @@ export interface EventContext {
    * Property signal
    *
    * @description
-   * Aborted when the handler reaches `handlerTimeoutMs`. The attempt is then abandoned: pass the
-   * signal to the calls the handler makes so that they stop too.
+   * Aborted when the handler deadline or application shutdown grace expires. Pass it to calls the
+   * handler makes so they can stop before another delivery starts.
    *
    * @type {AbortSignal}
    * @readonly

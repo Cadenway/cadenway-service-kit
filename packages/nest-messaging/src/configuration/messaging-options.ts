@@ -4,7 +4,7 @@
  * @description
  * Injection token of the options of `MessagingModule`, with every default applied.
  *
- * @type {symbol}
+ * @type {unique symbol}
  */
 export const MESSAGING_OPTIONS: unique symbol = Symbol('cadenway.messaging.options');
 
@@ -401,7 +401,7 @@ export interface MessagingModuleOptions {
  * Options of `MessagingModule` with every default applied and the servers as a list, as the
  * providers of the package receive them under `MESSAGING_OPTIONS`.
  *
- * @type {Readonly<Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password'>>> & Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[] }}
+ * @type {Readonly< Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password'>> > & Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[] }}
  */
 export type ResolvedMessagingOptions = Readonly<
   Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password'>>
