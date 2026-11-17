@@ -1,6 +1,7 @@
 import type { EventEnvelope } from '../../events/event-envelope.js';
 import type { EventRoute } from '../../transport/event-route.js';
 import type { EventContext } from '../delivery/event-context.js';
+import type { RedeliveryPolicy } from './redelivery-policy.js';
 
 /**
  * Interface PreparedEvent
@@ -74,6 +75,17 @@ export interface EventTarget {
    * @readonly
    */
   readonly route: EventRoute;
+
+  /**
+   * Property redelivery
+   *
+   * @description
+   * Delays between the deliveries of a failing message and the delivery limit of the consumer.
+   *
+   * @type {RedeliveryPolicy}
+   * @readonly
+   */
+  readonly redelivery: RedeliveryPolicy;
 
   /**
    * Property prepare

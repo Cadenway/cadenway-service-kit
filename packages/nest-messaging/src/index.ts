@@ -17,6 +17,7 @@ export type { VersionClaim } from './consumer/delivery/event-deduplicator.js';
 export {
   EventConsumers,
   type EventContext,
+  type EventRedelivery,
   type EventSubscription,
   type RebuildSubscription,
 } from './consumer/event-consumers.js';

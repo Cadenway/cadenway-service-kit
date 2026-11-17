@@ -10,7 +10,7 @@ import { ConsumerRecovery } from './consumer-recovery.js';
 it('leaves a buffered message unsettled when admission closes during the active delivery', async () => {
   const shutdown: AbortController = new AbortController();
   const logger: Logger = new Logger('consumer recovery spec');
-  const delivery: EventDelivery = new EventDelivery(logger, 1000, [100]);
+  const delivery: EventDelivery = new EventDelivery(logger, 1000);
   const deliver = vi.spyOn(delivery, 'deliver').mockImplementation(() => {
     shutdown.abort();
     return Promise.resolve();
@@ -29,6 +29,7 @@ it('leaves a buffered message unsettled when admission closes during the active 
       consumer: 'search-service__index-task',
       event: 'task.updated.v1',
       route: { stream: 'EVENTS', subject: 'evt.task.updated.v1', restricted: false },
+      redelivery: { delaysMs: [100], maxDeliveries: 2, custom: false },
       prepare: () => {
         throw new Error('This test isolates message admission.');
       },

@@ -13,17 +13,25 @@ export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [1000, 5000, 30_000, 1
  * Function retryDelayMs
  *
  * @description
- * Returns how long to wait before redelivering a message whose handler just failed.
+ * Returns how long to wait before redelivering a message whose handler just failed. The failed
+ * delivery `n` waits the `n`-th delay; past the last delay, the last one repeats until the
+ * delivery limit.
  *
  * @param {number} deliveryCount - One-based number of the delivery that failed.
  * @param {readonly number[]} delays - Delay after each failed delivery, in milliseconds.
+ * @param {number} maxDeliveries - Delivery limit of the consumer; defaults to one more than the delays.
  * @returns {number | undefined} The delay in milliseconds, or `undefined` when that delivery was the last one allowed.
  */
 export function retryDelayMs(
   deliveryCount: number,
   delays: readonly number[] = DEFAULT_RETRY_DELAYS_MS,
+  maxDeliveries: number = maxDeliveriesOf(delays),
 ): number | undefined {
-  return delays[Math.max(deliveryCount, 1) - 1];
+  const failed: number = Math.max(deliveryCount, 1);
+  if (failed >= maxDeliveries) {
+    return undefined;
+  }
+  return delays[Math.min(failed, delays.length) - 1];
 }
 
 /**

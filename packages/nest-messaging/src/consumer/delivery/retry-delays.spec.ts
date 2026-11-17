@@ -29,3 +29,19 @@ describe('retry delays', () => {
     expect(DEFAULT_RETRY_DELAYS_MS).toHaveLength(4);
   });
 });
+
+describe('retry delays with a delivery limit', () => {
+  it('repeats the last delay until the delivery limit', () => {
+    expect(
+      [1, 2, 3, 4, 5, 6].map((deliveryCount: number) => retryDelayMs(deliveryCount, [10, 20], 6)),
+    ).toEqual([10, 20, 20, 20, 20, undefined]);
+  });
+
+  it('keeps the default schedule when the limit is one more than the delays', () => {
+    expect(
+      [1, 2, 3, 4, 5].map((deliveryCount: number) =>
+        retryDelayMs(deliveryCount, DEFAULT_RETRY_DELAYS_MS, 5),
+      ),
+    ).toEqual([1000, 5000, 30_000, 120_000, undefined]);
+  });
+});

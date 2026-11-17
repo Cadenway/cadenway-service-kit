@@ -145,11 +145,11 @@ export class EventDelivery {
    * Constructor
    *
    * @description
-   * Sets the delivery deadline and retry policy for all consumers of the application.
+   * Sets the delivery deadline for all consumers of the application; each target carries its own
+   * redelivery schedule.
    *
    * @param {Logger} logger - Shared consumer logger.
    * @param {number} handlerTimeoutMs - Handler deadline in milliseconds.
-   * @param {readonly number[]} retryDelaysMs - Delays by failed attempt, in milliseconds.
    * @param {EventDeduplicator | undefined} deduplicator - Optional transaction around the handler.
    * @param {AbortSignal | undefined} abandon - Signal triggered when the shutdown grace period expires.
    * @constructor
@@ -157,7 +157,6 @@ export class EventDelivery {
   public constructor(
     private readonly logger: Logger,
     private readonly handlerTimeoutMs: number,
-    private readonly retryDelaysMs: readonly number[],
     private readonly deduplicator?: EventDeduplicator,
     private readonly abandon?: AbortSignal,
   ) {}
@@ -170,7 +169,7 @@ export class EventDelivery {
    * @description
    * Validates one delivery and runs the handler in its organization context. A success is
    * acknowledged after deduplication commits, invalid input is terminated, and handler failure
-   * uses the configured retry delays. Once shutdown grace expires, the delivery is left unsettled
+   * uses the redelivery schedule of the target. Once shutdown grace expires, the delivery is left unsettled
    * for JetStream to redeliver.
    *
    * @param {EventTarget} target - Registered durable handler and its validation boundary.
@@ -251,7 +250,11 @@ export class EventDelivery {
       const errorClass: string = timedOut ? 'HandlerTimeoutError' : errorCategoryOf(error);
       span.setAttribute('error.type', errorClass);
       span.setStatus({ code: SpanStatusCode.ERROR, message: errorClass });
-      const delayMs: number | undefined = retryDelayMs(deliveryCount, this.retryDelaysMs);
+      const delayMs: number | undefined = retryDelayMs(
+        deliveryCount,
+        target.redelivery.delaysMs,
+        target.redelivery.maxDeliveries,
+      );
       if (delayMs === undefined) {
         this.answer(target, message, 'nak');
         this.logger.error(

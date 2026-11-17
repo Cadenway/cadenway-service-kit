@@ -15,16 +15,16 @@ import type { MessagingConnection } from '../../connection/messaging-connection.
 import type { EventNameOf, EventSchemas } from '../../events/event-envelope.js';
 import { validateEvent } from '../../events/event-validation.js';
 import { ACK_WAIT_MS } from '../../configuration/messaging-defaults.js';
-import { eventRoute } from '../../transport/event-route.js';
+import { eventRoute, type EventRoute } from '../../transport/event-route.js';
 import type { ResolvedMessagingOptions } from '../../configuration/messaging-options.js';
 import type { MessagingTuning } from '../../configuration/messaging-tuning.js';
 import { durableConsumerName } from '../../transport/subjects.js';
 import type { EventContext } from '../delivery/event-context.js';
 import type { EventDelivery } from '../delivery/event-delivery.js';
 import { ConsumerRecovery } from '../recovery/consumer-recovery.js';
-import { maxDeliveriesOf } from '../delivery/retry-delays.js';
 import type { EventSubscription } from './event-subscription.js';
 import type { EventTarget, PreparedEvent } from './event-target.js';
+import { resolveRedelivery } from './redelivery-policy.js';
 import type { RunningConsumer } from './running-consumer.js';
 
 /**
@@ -97,13 +97,14 @@ export class DurableSubscriptions {
    * Method subscribe
    *
    * @description
-   * Registers a handler for one event and starts delivering to it. With `manageConsumers` on,
-   * the durable consumer is created, or its acknowledgement settings updated; otherwise the
+   * Registers a handler for one event and starts delivering to it. Its redelivery schedule is
+   * checked first, before any broker request. With `manageConsumers` on, the durable consumer is
+   * created, or its acknowledgement wait and delivery limit updated in place; otherwise the
    * handler binds to the existing consumer.
    *
-   * @param {EventSubscription<TSchemas, TName>} subscription - Handler name, event and handler.
+   * @param {EventSubscription<TSchemas, TName>} subscription - Handler name, event, optional redelivery schedule and handler.
    * @returns {Promise<void>} Resolves once the consumer exists and is being pulled.
-   * @throws {Error} When the handler is already registered, the stream is missing, the consumer is missing while `manageConsumers` is off, the server refuses to create or update it, or it filters another subject.
+   * @throws {Error} When the handler is already registered, its redelivery schedule is invalid, the stream is missing, the consumer is missing while `manageConsumers` is off or has another delivery limit than a custom schedule, the server refuses to create or update it, or it filters another subject.
    */
   public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
     subscription: EventSubscription<TSchemas, TName>,
@@ -113,10 +114,17 @@ export class DurableSubscriptions {
     if (this.consumers.has(name)) {
       throw new Error(`The handler ${subscription.handler} is already registered.`);
     }
+    const route: EventRoute = eventRoute(this.options, subscription.event);
     const target: EventTarget = {
       consumer: name,
       event: subscription.event,
-      route: eventRoute(this.options, subscription.event),
+      route,
+      redelivery: resolveRedelivery(
+        name,
+        subscription.redelivery,
+        this.tuning.retryDelaysMs,
+        route,
+      ),
       prepare: (candidate: unknown): PreparedEvent => {
         const payload = validateEvent(subscription.schemas, subscription.event, candidate);
         return {
@@ -183,8 +191,11 @@ export class DurableSubscriptions {
    *
    * @description
    * Returns the durable consumer of a handler, after creating or updating it when the module
-   * manages consumers, and checks that it filters the expected subject. It reads the consumer
-   * with `$JS.API.CONSUMER.INFO.<stream>.<name>` and never lists nor deletes consumers.
+   * manages consumers, and checks that it filters the expected subject. A consumer the module
+   * does not manage must also have the delivery limit of a custom redelivery schedule: the kit
+   * cannot change it, and another limit would end the schedule early or redeliver a message the
+   * handler already gave up on. It reads the consumer with `$JS.API.CONSUMER.INFO.<stream>.<name>`
+   * and never lists nor deletes consumers.
    *
    * @param {EventTarget} target - Registered handler.
    * @param {DeliverPolicy} deliverPolicy - Start position when the durable needs to be created.
@@ -202,6 +213,15 @@ export class DurableSubscriptions {
       if (info.config.filter_subject !== target.route.subject) {
         throw new Error(
           `The consumer ${name} of the stream ${stream} does not filter ${target.route.subject}: a handler consumes exactly one event. Rename the handler to consume another event.`,
+        );
+      }
+      if (
+        !this.options.manageConsumers &&
+        target.redelivery.custom &&
+        info.config.max_deliver !== target.redelivery.maxDeliveries
+      ) {
+        throw new Error(
+          `The consumer ${name} of the stream ${stream} allows ${String(info.config.max_deliver)} deliveries, but its handler expects ${String(target.redelivery.maxDeliveries)}: with manageConsumers off, the platform sets max_deliver.`,
         );
       }
       return consumer;
@@ -227,8 +247,11 @@ export class DurableSubscriptions {
    *
    * @description
    * Creates the durable pull consumer of a handler, or aligns the acknowledgement wait and the
-   * delivery limit of an existing one, through `$JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>`.
-   * No server-side backoff is set: its first entry would replace the acknowledgement wait.
+   * delivery limit of an existing one in place, through
+   * `$JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>`: the consumer keeps its name, position and
+   * pending messages, which are then redelivered up to the new limit. No server-side backoff is
+   * set: its first entry would replace the acknowledgement wait, so the schedule of the handler
+   * is applied with `nak(delay)`.
    *
    * The kit never deletes a consumer: when the server refuses the creation or the update, for
    * instance because a field that cannot change differs, it fails with an error naming the
@@ -245,7 +268,7 @@ export class DurableSubscriptions {
     const stream: string = target.route.stream;
     const manager: JetStreamManager = await this.connection.manager();
     const ackWait: number = nanos(ACK_WAIT_MS);
-    const maxDeliver: number = maxDeliveriesOf(this.tuning.retryDelaysMs);
+    const maxDeliver: number = target.redelivery.maxDeliveries;
     const existing: ConsumerInfo | undefined = await this.consumerInfo(manager, stream, name);
     try {
       if (existing === undefined) {
@@ -274,6 +297,17 @@ export class DurableSubscriptions {
           ack_wait: ackWait,
           max_deliver: maxDeliver,
         });
+        this.logger.log(
+          {
+            consumer: name,
+            stream,
+            maxDeliver,
+            previousMaxDeliver: existing.config.max_deliver,
+            ackWaitMs: ACK_WAIT_MS,
+            previousAckWaitMs: Math.round((existing.config.ack_wait ?? 0) / 1_000_000),
+          },
+          'durable consumer updated in place',
+        );
       }
     } catch (error) {
       if (error instanceof JetStreamApiError) {
