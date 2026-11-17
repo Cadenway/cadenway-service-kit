@@ -23,7 +23,8 @@ declaration changes.
 Migration: a client or a test that matched one of the four old codes, or read
 `details.currentVersion`, matches the new code and `details.version`. A service that caught these
 problems to answer the contract codes itself (identity-service for the API token cursor and the
-`If-Match` of the profile, organization-service for its list cursors and `If-Match`) can drop that
-mapping once it runs this version. Issues in `header` are not listed by the released
-`ValidationIssue` type, whose declaration stays unchanged: code that reads `details.issues` of any
-origin also expects `in: 'header'`.
+`If-Match` of the profile, organization-service for its list cursors and `If-Match`) can drop the
+`catch` around `decodeCursor` and `parseIfMatch` once it runs this version; it keeps its own
+`request.invalid` for the checks it makes on a decoded position (sort values, id form). Issues
+in `header` are not listed by the released `ValidationIssue` type, whose declaration stays
+unchanged: code that reads `details.issues` of any origin also expects `in: 'header'`.

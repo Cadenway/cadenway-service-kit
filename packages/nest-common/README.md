@@ -476,12 +476,12 @@ form of the id before they reach a query, and answer the same problem when they 
 
 The `version` of an aggregate is its `ETag`.
 
-| Helper                                                   | Behavior                                                                                                                                         |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `EtagInterceptor`                                        | Sets `ETag: "<version>"` when a handler returns an object with an integer `version`; lists are left alone                                        |
-| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.invalid`                                              |
-| `assertVersionMatch(condition, currentVersion, options)` | 412 `request.version-mismatch` with the stored version as `details.version` when the versions differ. Call it inside the transaction that writes |
-| `formatEtag(version)`, `parseIfMatch(header)`            | The underlying conversions; `parseIfMatch` answers a malformed header like `@IfMatch()`                                                          |
+| Helper                                                   | Behavior                                                                                                                                                                     |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EtagInterceptor`                                        | Sets `ETag: "<version>"` when a handler returns an object with an integer `version`; lists are left alone                                                                    |
+| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.invalid`                                                                          |
+| `assertVersionMatch(condition, currentVersion, options)` | 412 `request.version-mismatch` with the stored version as `details.version` when the versions differ. Call it inside the transaction that writes, after the permission check |
+| `formatEtag(version)`, `parseIfMatch(header)`            | The underlying conversions; `parseIfMatch` answers a malformed header like `@IfMatch()`                                                                                      |
 
 ```json
 {

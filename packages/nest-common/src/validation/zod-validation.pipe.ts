@@ -74,8 +74,9 @@ export interface ValidationIssue {
    * Property code
    *
    * @description
-   * Zod issue code, `unrecognized_parameter` for an unknown query parameter, or `invalid_json`
-   * for a request body that is not valid JSON.
+   * Zod issue code, `unrecognized_parameter` for an unknown query parameter, `invalid_json`
+   * for a request body that is not valid JSON, or `invalid_cursor` for a cursor `decodeCursor`
+   * cannot use.
    *
    * @type {string}
    * @readonly

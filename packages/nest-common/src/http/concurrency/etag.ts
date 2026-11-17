@@ -118,7 +118,8 @@ export function parseIfMatch(header: string | undefined): IfMatchCondition {
  *
  * @description
  * Checks the current version of an aggregate against the `If-Match` condition of the request.
- * Call it where the version is read, inside the transaction that writes.
+ * Call it where the version is read, inside the transaction that writes and after the permission
+ * check: a caller who may not read the aggregate must not learn its version.
  *
  * @param {IfMatchCondition} condition - Parsed `If-Match` header.
  * @param {number} currentVersion - Version of the aggregate as stored.
