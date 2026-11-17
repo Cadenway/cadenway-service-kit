@@ -435,10 +435,13 @@ describe('HTTP formats', () => {
         .expect(412);
       await request(app.getHttpServer()).patch('/samples/42').set('If-Match', 'W/"7"').expect(412);
 
-      expect(stale.body).toMatchObject({
+      expect(stale.body).toEqual({
+        type: 'about:blank',
+        title: 'Precondition Failed',
         status: 412,
-        code: 'precondition.failed',
-        details: { currentVersion: 7 },
+        code: 'request.version-mismatch',
+        detail: 'The resource changed since it was read.',
+        details: { version: 7 },
       });
     });
 
@@ -451,8 +454,34 @@ describe('HTTP formats', () => {
         .patch('/samples/long-text')
         .expect(400);
 
-      expect((malformed.body as Problem).code).toBe('request.if-match-invalid');
-      expect((missing.body as Problem).code).toBe('request.if-match-required');
+      expect(malformed.body).toEqual({
+        type: 'about:blank',
+        title: 'Bad Request',
+        status: 400,
+        code: 'request.invalid',
+        detail: 'The request does not match its contract.',
+        details: {
+          issues: [
+            {
+              in: 'header',
+              path: 'If-Match',
+              code: 'invalid_format',
+              message: 'Expected "*" or a list of quoted entity tags.',
+            },
+          ],
+        },
+      });
+      expect((missing.body as Problem).code).toBe('request.invalid');
+      expect((missing.body as Problem).details).toEqual({
+        issues: [
+          {
+            in: 'header',
+            path: 'If-Match',
+            code: 'invalid_type',
+            message: 'This route requires an If-Match header.',
+          },
+        ],
+      });
     });
   });
 });

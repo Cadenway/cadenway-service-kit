@@ -43,6 +43,31 @@ export interface VersionCheckOptions {
 }
 
 /**
+ * Function invalidIfMatch
+ *
+ * @description
+ * Builds the problem answered to an `If-Match` header that is malformed, or absent where the
+ * route requires it: `400 request.invalid`, the code the contracts declare for a request that
+ * does not match its schema, with one `details.issues` entry on the header. The header value is
+ * never quoted.
+ *
+ * @param {'invalid_format' | 'invalid_type'} code - Issue code: `invalid_format` for a malformed header, `invalid_type` for a missing one.
+ * @param {string} message - Expectation the header did not meet.
+ * @returns {ProblemException} A 400 `request.invalid` problem.
+ */
+function invalidIfMatch(
+  code: 'invalid_format' | 'invalid_type',
+  message: string,
+): ProblemException {
+  return new ProblemException({
+    status: 400,
+    code: 'request.invalid',
+    detail: 'The request does not match its contract.',
+    details: { issues: [{ in: 'header', path: 'If-Match', code, message }] },
+  });
+}
+
+/**
  * Function formatEtag
  *
  * @description
@@ -64,7 +89,7 @@ export function formatEtag(version: number): string {
  *
  * @param {string | undefined} header - Value of the `If-Match` header.
  * @returns {IfMatchCondition} The accepted versions, `'*'`, or `undefined` when the header is absent.
- * @throws {ProblemException} 400 `request.if-match-invalid` when the header is not a list of entity tags.
+ * @throws {ProblemException} 400 `request.invalid`, with one issue `{ in: 'header', path: 'If-Match', code: 'invalid_format' }`, when the header is not a list of entity tags.
  */
 export function parseIfMatch(header: string | undefined): IfMatchCondition {
   if (header === undefined || header.trim() === '') {
@@ -78,11 +103,7 @@ export function parseIfMatch(header: string | undefined): IfMatchCondition {
     const tag: string = part.trim();
     const match: RegExpExecArray | null = /^(W\/)?"([^"]*)"$/u.exec(tag);
     if (match === null) {
-      throw new ProblemException({
-        status: 400,
-        code: 'request.if-match-invalid',
-        detail: 'If-Match must be "*" or a list of quoted entity tags.',
-      });
+      throw invalidIfMatch('invalid_format', 'Expected "*" or a list of quoted entity tags.');
     }
     const value: string = match[2] ?? '';
     if (match[1] === undefined && /^\d{1,15}$/u.test(value)) {
@@ -102,7 +123,7 @@ export function parseIfMatch(header: string | undefined): IfMatchCondition {
  * @param {IfMatchCondition} condition - Parsed `If-Match` header.
  * @param {number} currentVersion - Version of the aggregate as stored.
  * @param {VersionCheckOptions} options - Whether the header is mandatory.
- * @throws {ProblemException} 412 `precondition.failed` when the versions differ; 400 `request.if-match-required` when the header is mandatory and absent.
+ * @throws {ProblemException} 412 `request.version-mismatch`, with the stored version as `details.version`, when the versions differ; 400 `request.invalid`, with one issue `{ in: 'header', path: 'If-Match', code: 'invalid_type' }`, when the header is mandatory and absent.
  */
 export function assertVersionMatch(
   condition: IfMatchCondition,
@@ -111,20 +132,16 @@ export function assertVersionMatch(
 ): void {
   if (condition === undefined) {
     if (options.required === true) {
-      throw new ProblemException({
-        status: 400,
-        code: 'request.if-match-required',
-        detail: 'This route requires an If-Match header.',
-      });
+      throw invalidIfMatch('invalid_type', 'This route requires an If-Match header.');
     }
     return;
   }
   if (condition !== '*' && !condition.includes(currentVersion)) {
     throw new ProblemException({
       status: 412,
-      code: 'precondition.failed',
+      code: 'request.version-mismatch',
       detail: 'The resource changed since it was read.',
-      details: { currentVersion },
+      details: { version: currentVersion },
     });
   }
 }
