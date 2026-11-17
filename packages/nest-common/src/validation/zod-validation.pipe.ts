@@ -50,7 +50,9 @@ export interface ValidationIssue {
    * Property in
    *
    * @description
-   * Part of the request the value came from.
+   * Part of the request the value came from. `parseIfMatch` and `assertVersionMatch` also answer
+   * `request.invalid` with an issue in `header` on the `If-Match` header; this type keeps its
+   * released members, so code that reads issues of any origin also expects `header`.
    *
    * @type {'body' | 'query' | 'param' | 'custom'}
    * @readonly
@@ -72,8 +74,9 @@ export interface ValidationIssue {
    * Property code
    *
    * @description
-   * Zod issue code, `unrecognized_parameter` for an unknown query parameter, or `invalid_json`
-   * for a request body that is not valid JSON.
+   * Zod issue code, `unrecognized_parameter` for an unknown query parameter, `invalid_json`
+   * for a request body that is not valid JSON, or `invalid_cursor` for a cursor `decodeCursor`
+   * cannot use.
    *
    * @type {string}
    * @readonly

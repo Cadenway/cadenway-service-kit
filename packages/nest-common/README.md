@@ -367,8 +367,14 @@ applications translate from `code`.
 Codes produced by this package: `http.bad-request`, `http.unauthorized`, `http.forbidden`,
 `http.not-found`, `http.conflict`, `http.unprocessable-content`,
 `http.too-many-requests`, `http.service-unavailable`, `internal.unexpected`, `request.invalid`,
-`request.body-too-large`, `request.if-match-invalid`, `request.if-match-required`,
-`precondition.failed` and `pagination.cursor-invalid`.
+`request.body-too-large`, `request.version-mismatch` and, for an `HttpException` of status 412
+that carries no code of its own, `precondition.failed`.
+
+A malformed cursor, a malformed `If-Match` and a missing mandatory `If-Match` answer
+`request.invalid`, and a stale `If-Match` answers `412 request.version-mismatch` with
+`details.version`: the codes the contracts declare. Up to 0.5.x they answered
+`pagination.cursor-invalid`, `request.if-match-invalid`, `request.if-match-required` and
+`precondition.failed` (with `details.currentVersion`), which no contract declares.
 
 A request body that is not valid JSON answers `request.invalid`, the code the contracts declare
 for a body that does not match its schema. Up to 0.4.1 it answered `http.bad-request`, with the
@@ -406,7 +412,10 @@ list(@Query() query: ListTasksQuery) {}
 ```
 
 A failure answers 400 `request.invalid` with one `details.issues` entry per issue:
-`{ in, path, code, message }`. Messages name the expectation and never the received value.
+`{ in, path, code, message }`. Messages name the expectation and never the received value. The
+pipe reports `in` as `body`, `query`, `param` or `custom`; the [entity tag](#entity-tags) helpers
+report the `If-Match` header with `in: 'header'`, a value the released `ValidationIssue` type does
+not list.
 
 - **An unknown query parameter answers 400** (`unrecognized_parameter`) when the query schema is a
   `z.object`. A schema wrapped by `.transform()` or `.pipe()` cannot be inspected: write the object
@@ -429,30 +438,71 @@ return buildPage(rows, query.limit, (last) =>
 );
 ```
 
-| Helper                             | Behavior                                                                               |
-| ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `pageQueryShape`                   | Zod shape of `cursor` and `limit`: `limit` from 1 to 100, 50 by default                |
-| `encodeCursor(position, filters)`  | Pass everything that defines the list as `filters`: the filters and the sort           |
-| `decodeCursor(cursor, filters)`    | 400 `pagination.cursor-invalid` for a malformed cursor or one issued for other filters |
-| `buildPage(rows, limit, cursorOf)` | Expects `limit + 1` rows; `nextCursor` is `null` on the last page                      |
+| Helper                             | Behavior                                                                                 |
+| ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `pageQueryShape`                   | Zod shape of `cursor` and `limit`: `limit` from 1 to 100, 50 by default                  |
+| `encodeCursor(position, filters)`  | Pass everything that defines the list as `filters`: the filters and the sort             |
+| `decodeCursor(cursor, filters)`    | 400 `request.invalid` for a malformed cursor or one issued for other filters (see below) |
+| `buildPage(rows, limit, cursorOf)` | Expects `limit + 1` rows; `nextCursor` is `null` on the last page                        |
 
 The cursor is not signed and not secret: it only positions a query that still filters on the
-organization of the verified token.
+organization of the verified token. A cursor that cannot be used answers the same problem
+whatever is wrong with it, without quoting it:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "code": "request.invalid",
+  "detail": "The request does not match its contract.",
+  "details": {
+    "issues": [
+      {
+        "in": "query",
+        "path": "cursor",
+        "code": "invalid_cursor",
+        "message": "Expected the nextCursor of a previous page of this list."
+      }
+    ]
+  }
+}
+```
+
+A decoded position is still input from the caller: check the type of each sort value and the
+form of the id before they reach a query, and answer the same problem when they do not fit.
 
 ## Entity tags
 
 The `version` of an aggregate is its `ETag`.
 
-| Helper                                                   | Behavior                                                                                                     |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `EtagInterceptor`                                        | Sets `ETag: "<version>"` when a handler returns an object with an integer `version`; lists are left alone    |
-| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.if-match-invalid` |
-| `assertVersionMatch(condition, currentVersion, options)` | 412 `precondition.failed` when the versions differ. Call it inside the transaction that writes               |
-| `formatEtag(version)`, `parseIfMatch(header)`            | The underlying conversions                                                                                   |
+| Helper                                                   | Behavior                                                                                                                                                                     |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EtagInterceptor`                                        | Sets `ETag: "<version>"` when a handler returns an object with an integer `version`; lists are left alone                                                                    |
+| `@IfMatch()`                                             | Hands the parsed `If-Match` header to the handler; a malformed header answers 400 `request.invalid`                                                                          |
+| `assertVersionMatch(condition, currentVersion, options)` | 412 `request.version-mismatch` with the stored version as `details.version` when the versions differ. Call it inside the transaction that writes, after the permission check |
+| `formatEtag(version)`, `parseIfMatch(header)`            | The underlying conversions; `parseIfMatch` answers a malformed header like `@IfMatch()`                                                                                      |
+
+```json
+{
+  "type": "about:blank",
+  "title": "Precondition Failed",
+  "status": 412,
+  "code": "request.version-mismatch",
+  "detail": "The resource changed since it was read.",
+  "details": { "version": 7 }
+}
+```
+
+A malformed header answers 400 `request.invalid` with one issue
+`{ "in": "header", "path": "If-Match", "code": "invalid_format", "message": "Expected \"*\" or a list of quoted entity tags." }`;
+the header value is never quoted.
 
 `If-Match` is optional by default. With `{ required: true }`, for routes that edit long texts, a
-request without the header answers 400 `request.if-match-required` (428 is not a status of the
-contract set). A weak tag (`W/"7"`) never matches, as `If-Match` requires a strong comparison.
+request without the header answers 400 `request.invalid` with one issue
+`{ "in": "header", "path": "If-Match", "code": "invalid_type", "message": "This route requires an If-Match header." }`
+(428 is not a status of the contract set). A weak tag (`W/"7"`) never matches, as `If-Match`
+requires a strong comparison.
 
 ## Body limit
 

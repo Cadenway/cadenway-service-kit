@@ -241,13 +241,29 @@ export function encodeCursor(position: CursorPosition, filters: unknown): string
  * Function invalidCursor
  *
  * @description
- * Builds the problem answered to a cursor that cannot be used.
+ * Builds the problem answered to a cursor that cannot be used: `400 request.invalid`, the code
+ * the contracts declare for a request that does not match its schema, with one
+ * `details.issues` entry on the `cursor` query parameter. A malformed cursor and a cursor issued
+ * for another list get the same answer, which never quotes the cursor.
  *
- * @param {string} detail - What is wrong with the cursor.
- * @returns {ProblemException} A 400 `pagination.cursor-invalid` problem.
+ * @returns {ProblemException} A 400 `request.invalid` problem.
  */
-function invalidCursor(detail: string): ProblemException {
-  return new ProblemException({ status: 400, code: 'pagination.cursor-invalid', detail });
+function invalidCursor(): ProblemException {
+  return new ProblemException({
+    status: 400,
+    code: 'request.invalid',
+    detail: 'The request does not match its contract.',
+    details: {
+      issues: [
+        {
+          in: 'query',
+          path: 'cursor',
+          code: 'invalid_cursor',
+          message: 'Expected the nextCursor of a previous page of this list.',
+        },
+      ],
+    },
+  });
 }
 
 /**
@@ -259,25 +275,22 @@ function invalidCursor(detail: string): ProblemException {
  * @param {string} cursor - Cursor sent by the caller.
  * @param {unknown} filters - Filters and sort of the current request.
  * @returns {CursorPosition} The position the page starts after.
- * @throws {ProblemException} 400 `pagination.cursor-invalid` when the cursor is malformed or was issued for other filters.
+ * @throws {ProblemException} 400 `request.invalid`, with one issue `{ in: 'query', path: 'cursor', code: 'invalid_cursor' }`, when the cursor is malformed or was issued for other filters.
  */
 export function decodeCursor(cursor: string, filters: unknown): CursorPosition {
   if (cursor.length > MAX_CURSOR_LENGTH) {
-    throw invalidCursor('The cursor is malformed.');
+    throw invalidCursor();
   }
   let decoded: unknown;
   try {
     decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    throw invalidCursor('The cursor is malformed.');
+    throw invalidCursor();
   }
   const parsed: z.ZodSafeParseResult<{ s: CursorValue[]; i: string; f: string }> =
     positionSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw invalidCursor('The cursor is malformed.');
-  }
-  if (parsed.data.f !== filterFingerprint(filters)) {
-    throw invalidCursor('The cursor was issued for other filters or another sort.');
+  if (!parsed.success || parsed.data.f !== filterFingerprint(filters)) {
+    throw invalidCursor();
   }
   return { sort: parsed.data.s, id: parsed.data.i };
 }

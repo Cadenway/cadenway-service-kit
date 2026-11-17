@@ -58,10 +58,10 @@ describe('cursor codec', () => {
     const cursor: string = encodeCursor(position, { sort: '-dueDate', status: ['open'] });
 
     expect(problemCode(() => decodeCursor(cursor, { sort: 'dueDate', status: ['open'] }))).toBe(
-      '400 pagination.cursor-invalid',
+      '400 request.invalid',
     );
     expect(problemCode(() => decodeCursor(cursor, { sort: '-dueDate' }))).toBe(
-      '400 pagination.cursor-invalid',
+      '400 request.invalid',
     );
   });
 
@@ -71,7 +71,40 @@ describe('cursor codec', () => {
     );
 
     for (const cursor of ['not base64 json', '', forged, 'A'.repeat(4096)]) {
-      expect(problemCode(() => decodeCursor(cursor, {}))).toBe('400 pagination.cursor-invalid');
+      expect(problemCode(() => decodeCursor(cursor, {}))).toBe('400 request.invalid');
+    }
+  });
+
+  it('answers a malformed or foreign cursor with the contract problem, one issue on the query parameter', () => {
+    const foreign: string = encodeCursor(position, { sort: '-dueDate' });
+
+    for (const cursor of ['not base64 json', foreign]) {
+      let thrown: unknown;
+      try {
+        decodeCursor(cursor, { sort: 'dueDate' });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ProblemException);
+      expect((thrown as ProblemException).problem).toEqual({
+        type: 'about:blank',
+        title: 'Bad Request',
+        status: 400,
+        code: 'request.invalid',
+        detail: 'The request does not match its contract.',
+        details: {
+          issues: [
+            {
+              in: 'query',
+              path: 'cursor',
+              code: 'invalid_cursor',
+              message: 'Expected the nextCursor of a previous page of this list.',
+            },
+          ],
+        },
+      });
+      expect(JSON.stringify((thrown as ProblemException).problem)).not.toContain(cursor);
     }
   });
 
