@@ -3,6 +3,6 @@ name: cw-reliability-review
 description: Review delivery guarantees.
 ---
 
-Use the **cw-kit-reliability-reviewer** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-kit-reliability-reviewer.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-kit-reliability-reviewer** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-kit-reliability-reviewer.toml` directly with those arguments.
+Do not restate its rules or procedure.

@@ -1,8 +1,6 @@
 # cadenway-service-kit: Claude Code tooling
 
-This `.claude/` folder ships the Claude Code tooling of cadenway-service-kit: **9 agents**,
-10 slash commands, 7 rules, 14 skills, 3 hooks, the project
-settings.
+The tables below index this repository's Claude Code agents, commands, rules, skills and hooks.
 
 Start from [AGENTS.md](../AGENTS.md) (the rules every assistant follows) and [CLAUDE.md](../CLAUDE.md)
 (the Claude entry point).
@@ -99,3 +97,5 @@ See [skills/](skills/) for the complete inventory, including the technology guid
 | `guard.mjs` | before `Write`, `Edit` or `MultiEdit` | Sibling checkouts, generated trees, lockfiles, `.git/`, secrets and tokens, `export *` in public entry points, unpinned third-party actions and `pull_request_target` in workflows. |
 | `guard-git.mjs` | before `Bash` or `PowerShell` | Pushes to `main`, tag pushes, force-pushes, rewrites of pushed commits, hook bypasses, destructive resets, registry publishing, branch names outside `<type>/<kebab>`. Adapted from the dentalstock guard. |
 | `format.mjs` | after a successful `Write`, `Edit` or `MultiEdit` | Formats supported files with the repository's Prettier; a no-op until the formatter is installed. |
+
+For repository-wide verification, see [the full local gate](../docs/development.md#full-local-quality-gate). The same sequence backs `/cw-quality` in Claude Code and `$cw-quality` in Codex.

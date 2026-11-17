@@ -5,6 +5,5 @@ paths:
 
 # Packages
 
-- Plumbing only; no business rule, no service-specific code.
-- Every option has a safe default documented in the package README; defaults never change silently.
-- Explicit named exports; NestJS and the contracts are peer dependencies.
+Apply the package boundaries in `AGENTS.md` and `cw-kit-api-stability`. Document each safe option
+default in its package README. Keep defaults stable and NestJS and contracts as peer dependencies.
