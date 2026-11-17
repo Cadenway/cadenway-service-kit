@@ -3,6 +3,6 @@ name: cw-observability-review
 description: Review logs and traces.
 ---
 
-Use the **cw-kit-observability-reviewer** specialist for this task when delegation is available and authorized; otherwise read `.codex/agents/cw-kit-observability-reviewer.toml` and follow its instructions directly: the user-provided arguments
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate the user's arguments to **cw-kit-observability-reviewer** if delegation is available and authorized.
+Otherwise read and follow `.codex/agents/cw-kit-observability-reviewer.toml` directly with those arguments.
+Do not restate its rules or procedure.

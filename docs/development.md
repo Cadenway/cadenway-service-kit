@@ -24,36 +24,21 @@ Consumers install the published packages; never link this folder into another re
 
 ## Minimum checks by change
 
-The scripts below are this repository's contract. While the repository is being bootstrapped,
-create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
-narrowest check that covers the change first, then widen:
+Use the [checks by change in AGENTS.md](../AGENTS.md#commands-and-quality-gates) to select and report the smallest applicable verification.
 
-| Changed                         | Minimum check                                   |
-| ------------------------------- | ----------------------------------------------- |
-| nest-common                     | `pnpm test packages/nest-common`                |
-| nest-messaging                  | `pnpm test:integration packages/nest-messaging` |
-| nest-jobs                       | `pnpm test:integration packages/nest-jobs`      |
-| Any change to a package         | a changeset                                     |
-| Docs or agent instructions only | Scoped formatting and link review               |
+## Full local quality gate
 
-Report the commands you actually ran and their results; a check you did not run is reported as not
-run.
+Run these steps from the repository root. The same procedure backs `/cw-quality` in Claude Code
+and `$cw-quality` in Codex.
 
-## Full check list
+1. Run `pnpm quality` for formatting, linting, type checks, unit tests, architecture checks,
+   build, and package archive verification.
+2. Run `pnpm test:integration` with Docker available for disposable NATS and PostgreSQL services.
+3. Run `pnpm changeset status` when checking a change to a published package.
 
-Run `/cw-quality` in Claude Code or `$cw-quality` in Codex without arguments for the local gate.
-
-```bash
-pnpm format:check
-pnpm test:lint
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm test:architecture
-pnpm test:integration          # NATS and PostgreSQL in Docker
-pnpm build
-pnpm changeset status
-```
+For a targeted check, use `pnpm test "<path>"` for unit specs or
+`pnpm test:integration "<path>"` for integration specs. A successful command with zero executed
+tests leaves the selected behavior unverified.
 
 ## Architecture check
 

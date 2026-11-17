@@ -5,9 +5,7 @@ paths:
 
 # Tests
 
-- Vitest; integration tests with real NATS and PostgreSQL in Docker.
-- Cover failure paths (crash after commit, redelivery, reconnection), not only the happy path.
-- Disposable PostgreSQL, NATS and Redis come from Testcontainers, on the image tags cadenway-ops
-  pins. JetStream is off by default in the NATS module: start it with `withJetStream()`.
-- Third-party HTTP (payment, Git providers, identity providers) is faked with `msw`; a test never
-  calls a live service.
+Use Vitest with real NATS and PostgreSQL in Docker for integration tests. Cover crashes after
+commit, redelivery and reconnection. Use Testcontainers with cadenway-ops image tags for PostgreSQL, NATS and Redis. Enable
+JetStream with `withJetStream()` (off by default). Fake third-party HTTP (payment, Git and
+identity providers) with `msw`; tests never call live services.

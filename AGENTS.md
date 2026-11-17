@@ -1,32 +1,24 @@
 # cadenway-service-kit: agent instructions
 
-These instructions are mandatory for every AI assistant working in this repository, whatever the
-vendor. [CLAUDE.md](CLAUDE.md) imports them for Claude Code. Explicit user instructions take
-precedence over procedures, never over the hard limits below.
-
-This file states the **rules**. See the tooling guides for [Claude Code](.claude/README.md)
-and [Codex](.codex/README.md) for agents, skills, commands and hooks.
+These shared instructions apply to every assistant. Explicit user instructions take precedence over
+procedures within the hard limits below. Claude Code imports this file through [CLAUDE.md](CLAUDE.md).
 
 ## First read
 
-- The package you change and its `README.md`.
-- The installed `@cadenway/contracts` when touching messaging.
-- `package.json` for versions and scripts once the repository is bootstrapped. Do not restate
-  versions elsewhere: a copy goes stale.
+- Read the package's README before changing it. For messaging, use the installed
+  `@cadenway/contracts` for the exact published and consumed shapes.
+- Use `cw-kit-api-stability` for package changes. Read `package.json` for versions and scripts
+  and avoid restating versions.
+- See "cadenway-service-kit" in the
+  [repositories document](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) as needed.
 
 ## What this repository is
 
-The structure and workflows below describe the bootstrap target. Check the checkout for available files and commands.
-
-cadenway-service-kit publishes the three runtime packages shared by NestJS services and gateways.
-
-| Package                    | Provides                                                                                                                                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@cadenway/nest-common`    | Typed configuration validated at start-up, internal-token guard, organization context, structured logs, OpenTelemetry traces, `/health/live` and `/health/ready`, common error format, pagination |
-| `@cadenway/nest-messaging` | NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication of redelivered events                                                                   |
-| `@cadenway/nest-jobs`      | Durable background jobs kept in the service's own PostgreSQL database: a job enqueued in the use case transaction, retries with backoff, dead letters, cron schedules                             |
-
-The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing) is maintained in cadenway-tooling.
+This repository publishes the three NestJS runtime packages: `@cadenway/nest-common`,
+`@cadenway/nest-messaging` and `@cadenway/nest-jobs`. The [architecture guide](docs/architecture.md)
+maps capabilities to packages. Development-only
+[`@cadenway/nest-testing`](https://github.com/Cadenway/cadenway-tooling/tree/main/packages/nest-testing)
+belongs to cadenway-tooling. Check the checkout before relying on the bootstrap target.
 
 ## Language
 
@@ -39,7 +31,9 @@ The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/c
 
 ## Architectural ownership
 
-- `packages/nest-common/`, `packages/nest-messaging/`, `packages/nest-jobs/`: one runtime module or helper set each.
+Use the [integration guide](docs/integration.md) for package contracts and the skills that match
+the change: `cw-outbox-design`, `cw-logging-and-tracing` or `cw-jobs`. Keep each shared runtime
+facility in the package that owns it.
 
 ## Boundaries (hard rules)
 
@@ -49,23 +43,30 @@ The [`@cadenway/nest-testing` development package](https://github.com/Cadenway/c
 
 ## GitHub files (`.github/`)
 
-This repository carries everything GitHub reads from it; Cadenway has no organization `.github`
-repository and nothing is inherited.
+Keep this repository's [README](.github/README.md), community files, templates, code owners and
+complete workflows in `.github/`. Cadenway has no organization-level files, cross-repository
+reusable workflows or shared Renovate preset. Use the paired `github.md` rules when editing
+GitHub files. Apply changes to shared material through separate pull requests in each owner.
 
-- [`.github/README.md`](.github/README.md) is the repository home page; `CONTRIBUTING.md`,
-  `CODE_OF_CONDUCT.md`, `SECURITY.md`, `SUPPORT.md`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/` and
-  `CODEOWNERS` sit next to it.
-- `.github/workflows/` holds this repository's complete CI, release workflows: no reusable
-  workflow from another repository. The Renovate configuration is complete here too, with no shared
-  preset.
-- The parts shared with the other repositories are duplicated on purpose; a change to them is repeated
-  in each repository through its own pull request.
+## Code quality
+
+- Read the affected entry point, its callers, and its relevant tests before editing.
+  Preserve the behavior callers rely on unless the task changes it.
+- Keep the diff focused. Use names that express intent and reuse existing code when
+  it preserves the required behavior. Extract code when it clarifies a responsibility.
+- Keep business decisions with their owning module. Validate external inputs at the
+  boundary and use documented public interfaces across modules and repositories.
+- For writes that can fail, overlap, or be retried, verify the resulting state.
+  Check transaction boundaries, tenant scope, and repeated delivery where relevant.
+- For collections and repeated work, check what grows with input size. Measure or
+  inspect the bottleneck before adding an index, cache, worker, or replica.
+- Run the repository checks that cover the affected behavior. Report the commands
+  and their results, including checks that did not run and tests that selected zero cases.
 
 ## Commands and quality gates
 
-The scripts below are this repository's contract. While the repository is being bootstrapped,
-create them with these exact names; afterwards, use them and never an ad-hoc equivalent. Run the
-narrowest check that covers the change first, then widen:
+Start with the smallest check that covers the change. See the
+[full local gate](docs/development.md#full-local-quality-gate) for the repository-wide sequence.
 
 | Changed                         | Minimum check                                   |
 | ------------------------------- | ----------------------------------------------- |
@@ -75,19 +76,14 @@ narrowest check that covers the change first, then widen:
 | Any change to a package         | a changeset                                     |
 | Docs or agent instructions only | Scoped formatting and link review               |
 
-Report the commands you actually ran and their results; a check you did not run is reported as not
-run.
-
 ## Git and branch flow
 
-- Trunk-based: work branches come from `main`, named `<type>/<lowercase-kebab-description>` with a
-  type among `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `revert`; put the Cadenway task id first when there is one (`feat/cad-482-sso-screen`). Never an
-  agent name as a prefix. Validate with `git check-ref-format --branch <name>`.
-- Commits and PR titles follow Conventional Commits: `type(scope): subject`, English, imperative,
-  lowercase subject, no trailing period, at most 100 characters; `!` only for a breaking change.
-- Pull requests target `main` and are squash-merged after review and green CI. PRs that change a package add a changeset; the "Version Packages" pull request bumps versions; its merge publishes from CI and Renovate updates the services and gateways.
-- Stage only the files of your task; preserve other people's changes in the working tree.
+Use the paired `git-and-commits.md` rule for trunk-based branches, Conventional Commits and
+staging only task files. Validate branch names with `git check-ref-format --branch <name>`.
+
+Pull requests target `main` and are squash-merged after review and green CI. Add a changeset
+for package changes. The Version Packages PR bumps versions and its merge publishes in CI.
+Renovate updates services and gateways. See [collaboration and release](docs/development.md#collaboration-and-release).
 
 ## Hard limits (never without the user's explicit request in this conversation)
 
@@ -107,14 +103,11 @@ not to find another way around it.
 
 ## Agent tooling
 
-- **Claude Code**: [CLAUDE.md](CLAUDE.md) and [.claude/README.md](.claude/README.md): the
-  `cw-kit-*` agents, the `/cw-*` commands (`/cw-quality` runs the whole local gate),
-  path-scoped rules and hooks.
-- **Codex**: [.codex/README.md](.codex/README.md) covers the specialists, `$cw-*` skills, rules and hooks.
-- **Builders** (assigned writes): `cw-kit-common-builder`, `cw-kit-messaging-builder`, `cw-kit-test-writer`, `cw-kit-release-manager`, `cw-kit-github-maintainer`.
-- **Reviewers** (read-only): `cw-kit-api-stability-reviewer`, `cw-kit-security-reviewer`, `cw-kit-observability-reviewer`, `cw-kit-reliability-reviewer`.
-- Specialists are available, not mandatory. Delegate a bounded responsibility with explicit files and
-  checks, assign disjoint files to parallel agents and integrate their results yourself.
+Use the [Claude](.claude/README.md#agents) or [Codex](.codex/README.md) guide for specialists,
+commands, skills, scoped rules and hooks. Read the active assistant's matching rules for every
+touched path and load skills relevant to the task. Specialists are available when needed.
+Give each delegate a bounded assignment, owning checkout, explicit files and checks. Keep
+parallel write scopes disjoint and integrate the results.
 
 ## Repository hygiene
 
@@ -131,5 +124,5 @@ not to find another way around it.
 
 ## References
 
-- [Interactive mockup](https://claude.ai/artifact/KYRM7AnsYLiBLBLKy8i4HE), [integration guide](https://claude.ai/artifact/CpJHVCiFfF9j3KbHQ2S1Et) and
-  [repositories and packages](https://claude.ai/artifact/BPinmYxoF3mbK8w9BMB43N) (living documents).
+Use the [documentation index](docs/README.md#sources-and-policy) for the mockup, integration
+guide and repositories document.
