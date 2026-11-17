@@ -24,9 +24,11 @@ paths:
 - Publish with `Nats-Msg-Id` set to the event id. The server deduplicates inside its two-minute
   window only: the processed-ids table of the consumer is the real guard.
 - Consumers are durable pull consumers named `<service>__<handler>`: `AckWait` 30 s, five deliveries,
-  retries by `nak(delay)` after 1 s, 5 s, 30 s and 2 min. No server-side `BackOff`: its first entry
-  replaces `AckWait`. A consumer has one filter subject, never `evt.>`; the kit creates and updates
-  its own consumers but never lists or deletes one (the broker refuses it).
+  retries by `nak(delay)` after 1 s, 5 s, 30 s and 2 min, unless the subscription sets its own
+  `redelivery` (delays and `maxDeliveries`, checked at start-up against `max_deliver` and the stream
+  retention). No server-side `BackOff`: its first entry replaces `AckWait`. A consumer has one
+  filter subject, never `evt.>`; the kit creates and updates its own consumers but never lists or
+  deletes one (the broker refuses it).
 - JetStream has no dead-letter queue: a worker listens to the `MAX_DELIVERIES` and `MSG_TERMINATED`
   advisories of `EVENTS` and `EVENTS_RESTRICTED`, reads the message with `STREAM.MSG.GET` and copies
   it to `dlq.<consumer>.<subject>` in `EVENTS_DLQ`. It runs in notification-service only, the one

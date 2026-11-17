@@ -22,6 +22,12 @@ const baseline = {
   '@cadenway/nest-jobs': '0.3.0',
 };
 
+// Optional interface properties added by reviewed minors since the baseline. Each export must
+// otherwise match its release; clear an entry when the baseline moves past the release adding it.
+const addedMembers = {
+  '@cadenway/nest-messaging#EventSubscription': ['redelivery'],
+};
+
 test('packed Service Kit preserves the released public API and supports isolated optional peers', (context) => {
   const scratch = createScratch(context);
 
@@ -63,7 +69,7 @@ test('packed Service Kit preserves the released public API and supports isolated
   }
 
   readPublicApi(limited, minimalEntries);
-  const candidateApi = readPublicApi(full, entryPoints);
+  const candidateApi = readPublicApi(full, entryPoints, addedMembers);
   const differences = [];
   for (const [entry, signatures] of readPublicApi(reference, entryPoints)) {
     for (const [name, declarations] of signatures) {

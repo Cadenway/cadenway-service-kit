@@ -21,6 +21,7 @@ import { DurableSubscriptions } from './subscriptions/durable-subscriptions.js';
 import type { EventSubscription } from './subscriptions/event-subscription.js';
 
 export type { EventContext } from './delivery/event-context.js';
+export type { EventRedelivery } from './subscriptions/event-redelivery.js';
 export type { EventSubscription } from './subscriptions/event-subscription.js';
 export type { RebuildSubscription } from '../rebuild/subscriptions/rebuild-subscription.js';
 
@@ -32,7 +33,8 @@ export type { RebuildSubscription } from '../rebuild/subscriptions/rebuild-subsc
  *
  * Each handler consumes one event through its own durable pull consumer, `<service>__<handler>`,
  * filtered on that event's subject. Delivery is at least once and unordered, with one active
- * delivery per handler per replica. A handler rejection or deadline uses the retry schedule.
+ * delivery per handler per replica. A handler rejection or deadline uses the redelivery schedule
+ * of its registration, or the default one.
  * Invalid payloads are terminated. Shutdown leaves deliveries that exceed the grace period
  * unacknowledged for redelivery.
  *
@@ -124,7 +126,6 @@ export class EventConsumers implements BeforeApplicationShutdown {
     const delivery: EventDelivery = new EventDelivery(
       this.logger,
       options.handlerTimeoutMs,
-      tuning.retryDelaysMs,
       deduplicator,
       this.abandon.signal,
     );
@@ -146,13 +147,14 @@ export class EventConsumers implements BeforeApplicationShutdown {
    *
    * @description
    * Registers a handler and starts pulling from its durable consumer. With `manageConsumers`
-   * enabled, creates the consumer or updates its acknowledgement settings. Otherwise binds to
-   * an existing consumer with the same filter.
+   * enabled, creates the consumer or updates its acknowledgement wait and delivery limit in
+   * place. Otherwise binds to an existing consumer with the same filter, and, for a registration
+   * with its own `redelivery`, the same delivery limit.
    *
-   * @param {EventSubscription<TSchemas, TName>} subscription - Event name and schemas, durable handler name and handler.
+   * @param {EventSubscription<TSchemas, TName>} subscription - Event name and schemas, durable handler name, optional redelivery schedule and handler.
    * @returns {Promise<void>} Resolves once the durable consumer is present and the pull loop has started.
-   * @throws {Error} When the handler is already registered, the application is closing or the
-   * broker cannot supply the required consumer.
+   * @throws {Error} When the handler is already registered, its redelivery schedule is invalid,
+   * the application is closing or the broker cannot supply the required consumer.
    */
   public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
     subscription: EventSubscription<TSchemas, TName>,

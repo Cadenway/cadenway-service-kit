@@ -1,5 +1,6 @@
 import type { EventNameOf, EventPayloadOf, EventSchemas } from '../../events/event-envelope.js';
 import type { EventContext } from '../delivery/event-context.js';
+import type { EventRedelivery } from './event-redelivery.js';
 
 /**
  * Interface EventSubscription
@@ -60,6 +61,22 @@ export interface EventSubscription<
    * @readonly
    */
   readonly deliverPolicy?: 'all' | 'new';
+
+  /**
+   * Property redelivery
+   *
+   * @description
+   * Redelivery schedule of this handler: the delays between the deliveries of a failing message
+   * and the number of deliveries before its dead letter. Without it, the handler gets the default
+   * schedule (1 s, 5 s, 30 s, 2 min, five deliveries). `subscribe` rejects a schedule that
+   * JetStream or the retention of the stream cannot honor (see `EventRedelivery`). The kit sets
+   * the delivery limit on the durable consumer it manages, updating an existing one in place;
+   * with `manageConsumers` off, the consumer created elsewhere must already have that limit.
+   *
+   * @type {EventRedelivery | undefined}
+   * @readonly
+   */
+  readonly redelivery?: EventRedelivery;
 
   /**
    * Property handle

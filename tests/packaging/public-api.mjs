@@ -14,7 +14,32 @@ const compilerOptions = {
 const factory = ts.factory;
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
 
-function publicDeclaration(node) {
+function withoutAddedOptionalMembers(node, added) {
+  // A reviewed minor may add optional properties to a released interface. Only those named, and
+  // only while optional, are left out, so the rest of the declaration still matches the release.
+  const members = node.members.filter(
+    (member) =>
+      !(
+        ts.isPropertySignature(member) &&
+        member.questionToken &&
+        ts.isIdentifier(member.name) &&
+        added.includes(member.name.text)
+      ),
+  );
+  return factory.updateInterfaceDeclaration(
+    node,
+    node.modifiers,
+    node.name,
+    node.typeParameters,
+    node.heritageClauses,
+    members,
+  );
+}
+
+function publicDeclaration(node, added = []) {
+  if (ts.isInterfaceDeclaration(node) && added.length > 0) {
+    return withoutAddedOptionalMembers(node, added);
+  }
   if (!ts.isClassDeclaration(node)) return node;
   // Private fields are emitted for nominal typing. Moving private implementation details is allowed.
   const members = node.members.filter(
@@ -56,8 +81,8 @@ function normalizeOptionalParameters(context) {
   return (node) => ts.visitNode(node, visit);
 }
 
-function signature(node) {
-  const result = ts.transform(publicDeclaration(node), [normalizeOptionalParameters]);
+function signature(node, added) {
+  const result = ts.transform(publicDeclaration(node, added), [normalizeOptionalParameters]);
   try {
     return printer
       .printNode(ts.EmitHint.Unspecified, result.transformed[0], node.getSourceFile())
@@ -67,8 +92,12 @@ function signature(node) {
   }
 }
 
-/** Reads public declarations through an installed package's export map. */
-export function readPublicApi(directory, entryPoints) {
+/**
+ * Reads public declarations through an installed package's export map. `addedMembers` maps an
+ * export (`<entry point>#<name>`) to the optional interface properties a reviewed minor added
+ * since the baseline release; they are left out of that export's printed declaration.
+ */
+export function readPublicApi(directory, entryPoints, addedMembers = {}) {
   const importer = join(directory, 'consumer.mts');
   const entryFiles = entryPoints.map((entryPoint) => {
     const module = ts.resolveModuleName(
@@ -114,7 +143,11 @@ export function readPublicApi(directory, entryPoints) {
           target.declarations?.length,
           `Unresolved declaration for ${entryPoint}#${symbol.name}`,
         );
-        return [symbol.name, target.declarations.map(signature)];
+        const added = addedMembers[`${entryPoint}#${symbol.name}`] ?? [];
+        return [
+          symbol.name,
+          target.declarations.map((declaration) => signature(declaration, added)),
+        ];
       });
       return [entryPoint, new Map(declarations)];
     }),

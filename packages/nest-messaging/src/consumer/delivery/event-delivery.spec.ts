@@ -83,6 +83,7 @@ it('never starts a handler when deduplication reaches it after the delivery dead
       consumer: 'search-service__index-task',
       event: 'task.updated.v1',
       route: { stream: 'EVENTS', subject, restricted: false },
+      redelivery: { delaysMs: [1000], maxDeliveries: 2, custom: false },
       prepare: () => ({ envelope: payload, handle: handler }),
     };
     const ack = vi.fn<JsMsg['ack']>();
@@ -98,7 +99,6 @@ it('never starts a handler when deduplication reaches it after the delivery dead
     const delivery: EventDelivery = new EventDelivery(
       new Logger('event delivery spec', { timestamp: false }),
       100,
-      [1000],
       { run },
     );
 
@@ -127,6 +127,7 @@ function testDelivery(handle: (context: EventContext) => Promise<void> = () => P
     consumer: 'search-service__index-task',
     event: 'task.updated.v1',
     route: { stream: 'EVENTS', subject, restricted: false },
+    redelivery: { delaysMs: [1000], maxDeliveries: 2, custom: false },
     prepare: () => ({ envelope, handle }),
   };
   const ack = vi.fn<JsMsg['ack']>();
@@ -154,7 +155,6 @@ it.each(['resolves', 'rejects'] as const)(
     const delivery: EventDelivery = new EventDelivery(
       new Logger('event delivery spec'),
       1000,
-      [100],
       undefined,
       abandon.signal,
     );
@@ -189,7 +189,7 @@ it('terminates an invalid payload without invoking the handler', async () => {
   };
   const logger = new Logger('event delivery spec');
   const log = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
-  await new EventDelivery(logger, 100, [1000]).deliver(invalid, message);
+  await new EventDelivery(logger, 100).deliver(invalid, message);
 
   expect(term).toHaveBeenCalledExactlyOnceWith('invalid-payload');
   expect(log).toHaveBeenCalledWith(
@@ -209,7 +209,7 @@ it('logs a fixed error category and retries without forwarding exception data', 
   const { target, message, nak, envelope } = testDelivery(() => Promise.reject(failure));
   const logger = new Logger('event delivery spec');
   const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-  await new EventDelivery(logger, 100, [1000]).deliver(target, message);
+  await new EventDelivery(logger, 100).deliver(target, message);
 
   expect(nak).toHaveBeenCalledExactlyOnceWith(1000);
   expect(warn).toHaveBeenCalledExactlyOnceWith(

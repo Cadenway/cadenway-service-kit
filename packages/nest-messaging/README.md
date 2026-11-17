@@ -124,9 +124,10 @@ and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
 | `shutdownTimeoutMs`           | 10 000                 | Time a shutdown waits for running handlers, then for the drain of the connection; an abandoned handler sees its message redelivered                                                           |
 
 The publish, rebuild and shutdown timeouts accept whole milliseconds from 1 to 2,147,483,647.
-The retry delays (1 s, 5 s, 30 s, 2 min, so five deliveries) are not an option: every durable
-consumer of the platform gets the same `max_deliver`. The specs of the package shorten them
-through an internal provider.
+The default retry delays (1 s, 5 s, 30 s, 2 min, so five deliveries) are not a module option. A
+handler that needs another schedule sets its own `redelivery` when it subscribes (see
+[Redelivery schedule](#redelivery-schedule)); every other durable consumer gets the default
+`max_deliver`. The specs of the package shorten the default delays through an internal provider.
 
 Streams, as cadenway-ops creates them and as `manageStreams` creates them locally (file storage,
 oldest messages dropped first, duplicates of a `Nats-Msg-Id` refused for two minutes):
@@ -271,16 +272,16 @@ await this.consumers.subscribe({
 });
 ```
 
-| Consumer setting | Value                                                                                                                                 |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Name             | `<service>__<handler>`; renaming a handler creates a new consumer                                                                     |
-| Stream, filter   | `EVENTS` and `evt.<event>`, or `EVENTS_RESTRICTED` and `restricted.<event>`: one subject, never a wildcard                            |
-| Acknowledgement  | Explicit, `AckWait` 30 s: a handler finishes within 30 seconds or its message is redelivered                                          |
-| Deliveries       | Five; no server-side `BackOff`, whose first entry would replace `AckWait`                                                             |
-| Start            | `deliverPolicy` of the registration: `all` (default, what the stream still holds) or `new`; only on creation                          |
-| Concurrency      | One message at a time per handler and per replica                                                                                     |
-| Changes          | Never deleted nor listed by the kit. When the server refuses an update, `subscribe` fails naming the consumer; an operator removes it |
-| Loss             | A consumer deleted on the server, or lost with its stream, is reported down to readiness and recovered: see below                     |
+| Consumer setting | Value                                                                                                                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name             | `<service>__<handler>`; renaming a handler creates a new consumer                                                                                                                   |
+| Stream, filter   | `EVENTS` and `evt.<event>`, or `EVENTS_RESTRICTED` and `restricted.<event>`: one subject, never a wildcard                                                                          |
+| Acknowledgement  | Explicit, `AckWait` 30 s: a handler finishes within 30 seconds or its message is redelivered                                                                                        |
+| Deliveries       | Five, or the `redelivery.maxDeliveries` of the registration; no server-side `BackOff`, whose first entry would replace `AckWait`                                                    |
+| Start            | `deliverPolicy` of the registration: `all` (default, what the stream still holds) or `new`; only on creation                                                                        |
+| Concurrency      | One message at a time per handler and per replica                                                                                                                                   |
+| Changes          | `AckWait` and `max_deliver` updated in place. Never deleted nor listed by the kit. When the server refuses an update, `subscribe` fails naming the consumer; an operator removes it |
+| Loss             | A consumer deleted on the server, or lost with its stream, is reported down to readiness and recovered: see below                                                                   |
 
 **A consumer that disappears.** The client reports it (`consumer_deleted`, `consumer_not_found`, `no_responders`,
 `stream_not_found`); the kit closes the pull loop, reports the consumer to readiness and recovers
@@ -311,8 +312,9 @@ contracts add an actor kind.
 
 The handler receives the typed payload and `{ deliveryCount, streamSequence, redelivered,
 claimVersion, signal }`. Resolving allows the delivery to be acknowledged. Rejecting asks for a redelivery after
-1 s, 5 s, 30 s then 2 min (`nak(delay)`), logged as a warning; the fifth failure is logged as an
-error and makes the message a dead letter. A handler still running after `handlerTimeoutMs`
+1 s, 5 s, 30 s then 2 min (`nak(delay)`), or after the delays of the handler's own
+[redelivery schedule](#redelivery-schedule), logged as a warning; the failure of the last allowed
+delivery (the fifth by default) is logged as an error and makes the message a dead letter. A handler still running after `handlerTimeoutMs`
 (25 s) is abandoned: `signal` is aborted (pass it to the calls the handler makes), the attempt
 counts as failed and the next message is handled. An answer that cannot be sent because the
 connection closed is logged at debug level; the server redelivers the message. If shutdown
@@ -339,6 +341,71 @@ the event only when the event is newer, and resolves to whether to apply it: a l
 an older version changes nothing, and two organizations never compete for the same key.
 
 `subscribe` and `onRebuild` reject once the application is shutting down.
+
+### Redelivery schedule
+
+A handler whose effects must not be given up after a few minutes, such as a security projection
+(memberships, a directory) that a failure would leave granting too much, sets its own schedule:
+
+```ts
+await this.consumers.subscribe({
+  handler: 'project-membership',
+  schemas: eventSchemas,
+  event: 'member.removed.v1',
+  // 1 s, 5 s, 30 s, 2 min, 10 min, 30 min, then every hour; 32 deliveries.
+  redelivery: {
+    delaysMs: [1_000, 5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000],
+    maxDeliveries: 32,
+  },
+  handle: async (payload, { claimVersion }) => {
+    // ...
+  },
+});
+```
+
+The 31 failed deliveries wait 1 s + 5 s + 30 s + 2 min + 10 min + 30 min, then 24 times one hour:
+92,556 s, about 25 h 43 min, before the dead letter. The margin over 24 hours covers a delivery
+lost to a crashed replica, which the server redelivers after the 30 s `AckWait` instead of the
+scheduled delay and which counts as a delivery.
+
+| `redelivery` member | Default                  | Effect                                                                                                                     |
+| ------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `delaysMs`          | Required                 | Delay before each redelivery, in milliseconds: the first failure waits the first delay. The last delay repeats when needed |
+| `maxDeliveries`     | One more than the delays | Deliveries, the first included, before the dead letter: the `max_deliver` of the durable consumer                          |
+
+Without `redelivery`, a handler keeps the default schedule (1 s, 5 s, 30 s, 2 min, five
+deliveries). The schedule is applied by the kit with `nak(delay)`: the consumer keeps its 30 s
+`AckWait` and gets no server-side `BackOff`, whose first entry would replace `AckWait`. A handler
+timeout still counts as a failure and waits the scheduled delay.
+
+**Checked at start-up.** `subscribe` checks the schedule before any broker request and rejects,
+so the application does not start, when:
+
+- a delay is not a whole number of milliseconds from 1;
+- `maxDeliveries` is not a whole number above the number of delays: JetStream requires
+  `max_deliver` to exceed the length of a `BackOff` list, and the kit holds its own list to the
+  same rule, since a delay past the limit is never used. An empty list allows one delivery only;
+- the whole schedule, every delay plus one 30 s `AckWait` per delivery, does not end before the
+  stream drops the message: seven days for `EVENTS`, one hour for `EVENTS_RESTRICTED`, as
+  cadenway-ops keeps them. A message dropped while it waits for a redelivery would be lost
+  without a dead letter.
+
+**Existing consumers.** With `manageConsumers` (the default), `subscribe` updates the
+`max_deliver` (and `AckWait`) of an existing durable consumer in place, logged as
+`durable consumer updated in place`: the consumer keeps its name, its position and its pending
+messages. A pending message waits the delay it was already given, then goes on with the new
+schedule from its delivery count, so a
+message on its third delivery under the default schedule gets 29 more deliveries under the one
+above. A message that already became a dead letter under the old limit is not delivered again.
+Lowering the limit below the delivery count of a pending message makes it a dead letter without
+delivering it again (`Cadenway-Dead-Letter-Deliveries` is its count so far). Removing
+`redelivery` brings the consumer back to five deliveries the same way. With `manageConsumers` off,
+the kit cannot change the consumer: a registration with its own `redelivery` refuses to start
+unless the consumer created elsewhere already has `max_deliver` equal to its `maxDeliveries`; one
+without `redelivery` binds as before, whatever the limit.
+
+A dead letter is only copied while the [dead-letter worker](#dead-letters) runs: a long schedule
+keeps the message in its stream until the last delivery, and the stream retention bounds it.
 
 ## Delivery guarantees
 
