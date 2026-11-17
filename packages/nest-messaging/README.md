@@ -363,7 +363,7 @@ await this.consumers.subscribe({
 });
 ```
 
-The 31 failed deliveries wait 1 s + 5 s + 30 s + 2 min + 10 min + 30 min, then 24 times one hour:
+The 31 failed deliveries wait 1 s + 5 s + 30 s + 2 min + 10 min + 30 min, then 25 times one hour:
 92,556 s, about 25 h 43 min, before the dead letter. The margin over 24 hours covers a delivery
 lost to a crashed replica, which the server redelivers after the 30 s `AckWait` instead of the
 scheduled delay and which counts as a delivery.
@@ -385,14 +385,17 @@ so the application does not start, when:
 - `maxDeliveries` is not a whole number above the number of delays: JetStream requires
   `max_deliver` to exceed the length of a `BackOff` list, and the kit holds its own list to the
   same rule, since a delay past the limit is never used. An empty list allows one delivery only;
-- the whole schedule, every delay plus one 30 s `AckWait` per delivery, does not end before the
-  stream drops the message: seven days for `EVENTS`, one hour for `EVENTS_RESTRICTED`, as
-  cadenway-ops keeps them. A message dropped while it waits for a redelivery would be lost
-  without a dead letter.
+- the whole schedule, from the first delivery, every delay plus one 30 s `AckWait` per delivery,
+  does not end within half of the time the stream keeps a message: 3.5 days for `EVENTS`
+  (seven days kept), 30 minutes for `EVENTS_RESTRICTED` (one hour kept), from the constants of
+  the kit, which mirror cadenway-ops. The other half covers what the schedule does not count: the
+  time before the first delivery, outages without a replica pulling and the copy of the dead
+  letter. A message the stream drops while it waits for a redelivery is lost without a dead
+  letter.
 
 **Existing consumers.** With `manageConsumers` (the default), `subscribe` updates the
 `max_deliver` (and `AckWait`) of an existing durable consumer in place, logged as
-`durable consumer updated in place`: the consumer keeps its name, its position and its pending
+`durable consumer updated in place` with the previous and new values: the consumer keeps its name, its position and its pending
 messages. A pending message waits the delay it was already given, then goes on with the new
 schedule from its delivery count, so a
 message on its third delivery under the default schedule gets 29 more deliveries under the one
@@ -404,8 +407,20 @@ the kit cannot change the consumer: a registration with its own `redelivery` ref
 unless the consumer created elsewhere already has `max_deliver` equal to its `maxDeliveries`; one
 without `redelivery` binds as before, whatever the limit.
 
-A dead letter is only copied while the [dead-letter worker](#dead-letters) runs: a long schedule
-keeps the message in its stream until the last delivery, and the stream retention bounds it.
+**Limits of a long schedule.**
+
+- Roll a schedule out with a deployment that replaces every replica before relying on it. A
+  replica still on the previous limit treats its own last delivery as final and asks for an
+  immediate redelivery, so the remaining deliveries can be used up in seconds (the message still
+  ends as a dead letter), and such a replica that restarts sets `max_deliver` back to its limit.
+- The byte cap of the stream (`EVENTS` 1 GiB as cadenway-ops sizes it) drops the oldest messages
+  first and is not checked: a message waiting on a long schedule is among the oldest, and a
+  platform that writes more than the cap during the schedule drops it without a dead letter.
+- A message waiting for its redelivery stays unacknowledged and counts towards the
+  `max_ack_pending` of the consumer (1000, the server default, which the kit does not change):
+  when that many messages wait on long delays, the handler receives no new message until one of
+  them is delivered again.
+- A dead letter is only copied while the [dead-letter worker](#dead-letters) runs.
 
 ## Delivery guarantees
 

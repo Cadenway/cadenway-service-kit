@@ -303,6 +303,8 @@ export class DurableSubscriptions {
             stream,
             maxDeliver,
             previousMaxDeliver: existing.config.max_deliver,
+            ackWaitMs: ACK_WAIT_MS,
+            previousAckWaitMs: Math.round((existing.config.ack_wait ?? 0) / 1_000_000),
           },
           'durable consumer updated in place',
         );

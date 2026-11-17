@@ -113,7 +113,7 @@ describe('resolveRedelivery', () => {
     },
   );
 
-  it('refuses a schedule that outlasts the retention of the stream, which would drop the message before its dead letter', () => {
+  it('refuses a schedule that lasts half the retention of the stream or more, which could drop the message before its dead letter', () => {
     expect(() =>
       resolveRedelivery(
         'notification-service__send-code',
@@ -121,7 +121,23 @@ describe('resolveRedelivery', () => {
         DEFAULT_RETRY_DELAYS_MS,
         RESTRICTED_ROUTE,
       ),
-    ).toThrow(/the stream EVENTS_RESTRICTED keeps a message 3600000 ms/u);
+    ).toThrow(/half of the 3600000 ms the stream EVENTS_RESTRICTED keeps a message/u);
+    expect(() =>
+      resolveRedelivery(
+        'notification-service__send-code',
+        { delaysMs: [600_000], maxDeliveries: 4 },
+        DEFAULT_RETRY_DELAYS_MS,
+        RESTRICTED_ROUTE,
+      ),
+    ).toThrow(/half of the 3600000 ms/u);
+    expect(
+      resolveRedelivery(
+        'notification-service__send-code',
+        { delaysMs: [600_000], maxDeliveries: 3 },
+        DEFAULT_RETRY_DELAYS_MS,
+        RESTRICTED_ROUTE,
+      ).maxDeliveries,
+    ).toBe(3);
     expect(() =>
       resolveRedelivery(
         'identity-service__project',
@@ -129,7 +145,34 @@ describe('resolveRedelivery', () => {
         DEFAULT_RETRY_DELAYS_MS,
         EVENTS_ROUTE,
       ),
-    ).toThrow(/the stream EVENTS keeps a message 604800000 ms/u);
+    ).toThrow(/half of the 604800000 ms the stream EVENTS keeps a message/u);
+    expect(() =>
+      resolveRedelivery(
+        'identity-service__project',
+        { delaysMs: [86_400_000], maxDeliveries: 5 },
+        DEFAULT_RETRY_DELAYS_MS,
+        EVENTS_ROUTE,
+      ),
+    ).toThrow(/half of the 604800000 ms/u);
+  });
+
+  it('fails at once on a huge delivery limit instead of summing every delivery', () => {
+    expect(() =>
+      resolveRedelivery(
+        'identity-service__project',
+        { delaysMs: [1], maxDeliveries: Number.MAX_SAFE_INTEGER },
+        DEFAULT_RETRY_DELAYS_MS,
+        EVENTS_ROUTE,
+      ),
+    ).toThrow(/can last too long/u);
+    expect(() =>
+      resolveRedelivery(
+        'identity-service__project',
+        { delaysMs: [1], maxDeliveries: 10_081 },
+        DEFAULT_RETRY_DELAYS_MS,
+        EVENTS_ROUTE,
+      ),
+    ).toThrow(/half of the 604800000 ms/u);
   });
 
   it('copies the delays, so a later change of the caller array does not move the schedule', () => {

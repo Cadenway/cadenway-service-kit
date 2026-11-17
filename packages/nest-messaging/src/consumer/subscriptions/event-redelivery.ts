@@ -15,14 +15,19 @@
  *   `max_deliver` to exceed the length of a `BackOff` list: a delay that can never be used is a
  *   mistake;
  * - an empty list allows a single delivery only;
- * - the whole schedule, counting the delays and an acknowledgement wait for every delivery, ends
- *   before the stream drops the message: seven days for `EVENTS` and one hour for
- *   `EVENTS_RESTRICTED`, as cadenway-ops keeps them. A message dropped while it waits for a
- *   redelivery would be lost without a dead letter.
+ * - the whole schedule, from the first delivery and counting the delays and an acknowledgement
+ *   wait for every delivery, ends within half of the time the stream keeps a message: seven days
+ *   for `EVENTS` and one hour for `EVENTS_RESTRICTED`, the constants of the kit, which mirror
+ *   cadenway-ops. The other half covers the time before the first delivery, outages without a
+ *   replica pulling and the copy of the dead letter: a message dropped by the stream while it
+ *   waits for a redelivery is lost without a dead letter. The byte cap of the stream, which drops
+ *   the oldest messages first, is not checked and can cut a long schedule short.
  *
  * A delivery that is never answered, because its replica crashed, is redelivered by the server
  * after the 30-second acknowledgement wait rather than after the scheduled delay, and counts
- * towards `maxDeliveries`.
+ * towards `maxDeliveries`. A message waiting for its redelivery counts towards the server's limit
+ * of unacknowledged messages of the consumer (`max_ack_pending`, 1000 by default): many messages
+ * waiting on long delays hold back new ones until their delays end.
  */
 export interface EventRedelivery {
   // #region Properties

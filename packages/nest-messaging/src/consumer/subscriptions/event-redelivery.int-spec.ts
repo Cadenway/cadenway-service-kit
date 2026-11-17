@@ -316,6 +316,76 @@ describe('per-subscription redelivery schedule on a real NATS server', () => {
     expect(deadLetter.header.get(DEAD_LETTER_DELIVERIES_HEADER)).toBe('3');
   });
 
+  it('does not deliver again a message that became a dead letter under a lower limit once the limit is raised', async () => {
+    const attempts: Attempt[] = [];
+    const first: TestingModule = await startFailing(
+      'raised',
+      { delaysMs: [100], maxDeliveries: 2 },
+      attempts,
+    );
+    await first.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+    await waitFor(async () => (await deadLetters('EVENTS_DLQ_raised')) === 1, 20_000);
+    await first.close();
+
+    const second: TestingModule = await startFailing(
+      'raised',
+      { delaysMs: [100], maxDeliveries: 6 },
+      attempts,
+    );
+    const consumer: ConsumerInfo = await manager.consumers.info(
+      'EVENTS_raised',
+      'search-service__index-task',
+    );
+    await delay(2000);
+    await second.close();
+
+    expect(consumer.config.max_deliver).toBe(6);
+    expect(attempts.map((attempt: Attempt) => attempt.deliveryCount)).toEqual([1, 2]);
+    expect(await deadLetters('EVENTS_DLQ_raised')).toBe(1);
+  });
+
+  it('waits a delay longer than the acknowledgement wait before the redelivery, the message still pending meanwhile', async () => {
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(
+        messagingOptions(nats, { ...isolatedNames('longdelay'), service: 'search-service' }),
+      ),
+    ]);
+    const deliveries: { deliveryCount: number; at: number }[] = [];
+    await application.get(EventConsumers).subscribe({
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      redelivery: { delaysMs: [40_000], maxDeliveries: 2 },
+      handle: (_payload: TaskUpdatedV1, eventContext: EventContext): Promise<void> => {
+        deliveries.push({ deliveryCount: eventContext.deliveryCount, at: Date.now() });
+        return eventContext.deliveryCount === 1
+          ? Promise.reject(new Error('projection store unavailable'))
+          : Promise.resolve();
+      },
+    });
+
+    await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+    await waitFor(() => deliveries.length === 1);
+    await delay(33_000);
+    const waiting: ConsumerInfo = await manager.consumers.info(
+      'EVENTS_longdelay',
+      'search-service__index-task',
+    );
+    const deliveredBeforeDelay: number = deliveries.length;
+    await waitFor(() => deliveries.length === 2, 20_000);
+    await waitFor(
+      async () =>
+        (await manager.consumers.info('EVENTS_longdelay', 'search-service__index-task'))
+          .num_ack_pending === 0,
+    );
+    await application.close();
+
+    expect(deliveredBeforeDelay).toBe(1);
+    expect(waiting.num_ack_pending).toBe(1);
+    expect(deliveries.map((delivery) => delivery.deliveryCount)).toEqual([1, 2]);
+    expect((deliveries[1]?.at ?? 0) - (deliveries[0]?.at ?? 0)).toBeGreaterThanOrEqual(39_900);
+  }, 90_000);
+
   it('refuses an invalid schedule before creating the consumer', async () => {
     const application: TestingModule = await startApplication([
       MessagingModule.forRoot(
@@ -341,7 +411,7 @@ describe('per-subscription redelivery schedule on a real NATS server', () => {
         redelivery: { delaysMs: [86_400_000], maxDeliveries: 8 },
         handle: (): Promise<void> => Promise.resolve(),
       }),
-    ).rejects.toThrow(/would be dropped before its dead letter/u);
+    ).rejects.toThrow(/could be dropped before its dead letter/u);
     await expect(
       manager.consumers.info('EVENTS_invalid', 'search-service__index-task'),
     ).rejects.toThrow(/consumer not found/iu);

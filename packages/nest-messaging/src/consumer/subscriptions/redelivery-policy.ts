@@ -67,6 +67,7 @@ export interface RedeliveryPolicy {
  *
  * @description
  * How long the stream of a route keeps a message, as cadenway-ops and `manageStreams` create it.
+ * These are the constants of the kit, which mirror cadenway-ops; the stream itself is not read.
  *
  * @param {EventRoute} route - Stream and subject of the event.
  * @returns {number} The retention, in milliseconds.
@@ -79,17 +80,19 @@ function retentionOf(route: EventRoute): number {
  * Function scheduleSpanMs
  *
  * @description
- * Longest time between the publication of a message and the end of its last allowed delivery:
+ * Longest time between the first delivery of a message and the end of its last allowed delivery:
  * every redelivery delay, plus one acknowledgement wait per delivery, the longest an attempt can
- * hold the message.
+ * hold the message. The sum stops as soon as it reaches `limit`, so a huge delivery limit fails
+ * at once instead of looping.
  *
  * @param {readonly number[]} delaysMs - Delay before each redelivery, in milliseconds.
  * @param {number} maxDeliveries - Delivery limit.
- * @returns {number} The span, in milliseconds.
+ * @param {number} limit - Value past which the exact sum no longer matters, in milliseconds.
+ * @returns {number} The span, in milliseconds, or a value of at least `limit`.
  */
-function scheduleSpanMs(delaysMs: readonly number[], maxDeliveries: number): number {
+function scheduleSpanMs(delaysMs: readonly number[], maxDeliveries: number, limit: number): number {
   let span: number = maxDeliveries * ACK_WAIT_MS;
-  for (let failed: number = 1; failed < maxDeliveries; failed += 1) {
+  for (let failed: number = 1; failed < maxDeliveries && span < limit; failed += 1) {
     span += retryDelayMs(failed, delaysMs, maxDeliveries) ?? 0;
   }
   return span;
@@ -109,7 +112,7 @@ function scheduleSpanMs(delaysMs: readonly number[], maxDeliveries: number): num
  * @returns {RedeliveryPolicy} The policy of the handler.
  * @throws {Error} When a delay is not a whole number of milliseconds from 1, the delivery limit is
  * not a whole number above the number of delays, an empty list allows more than one delivery, or
- * the schedule outlasts the retention of the stream.
+ * the schedule lasts half the retention of the stream or more.
  */
 export function resolveRedelivery(
   consumer: string,
@@ -148,11 +151,14 @@ export function resolveRedelivery(
       `The maxDeliveries of ${consumer} (${String(maxDeliveries)}) must exceed its ${String(delays.length)} redelivery delays, as JetStream requires max_deliver to exceed a backoff list: the last delays would never be used.`,
     );
   }
-  const span: number = scheduleSpanMs(delays, maxDeliveries);
+  // Half of the retention is left for what the schedule does not count: the time before the
+  // first delivery, outages without a replica pulling, and the copy of the dead letter.
   const retention: number = retentionOf(route);
-  if (span >= retention) {
+  const limit: number = retention / 2;
+  const span: number = scheduleSpanMs(delays, maxDeliveries, limit);
+  if (span >= limit) {
     throw new Error(
-      `The redelivery of ${consumer} can last ${String(span)} ms, counting a ${String(ACK_WAIT_MS)} ms acknowledgement wait per delivery, but the stream ${route.stream} keeps a message ${String(retention)} ms: the message would be dropped before its dead letter.`,
+      `The redelivery of ${consumer} can last ${span >= Number.MAX_SAFE_INTEGER ? 'too long' : `${String(span)} ms`}, counting a ${String(ACK_WAIT_MS)} ms acknowledgement wait per delivery, and must end within half of the ${String(retention)} ms the stream ${route.stream} keeps a message: past it, the message could be dropped before its dead letter.`,
     );
   }
   return { delaysMs: delays, maxDeliveries, custom: true };
