@@ -1,6 +1,6 @@
 {
   "name": "@cadenway/nest-jobs",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Durable background jobs for the Cadenway NestJS services, kept in PostgreSQL through pg-boss: transactional enqueue, occurrence keys, retries, dead letters, cron schedules.",
   "license": "UNLICENSED",
   "repository": {
