@@ -206,7 +206,10 @@ const IDEMPOTENT_KEY: string = 'cadenway:idempotent';
  * Constant KEY_PATTERN
  *
  * @description
- * Shape of an accepted key: 1 to 255 printable ASCII characters.
+ * Shape of an accepted key: 1 to 255 printable ASCII characters. The contracts declare the
+ * header as a string of 1 to 255 characters without a pattern; this pattern also refuses space,
+ * control and non-ASCII characters, which a key generated as a UUID or a random token never
+ * contains.
  *
  * @type {RegExp}
  */
@@ -216,12 +219,17 @@ const KEY_PATTERN: RegExp = /^[\x21-\x7e]{1,255}$/u;
  * Constant REPLAYED_HEADERS
  *
  * @description
- * Response headers stored with the body and set again on a replay. `ETag` is not among them:
- * it is derived from the replayed body.
+ * Response headers stored with the body and set again on a replay, in lower case; a replay sets
+ * only these, whatever a stored row holds. They are `location`,
+ * which names the created resource, and `etag`, the version of the replayed body, whether the
+ * handler set it or an `EtagInterceptor` registered inside this interceptor did. Every other
+ * header is left out on purpose: `set-cookie` and any authentication header belong to the first
+ * exchange and could leak to a replay; `date`, `content-length`, `content-type` and trace or
+ * request identifiers describe the first response and are produced again for the replay.
  *
  * @type {readonly string[]}
  */
-const REPLAYED_HEADERS: readonly string[] = ['location'];
+const REPLAYED_HEADERS: readonly string[] = ['location', 'etag'];
 
 /**
  * Function Idempotent
@@ -236,6 +244,34 @@ const REPLAYED_HEADERS: readonly string[] = ['location'];
  */
 export function Idempotent(options: IdempotentOptions = {}): CustomDecorator {
   return SetMetadata(IDEMPOTENT_KEY, options);
+}
+
+/**
+ * Function invalidKey
+ *
+ * @description
+ * Builds the problem answered to a malformed `Idempotency-Key`: `400 request.invalid`, the code
+ * the contracts declare for a request that does not match its schema, with one `details.issues`
+ * entry on the header. The key is never quoted.
+ *
+ * @returns {ProblemException} A 400 `request.invalid` problem.
+ */
+function invalidKey(): ProblemException {
+  return new ProblemException({
+    status: 400,
+    code: 'request.invalid',
+    detail: 'The request does not match its contract.',
+    details: {
+      issues: [
+        {
+          in: 'header',
+          path: IDEMPOTENCY_KEY_HEADER,
+          code: 'invalid_format',
+          message: 'Expected 1 to 255 printable ASCII characters.',
+        },
+      ],
+    },
+  });
 }
 
 /**
@@ -269,12 +305,15 @@ function requestFingerprint(request: IdempotentRequest, actor: string): string {
  * | Situation                                        | Answer                                    |
  * | ------------------------------------------------ | ----------------------------------------- |
  * | First request with a key                         | The handler runs; its response is stored  |
- * | Same key, same request, within 24 hours          | The stored response, `Idempotent-Replayed: true`; the handler does not run |
+ * | Same key, same request, within 24 hours          | The stored body, `Location` and `ETag` under the status of the route, with `Idempotent-Replayed: true`; the handler does not run |
  * | Same key, another method, path or body           | 422 `idempotency.key-reused`              |
- * | Same key while the first request is still running | 409 `idempotency.in-progress`            |
+ * | Same key while the first request is still running | 409 `idempotency.request-in-progress`    |
  * | Handler fails                                    | Its error; nothing is stored, a retry runs again |
  * | No header                                        | The handler runs normally, or 400 `idempotency.key-required` with `required` |
- * | Malformed key                                    | 400 `idempotency.key-invalid`             |
+ * | Malformed key                                    | 400 `request.invalid`, one issue `{ in: 'header', path: 'Idempotency-Key', code: 'invalid_format' }` |
+ *
+ * `idempotency.key-reused` and `idempotency.request-in-progress` are the codes the contracts
+ * declare; `idempotency.key-required` is declared by none, as no contract route requires the key.
  *
  * How it works: the interceptor opens the transaction (tenant runner for a request with an
  * organization, system runner otherwise), takes a transaction-level advisory lock on the key,
@@ -341,11 +380,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       return next.handle();
     }
     if (typeof header !== 'string' || !KEY_PATTERN.test(header)) {
-      throw new ProblemException({
-        status: 400,
-        code: 'idempotency.key-invalid',
-        detail: 'Idempotency-Key must be 1 to 255 printable ASCII characters.',
-      });
+      throw invalidKey();
     }
     return from(this.execute(context, next, request, header, options));
   }
@@ -413,7 +448,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!(await lockIdempotencyKey(scope, organizationId, key))) {
       throw new ProblemException({
         status: 409,
-        code: 'idempotency.in-progress',
+        code: 'idempotency.request-in-progress',
         detail: 'A request with this Idempotency-Key is still running.',
       });
     }
@@ -436,8 +471,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
           detail: 'This Idempotency-Key was already used for another request.',
         });
       }
-      for (const [name, value] of Object.entries(existing.responseHeaders)) {
-        response.setHeader(name, value);
+      for (const name of REPLAYED_HEADERS) {
+        const value: unknown = existing.responseHeaders[name];
+        if (typeof value === 'string') {
+          response.setHeader(name, value);
+        }
       }
       response.setHeader(IDEMPOTENT_REPLAYED_HEADER, 'true');
       return existing.responseBody ?? undefined;

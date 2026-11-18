@@ -949,18 +949,53 @@ as the use case: the stored response exists if and only if the effect was commit
 | First request with a key                          | The handler runs; its response is stored                                                         |
 | Same key, same request, within 24 hours           | The stored response, with `Idempotent-Replayed: true`; the handler does not run                  |
 | Same key, another method, path or body            | 422 `idempotency.key-reused`                                                                     |
-| Same key while the first request is still running | 409 `idempotency.in-progress`                                                                    |
+| Same key while the first request is still running | 409 `idempotency.request-in-progress`                                                            |
 | Handler fails                                     | Its error; nothing is stored and a retry runs again                                              |
 | No header                                         | The handler runs normally; 400 `idempotency.key-required` with `@Idempotent({ required: true })` |
-| Malformed key                                     | 400 `idempotency.key-invalid` (1 to 255 printable ASCII characters)                              |
+| Malformed key                                     | 400 `request.invalid` with one issue on the header (see below)                                   |
+
+`idempotency.key-reused` and `idempotency.request-in-progress` are the codes the contracts declare.
+`idempotency.key-required` is declared by none: no contract route requires the key. A key must be
+1 to 255 printable ASCII characters (`!` to `~`); the contracts bound its length only, so a key
+with a space, a control or a non-ASCII character is refused here although its length fits. A
+malformed key answers without being quoted:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "code": "request.invalid",
+  "detail": "The request does not match its contract.",
+  "details": {
+    "issues": [
+      {
+        "in": "header",
+        "path": "Idempotency-Key",
+        "code": "invalid_format",
+        "message": "Expected 1 to 255 printable ASCII characters."
+      }
+    ]
+  }
+}
+```
+
+Up to 0.6.x a malformed key answered `400 idempotency.key-invalid` and a request still running
+`409 idempotency.in-progress`, codes no contract declares.
 
 What a marked route must respect:
 
 - The interceptor opens the transaction and runs the handler inside it; the `run` of the use case
   joins it. The handler must therefore not call another service before the use case.
 - The replayed status is the one NestJS applies from `@HttpCode()` or its default (201 for `POST`),
-  not a manual `response.status()`. The `Location` header is stored and replayed; `ETag` is derived
-  again from the replayed body.
+  not a manual `response.status()`.
+- Two response headers are stored and replayed: `Location` and `ETag`. An `ETag` the handler sets
+  itself, for a body without a top-level `version`, is replayed as it was. With `createApplication`,
+  the `EtagInterceptor` wraps this interceptor: it derives the `ETag` of a body with a `version`
+  after the response is stored, and derives it again from the replayed body. Every other header is
+  left out: a cookie or an authentication header belongs to the first exchange, and the date,
+  length, type and request identifiers are produced again. A replay answers the recorded
+  response, so its `ETag` is the version at creation, not the current one.
 - `@Idempotent({ isolationLevel })` opens the transaction at that level, for a use case that
   needs more than `read committed`.
 - A key belongs to the organization of the verified token, and a stored response to the actor

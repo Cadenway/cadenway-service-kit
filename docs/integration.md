@@ -44,13 +44,14 @@ Two PostgreSQL roles per service: `<svc>_migrator` runs the migrations, `<svc>_a
 
 ### Idempotency-Key
 
-| Concern    | Rule                                                                                              |
-| ---------- | ------------------------------------------------------------------------------------------------- |
-| Owner      | An interceptor of `@cadenway/nest-common`; the gateway relays the header and stores nothing       |
-| Storage    | A table in the service's own database, written inside the use case transaction                    |
-| Conflicts  | The same key with another body answers 422; a request still running answers 409                   |
-| Replay     | The stored response is replayed for 24 hours                                                      |
-| Migrations | The table reaches a service through its own Drizzle migrations; a change ships a note per service |
+| Concern    | Rule                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Owner      | An interceptor of `@cadenway/nest-common`; the gateway relays the header and stores nothing                                                |
+| Storage    | A table in the service's own database, written inside the use case transaction                                                             |
+| Conflicts  | The same key with another body answers 422 `idempotency.key-reused`; a request still running answers 409 `idempotency.request-in-progress` |
+| Malformed  | A key outside 1 to 255 printable ASCII characters answers 400 `request.invalid` with an issue on the header                                |
+| Replay     | The stored body, `Location` and `ETag` are replayed for 24 hours, under the status of the route                                            |
+| Migrations | The table reaches a service through its own Drizzle migrations; a change ships a note per service                                          |
 
 ## Outbox Design
 
