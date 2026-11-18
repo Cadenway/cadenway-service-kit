@@ -16,9 +16,10 @@ import {
 import type { LogLevel, RuntimeEnvironment } from '../config/base-config.js';
 import { readPackageVersion } from '../bootstrap/application/package-version.js';
 import {
-  maskEmails,
   redactedKeySet,
-  sanitizeLogValue,
+  sanitizeHttpField,
+  sanitizeLogArguments,
+  sanitizeLogFields,
   sanitizeSerializedError,
 } from './redaction.js';
 import { routePatternOf } from '../http/routing/route.js';
@@ -227,6 +228,82 @@ function prettyTransport(environment: RuntimeEnvironment): pino.TransportSingleO
 }
 
 /**
+ * Interface BindingMethods
+ *
+ * @description
+ * The methods of pino's logger prototype that bind fields to a logger, typed without the custom
+ * levels generics of `pino.Logger` so the originals can be called on any derived logger.
+ */
+interface BindingMethods {
+  // #region Properties
+  /**
+   * Property child
+   *
+   * @description
+   * Pino's `child()`: creates a logger that writes the bindings on every line.
+   *
+   * @type {(this: pino.Logger, bindings: pino.Bindings, options?: pino.ChildLoggerOptions) => pino.Logger}
+   * @readonly
+   */
+  readonly child: (
+    this: pino.Logger,
+    bindings: pino.Bindings,
+    options?: pino.ChildLoggerOptions,
+  ) => pino.Logger;
+
+  /**
+   * Property setBindings
+   *
+   * @description
+   * Pino's `setBindings()`: adds bindings to an existing logger.
+   *
+   * @type {(this: pino.Logger, bindings: pino.Bindings) => void}
+   * @readonly
+   */
+  readonly setBindings: (this: pino.Logger, bindings: pino.Bindings) => void;
+  // #endregion
+}
+
+/**
+ * Function withSanitizedBindings
+ *
+ * @description
+ * Makes `child()` and `setBindings()` sanitize their bindings as the `log` formatter sanitizes
+ * the fields of a line. Pino writes bindings without calling that formatter: it serializes them
+ * once, when they are bound. The two methods are set on the root logger, so every logger derived
+ * from it inherits them: the logger of pino-http, the request logger of each request, the
+ * children `assign()` and `runInContext()` of `PinoLogger` create, and their own children.
+ *
+ * @param {pino.Logger} root - Root logger of the application.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {pino.Logger} The same logger.
+ */
+function withSanitizedBindings(root: pino.Logger, keys: ReadonlySet<string>): pino.Logger {
+  const { child, setBindings } = Object.getPrototypeOf(root) as BindingMethods;
+  // A missing binding object is passed on as is, for pino to refuse it with its own error.
+  const sanitize = (bindings: unknown): pino.Bindings =>
+    typeof bindings === 'object' && bindings !== null
+      ? sanitizeLogFields(bindings as Record<string, unknown>, keys)
+      : (bindings as pino.Bindings);
+  return Object.defineProperties(root, {
+    child: {
+      configurable: true,
+      writable: true,
+      value(this: pino.Logger, bindings: unknown, options?: pino.ChildLoggerOptions): pino.Logger {
+        return child.call(this, sanitize(bindings), options);
+      },
+    },
+    setBindings: {
+      configurable: true,
+      writable: true,
+      value(this: pino.Logger, bindings: unknown): void {
+        setBindings.call(this, sanitize(bindings));
+      },
+    },
+  });
+}
+
+/**
  * Function createLoggerParams
  *
  * @description
@@ -235,6 +312,12 @@ function prettyTransport(environment: RuntimeEnvironment): pino.TransportSingleO
  * completion line per request with `method`, `route`, `status` and `durationMs`; default redaction; no request body, header,
  * query string or address.
  *
+ * Redaction covers every way a value reaches a line: the `log` formatter sanitizes the fields of
+ * the line, the serializers its `err`, `req` and `res` fields, the `logMethod` hook the message
+ * and what is interpolated into it, and the root logger the bindings of every derived logger.
+ * The root logger is built here and handed to pino-http as its parent: pino-http would otherwise
+ * build it out of reach.
+ *
  * @param {LoggingModuleOptions} options - Options of the logging module.
  * @returns {Params} The `nestjs-pino` parameters.
  * @throws {Error} When pretty logs are asked for in production or without `pino-pretty`.
@@ -242,32 +325,46 @@ function prettyTransport(environment: RuntimeEnvironment): pino.TransportSingleO
 export function createLoggerParams(options: LoggingModuleOptions): Params {
   const acceptIncoming: boolean = options.acceptIncomingRequestId ?? true;
   const redactedKeys: ReadonlySet<string> = redactedKeySet(options.redactKeys);
-  const httpOptions: Options = {
+  const transport: pino.TransportSingleOptions | undefined =
+    options.pretty === true ? prettyTransport(options.environment ?? 'production') : undefined;
+  const serializers: Record<string, pino.SerializerFn> = {
+    // pino-http already serializes errors and retains the original on `raw`.
+    err: (error: unknown) =>
+      sanitizeSerializedError(
+        error instanceof Error ? pino.stdSerializers.err(error) : error,
+        redactedKeys,
+      ),
+    req: (value: unknown) => sanitizeHttpField(value, redactedKeys),
+    res: (value: unknown) => sanitizeHttpField(value, redactedKeys),
+  };
+  const loggerOptions: pino.LoggerOptions = {
     level: options.level ?? 'info',
     base: { service: options.service, version: options.version ?? readPackageVersion() },
     timestamp: pino.stdTimeFunctions.isoTime,
     formatters: {
       level: (label: string) => ({ level: label }),
-      log: (object: Record<string, unknown>) =>
-        sanitizeLogValue(object, redactedKeys) as Record<string, unknown>,
+      log: (object: Record<string, unknown>) => sanitizeLogFields(object, redactedKeys),
     },
     mixin: contextFields,
     hooks: {
       logMethod(args: Parameters<pino.LogFn>, method: pino.LogFn): void {
-        const masked: unknown[] = args.map((argument: unknown) =>
-          typeof argument === 'string' ? maskEmails(argument) : argument,
-        );
-        method.apply(this, masked as Parameters<pino.LogFn>);
+        method.apply(this, sanitizeLogArguments(args, redactedKeys) as Parameters<pino.LogFn>);
       },
     },
-    serializers: {
-      // pino-http already serializes errors and retains the original on `raw`.
-      err: (error: unknown) =>
-        sanitizeSerializedError(
-          error instanceof Error ? pino.stdSerializers.err(error) : error,
-          redactedKeys,
-        ),
-    },
+    serializers,
+    ...(transport === undefined ? {} : { transport }),
+  };
+  const root: pino.Logger = withSanitizedBindings(
+    transport !== undefined || options.destination === undefined
+      ? pino(loggerOptions)
+      : pino(loggerOptions, options.destination),
+    redactedKeys,
+  );
+  const httpOptions: Options = {
+    logger: root,
+    // pino-http wraps the serializers it is given around pino's standard ones and sets them on
+    // its logger, over those of the root: without them, its standard ones would apply.
+    serializers,
     genReqId: (request: IncomingMessage, response: ServerResponse) => {
       const id: string = resolveRequestId(request.headers['x-request-id'], acceptIncoming);
       response.setHeader(REQUEST_ID_HEADER, id);
@@ -301,14 +398,7 @@ export function createLoggerParams(options: LoggingModuleOptions): Params {
       value: { durationMs?: unknown },
     ) => ({ ...completionFields(request, response, value.durationMs), err: error }),
   };
-  if (options.pretty === true) {
-    return {
-      pinoHttp: { ...httpOptions, transport: prettyTransport(options.environment ?? 'production') },
-    };
-  }
-  return {
-    pinoHttp: options.destination === undefined ? httpOptions : [httpOptions, options.destination],
-  };
+  return { pinoHttp: httpOptions };
 }
 
 /**
