@@ -1,3 +1,5 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
 import {
   Body,
   Controller,
@@ -6,16 +8,19 @@ import {
   HttpCode,
   HttpException,
   Post,
+  Req,
+  Res,
   type INestApplication,
 } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { PinoLogger } from 'nestjs-pino';
+import { InjectPinoLogger, Logger, PinoLogger } from 'nestjs-pino';
 import pino from 'pino';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { HealthModule } from '../health/health.module.js';
+import { ProblemException } from '../problem/problem.js';
 import { createLoggerParams, LoggingModule } from './logging.module.js';
 import {
   maskEmails,
@@ -246,6 +251,27 @@ const TWO_STEP_BODIES: readonly TwoStepBody[] = [
 ];
 
 /**
+ * Function databaseError
+ *
+ * @description
+ * Builds an error shaped as the PostgreSQL driver throws it for a unique violation: its `detail`
+ * quotes the offending row, here an e-mail address.
+ *
+ * @returns {Error} A database error fixture.
+ */
+function databaseError(): Error {
+  return Object.assign(
+    new Error('duplicate key value violates unique constraint "users_email_key"'),
+    {
+      severity: 'ERROR',
+      code: '23505',
+      detail: 'Key (email)=(camille.martin@ateliernord.example) already exists.',
+      table: 'users',
+    },
+  );
+}
+
+/**
  * Function cookiesOf
  *
  * @description
@@ -279,12 +305,20 @@ class SampleController {
    * Constructor
    *
    * @description
-   * Receives the request-scoped logger.
+   * Receives the request-scoped logger, the same logger with a context, and the NestJS logger
+   * service of nestjs-pino, the one `createApplication` routes the NestJS `Logger` to. The last
+   * two copy the first argument of a call next to its context.
    *
    * @param {PinoLogger} logger - Logger bound to the current request.
+   * @param {PinoLogger} contextLogger - The same logger, with the context `SampleContext`.
+   * @param {Logger} nestLogger - NestJS logger service of nestjs-pino.
    * @constructor
    */
-  public constructor(private readonly logger: PinoLogger) {}
+  public constructor(
+    private readonly logger: PinoLogger,
+    @InjectPinoLogger('SampleContext') private readonly contextLogger: PinoLogger,
+    private readonly nestLogger: Logger,
+  ) {}
   // #endregion
 
   // #region Methods
@@ -372,6 +406,144 @@ class SampleController {
       answer: { code: '261845' },
     });
     this.logger.error({ err: error }, 'two-step failure');
+    return { ok: true };
+  }
+
+  /**
+   * Method logHeldErrors
+   *
+   * @description
+   * Logs database errors under a key other than `err`, in a plain member, and as the cause of a
+   * `ProblemException`, which NestJS also keeps in its plain `options` member.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/held-errors')
+  public logHeldErrors(): { ok: boolean } {
+    this.logger.error(
+      { error: databaseError(), failure: { cause: databaseError() } },
+      'held errors',
+    );
+    this.logger.error(
+      {
+        err: new ProblemException({
+          status: 503,
+          code: 'upstream.failed',
+          detail: 'A service this request depends on is not available.',
+          cause: databaseError(),
+        }),
+      },
+      'problem with a cause',
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Method logBindings
+   *
+   * @description
+   * Binds sensitive values to the request logger with `assign()`, to a child with `child()` and
+   * with `setBindings()`, and to a context of the root logger with `runInContext()`, then writes
+   * one line through each.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/bindings')
+  public logBindings(): { ok: boolean } {
+    this.logger.assign({
+      token: 'assign-token-fixture',
+      user: { email: 'camille.martin@ateliernord.example', id: 'user-1' },
+    });
+    this.logger.info('assigned line');
+    const child: pino.Logger = this.logger.logger.child({
+      Access_Token: 'child-token-fixture',
+      failure: databaseError(),
+    });
+    child.info('child line');
+    child.setBindings({ password: 'bound-password-fixture' });
+    child.info('rebound line');
+    child
+      .child({}, { msgPrefix: 'for camille.martin@ateliernord.example: ' })
+      .info('prefixed line');
+    this.logger.runInContext(
+      () => {
+        this.logger.info('context line');
+      },
+      { bindings: { secret: 'context-secret-fixture' } },
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Method logInterpolated
+   *
+   * @description
+   * Interpolates sensitive objects and an error into the message with `%j`, `%o` and `%s`.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/interpolated')
+  public logInterpolated(): { ok: boolean } {
+    this.logger.info(
+      'answer %j from %o after %s',
+      { code: '261845' },
+      { email: 'camille.martin@ateliernord.example', token: 'interpolated-token-fixture' },
+      new Error('No mailbox for camille.martin@ateliernord.example'),
+    );
+    this.logger.info('unreadable %j', {
+      get value(): never {
+        throw new Error('getter fixture');
+      },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Method logErrorsWithoutMessage
+   *
+   * @description
+   * Logs errors without a message, so the message of the line comes from the error: a failed
+   * query whose message quotes its parameters, and an error whose message holds an address.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/errors-without-message')
+  public logErrorsWithoutMessage(): { ok: boolean } {
+    this.logger.error(
+      Object.assign(new Error('Failed query: select $1\nparams: query-param-fixture'), {
+        query: 'select $1',
+        params: ['query-param-fixture'],
+      }),
+    );
+    this.logger.error({ err: new Error('No mailbox for camille.martin@ateliernord.example') });
+    return { ok: true };
+  }
+
+  /**
+   * Method logRequestObjects
+   *
+   * @description
+   * Logs the request and the response objects themselves, as a careless handler would.
+   *
+   * @param {IncomingMessage} incoming - The request being handled.
+   * @param {ServerResponse} outgoing - Its response.
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/request-objects')
+  public logRequestObjects(
+    @Req() incoming: IncomingMessage,
+    @Res({ passthrough: true }) outgoing: ServerResponse,
+  ): { ok: boolean } {
+    this.logger.info({ request: incoming, response: outgoing }, 'request objects');
+    this.logger.info({ req: incoming, res: outgoing }, 'request objects under req');
+    this.logger.info(incoming, 'request as the line');
+    this.contextLogger.info(incoming, 'request through a context');
+    this.nestLogger.log(incoming, 'SampleRequest');
+    outgoing.setHeader('Set-Cookie', `__Host-cw_session=${SESSION_COOKIE_VALUE}; Secure; HttpOnly`);
+    outgoing.on('finish', () => {
+      this.contextLogger.info(outgoing, 'response after send');
+      this.nestLogger.log(outgoing, 'SampleResponse');
+    });
     return { ok: true };
   }
   // #endregion
@@ -556,6 +728,120 @@ describe('LoggingModule', () => {
     expect(raw.join('')).not.toMatch(
       /diagnostic fixture|continuation fixture|query fixture|param fixture/iu,
     );
+  });
+
+  it('writes an error held under another key or in a plain member as a logged error', async () => {
+    await request(app.getHttpServer()).get('/samples/42/held-errors').expect(200);
+
+    const held: LogLine | undefined = lines.find((line) => line.msg === 'held errors');
+    const sanitized: Record<string, unknown> = {
+      type: 'Error',
+      message: 'Database operation failed.',
+      code: '23505',
+      table: 'users',
+    };
+    expect(held).toMatchObject({ error: sanitized, failure: { cause: sanitized } });
+    expect(lines.find((line) => line.msg === 'problem with a cause')).toMatchObject({
+      err: { type: 'ProblemException', options: { cause: sanitized } },
+    });
+    expect(raw.join('')).not.toMatch(/ateliernord\.example|already exists/u);
+  });
+
+  it('masks what child(), setBindings(), assign() and runInContext() bind to a logger', async () => {
+    await request(app.getHttpServer())
+      .get('/samples/42/bindings')
+      .set('X-Request-Id', 'gateway-req-0003')
+      .expect(200);
+
+    expect(lines.find((line) => line.msg === 'assigned line')).toMatchObject({
+      requestId: 'gateway-req-0003',
+      token: REDACTED,
+      user: { email: REDACTED, id: 'user-1' },
+    });
+    expect(lines.find((line) => line.msg === 'child line')).toMatchObject({
+      Access_Token: REDACTED,
+      failure: { message: 'Database operation failed.', code: '23505' },
+    });
+    expect(lines.find((line) => line.msg === 'rebound line')).toMatchObject({
+      password: REDACTED,
+    });
+    expect(lines.find((line) => line.msg === 'context line')).toMatchObject({ secret: REDACTED });
+    expect(lines.find((line) => String(line.msg).endsWith('prefixed line'))).toMatchObject({
+      msg: `for ${REDACTED}: prefixed line`,
+    });
+    expect(raw.join('')).not.toMatch(
+      /assign-token-fixture|child-token-fixture|bound-password-fixture|context-secret-fixture|ateliernord\.example/u,
+    );
+  });
+
+  it('masks the objects and errors interpolated into a message', async () => {
+    await request(app.getHttpServer()).get('/samples/42/interpolated').expect(200);
+
+    expect(lines.find((line) => String(line.msg).startsWith('answer'))).toMatchObject({
+      msg: `answer {"code":"${REDACTED}"} from {"email":"${REDACTED}","token":"${REDACTED}"} after Error: No mailbox for ${REDACTED}`,
+    });
+    expect(lines.find((line) => String(line.msg).startsWith('unreadable'))).toMatchObject({
+      msg: `unreadable '${REDACTED}'`,
+    });
+    expect(raw.join('')).not.toMatch(/261845|interpolated-token-fixture|ateliernord\.example/u);
+  });
+
+  it('masks the message taken from an error logged without one', async () => {
+    await request(app.getHttpServer()).get('/samples/42/errors-without-message').expect(200);
+
+    expect(lines.map((line) => line.msg)).toEqual([
+      'Database operation failed.',
+      `No mailbox for ${REDACTED}`,
+      'request completed',
+    ]);
+    expect(raw.join('')).not.toMatch(/query-param-fixture|ateliernord\.example/u);
+  });
+
+  it('writes a logged request or response object as its method, route and status only', async () => {
+    await request(app.getHttpServer())
+      .get('/samples/42/request-objects?token=query-secret-fixture')
+      .set('X-Request-Id', 'gateway-req-0004')
+      .set('Authorization', 'Bearer bearer-secret-fixture')
+      .set('Cookie', `__Host-cw_session=${SESSION_COOKIE_VALUE}`)
+      .expect(200);
+
+    const summary: Record<string, unknown> = {
+      id: 'gateway-req-0004',
+      method: 'GET',
+      route: '/samples/:sampleId/request-objects',
+    };
+    expect(lines.find((line) => line.msg === 'request objects')).toEqual(
+      expect.objectContaining({ request: summary, response: { statusCode: 200 } }),
+    );
+    expect(lines.find((line) => line.msg === 'request objects under req')).toEqual(
+      expect.objectContaining({ req: summary, res: { statusCode: 200 } }),
+    );
+    expect(lines.find((line) => line.msg === 'request as the line')).toEqual(
+      expect.objectContaining({ req: summary }),
+    );
+    expect(lines.find((line) => line.msg === 'request through a context')).toEqual(
+      expect.objectContaining({ context: 'SampleContext', req: summary }),
+    );
+    expect(lines.find((line) => line.context === 'SampleRequest')).toEqual(
+      expect.objectContaining({ req: summary }),
+    );
+    expect(lines.find((line) => line.msg === 'response after send')).toEqual(
+      expect.objectContaining({ context: 'SampleContext', res: { statusCode: 200 } }),
+    );
+    expect(lines.find((line) => line.context === 'SampleResponse')).toEqual(
+      expect.objectContaining({ res: { statusCode: 200 } }),
+    );
+    const output: string = raw.join('');
+    for (const value of [
+      'bearer-secret-fixture',
+      SESSION_COOKIE_VALUE,
+      'query-secret-fixture',
+      '127.0.0.1',
+      'rawHeaders',
+      '_header',
+    ]) {
+      expect(output).not.toContain(value);
+    }
   });
 
   it('generates a request id when the caller sends none or a malformed one', async () => {

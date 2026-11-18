@@ -1,3 +1,10 @@
+import { IncomingMessage, OutgoingMessage, ServerResponse } from 'node:http';
+
+import pino from 'pino';
+
+import { routePatternOf } from '../http/routing/route.js';
+import { requestIdOf } from './request-id.js';
+
 /**
  * Constant REDACTED
  *
@@ -66,6 +73,51 @@ export const DEFAULT_REDACTED_KEYS: readonly string[] = [
  * @type {string}
  */
 const ERROR_CODE_KEY: string = 'code';
+
+/**
+ * Constant ERROR_FIELD
+ *
+ * @description
+ * Field of a line that holds the logged error, pino's `errorKey`, which the kit leaves at its
+ * default. Pino takes the message of a line logged without one from the error in this field.
+ *
+ * @type {string}
+ */
+const ERROR_FIELD: string = 'err';
+
+/**
+ * Constant MESSAGE_FIELD
+ *
+ * @description
+ * Field of a line that holds its message, pino's `messageKey`, which the kit leaves at its
+ * default.
+ *
+ * @type {string}
+ */
+const MESSAGE_FIELD: string = 'msg';
+
+/**
+ * Constant CONTEXT_FIELD
+ *
+ * @description
+ * Field nestjs-pino writes the context of a logger under (its `renameContext` default, which the
+ * kit leaves): it is copied next to the members of the first argument of a call.
+ *
+ * @type {string}
+ */
+const CONTEXT_FIELD: string = 'context';
+
+/**
+ * Constant SERIALIZED_FIELDS
+ *
+ * @description
+ * Top-level fields of a line, or of the bindings of a logger, that the logger's own serializers
+ * sanitize: the error under `err` (whose machine `code` stays) and the request and response
+ * objects under `req` and `res`. The other fields go through `sanitizeLogValue`.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const SERIALIZED_FIELDS: ReadonlySet<string> = new Set<string>([ERROR_FIELD, 'req', 'res']);
 
 /**
  * Constant MAX_DEPTH
@@ -169,13 +221,113 @@ export function maskEmails(text: string): string {
 }
 
 /**
+ * Type HttpMessageField
+ *
+ * @description
+ * Field pino writes an HTTP message under when it is the line itself: `req` for an incoming
+ * message, `res` for an outgoing one.
+ *
+ * @type {'req' | 'res'}
+ */
+type HttpMessageField = 'req' | 'res';
+
+/**
+ * Function httpMessageFieldOf
+ *
+ * @description
+ * Recognizes an HTTP message, or a shallow copy of one. nestjs-pino copies the first argument of
+ * a call into a plain object (`Object.assign`) whenever it adds the context, which the NestJS
+ * `Logger` always does: the copy keeps the own members of the message, `rawHeaders` of a request,
+ * `outputData` and `_header` of a response, but not the prototype that instance checks, and
+ * pino's own check of a request, rely on.
+ *
+ * @param {object} value - Object found in a logged value.
+ * @returns {HttpMessageField | undefined} The field of the message, or `undefined` for any other object.
+ */
+function httpMessageFieldOf(value: object): HttpMessageField | undefined {
+  if (value instanceof IncomingMessage) {
+    return 'req';
+  }
+  if (value instanceof OutgoingMessage) {
+    return 'res';
+  }
+  const members: Record<string, unknown> = value as Record<string, unknown>;
+  if (Array.isArray(members.rawHeaders)) {
+    return 'req';
+  }
+  return Array.isArray(members.outputData) && '_header' in members ? 'res' : undefined;
+}
+
+/**
+ * Function httpMessageSummary
+ *
+ * @description
+ * Describes an HTTP message found in a logged value by what the completion line of a request
+ * already shows. Walking the object instead would write its raw headers (the cookies and the
+ * bearer token of `rawHeaders`, the `Set-Cookie` of `_header`), its raw path and query string,
+ * the socket and its addresses, and thousands of members of the server around it.
+ *
+ * @param {Record<string, unknown>} message - Request or response, or a shallow copy of one.
+ * @param {HttpMessageField} field - What `httpMessageFieldOf` recognized it as.
+ * @returns {Record<string, unknown>} `id`, `method` and `route` of a request (and `statusCode` of an upstream response), `statusCode` of a response, `method` of an outgoing request.
+ */
+function httpMessageSummary(
+  message: Record<string, unknown>,
+  field: HttpMessageField,
+): Record<string, unknown> {
+  if (field === 'req') {
+    return {
+      id: requestIdOf(message),
+      method: message.method,
+      route: routePatternOf(message),
+      ...(typeof message.statusCode === 'number' ? { statusCode: message.statusCode } : {}),
+    };
+  }
+  if (message instanceof ServerResponse || message.req instanceof IncomingMessage) {
+    // A status never set is the default of the prototype, which a copy does not carry.
+    return {
+      statusCode:
+        typeof message.statusCode === 'number'
+          ? message.statusCode
+          : ServerResponse.prototype.statusCode,
+    };
+  }
+  return { method: message.method };
+}
+
+/**
+ * Function liftHttpMessage
+ *
+ * @description
+ * Moves an HTTP message given as the whole first argument of a log call, or as the whole bindings
+ * of a logger, under its field, as pino does for an intact request or response: the serializer of
+ * that field then summarizes it. The `context` nestjs-pino copied next to its members stays at the
+ * top level.
+ *
+ * @param {unknown} value - First argument of the call, or bindings.
+ * @returns {unknown} The value, or `{ context?, req | res }` for an HTTP message.
+ */
+function liftHttpMessage(value: unknown): unknown {
+  const field: HttpMessageField | undefined = isRecord(value)
+    ? httpMessageFieldOf(value)
+    : undefined;
+  if (field === undefined || !isRecord(value)) {
+    return value;
+  }
+  const context: unknown = value[CONTEXT_FIELD];
+  return { ...(context === undefined ? {} : { [CONTEXT_FIELD]: context }), [field]: value };
+}
+
+/**
  * Function sanitizeLogValue
  *
  * @description
  * Returns a copy of a logged value that is safe to write: the value of every redacted key is
  * masked at any depth, e-mail addresses are masked inside every string, and whatever sits deeper
- * than six levels is masked whole. An `Error` is returned untouched: the error serializer
- * handles it.
+ * than six levels is masked whole. An `Error` found at any depth is written as `err` is, by
+ * `sanitizeSerializedError`, and an HTTP request or response object, or a shallow copy of one, as
+ * its `httpMessageSummary`. Any other object is written as its own enumerable members: a class
+ * instance loses its prototype, its `toString()` and its `toJSON()`; a `Date` stays.
  *
  * @param {unknown} value - Value about to be logged.
  * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
@@ -190,17 +342,24 @@ export function sanitizeLogValue(
   if (typeof value === 'string') {
     return maskEmails(value);
   }
-  if (typeof value !== 'object' || value === null || value instanceof Error) {
+  if (typeof value !== 'object' || value === null) {
     return value;
   }
   if (depth >= MAX_DEPTH) {
     return REDACTED;
+  }
+  if (value instanceof Error) {
+    return sanitizeSerializedError(pino.stdSerializers.err(value), keys, depth);
   }
   if (Array.isArray(value)) {
     return value.map((item: unknown) => sanitizeLogValue(item, keys, depth + 1));
   }
   if (value instanceof Date) {
     return value;
+  }
+  const field: HttpMessageField | undefined = httpMessageFieldOf(value);
+  if (field !== undefined) {
+    return httpMessageSummary(value as Record<string, unknown>, field);
   }
   const sanitized: Record<string, unknown> = {};
   for (const [key, member] of Object.entries(value)) {
@@ -209,6 +368,99 @@ export function sanitizeLogValue(
       : sanitizeLogValue(member, keys, depth + 1);
   }
   return sanitized;
+}
+
+/**
+ * Function sanitizeLogFields
+ *
+ * @description
+ * Sanitizes the top-level fields of a line, or the bindings given to `child()` and
+ * `setBindings()`, as `sanitizeLogValue` sanitizes an object, except the fields of
+ * `SERIALIZED_FIELDS`, kept for the serializers pino applies right after: the error under `err`
+ * keeps its machine `code` that way.
+ *
+ * @param {Readonly<Record<string, unknown>>} fields - Fields of the line or bindings.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {Record<string, unknown>} The sanitized copy.
+ */
+export function sanitizeLogFields(
+  fields: Readonly<Record<string, unknown>>,
+  keys: ReadonlySet<string>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, member] of Object.entries(fields)) {
+    if (keys.has(normalizeKey(key))) {
+      sanitized[key] = REDACTED;
+    } else if (SERIALIZED_FIELDS.has(key)) {
+      sanitized[key] = member;
+    } else if (typeof member === 'object' && member !== null) {
+      sanitized[key] = sanitizeTolerantly(member, keys, 1);
+    } else {
+      // Most fields are identifiers and counts: a primitive is handled here, without a call.
+      sanitized[key] = typeof member === 'string' ? maskEmails(member) : member;
+    }
+  }
+  return sanitized;
+}
+
+/**
+ * Function sanitizeLogBindings
+ *
+ * @description
+ * Sanitizes the bindings given to `child()` and `setBindings()` as the fields of a line, after
+ * moving an HTTP message given as the whole bindings under its field.
+ *
+ * @param {Readonly<Record<string, unknown>>} bindings - Fields to bind to a logger.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {Record<string, unknown>} The sanitized bindings.
+ */
+export function sanitizeLogBindings(
+  bindings: Readonly<Record<string, unknown>>,
+  keys: ReadonlySet<string>,
+): Record<string, unknown> {
+  return sanitizeLogFields(liftHttpMessage(bindings) as Readonly<Record<string, unknown>>, keys);
+}
+
+/**
+ * Function sanitizeHttpField
+ *
+ * @description
+ * Serializer of the `req` and `res` fields. pino-http hands it the output of pino's standard
+ * request or response serializer, which keeps the original object on `raw`: an HTTP message, or
+ * a shallow copy of one, is written as its `httpMessageSummary`, anything else is sanitized as a
+ * logged value.
+ *
+ * @param {unknown} value - Serialized request or response, or whatever was logged under the field.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {unknown} The sanitized field.
+ */
+export function sanitizeHttpField(value: unknown, keys: ReadonlySet<string>): unknown {
+  const original: unknown =
+    isRecord(value) && isRecord(value.raw) && httpMessageFieldOf(value.raw) !== undefined
+      ? value.raw
+      : value;
+  return sanitizeTolerantly(original, keys, 0);
+}
+
+/**
+ * Function sanitizeTolerantly
+ *
+ * @description
+ * Runs `sanitizeLogValue`, and masks the value whole when reading it throws (a getter that
+ * throws, a revoked proxy): a log call must not fail because of what it logs, and pino's own
+ * serialization of interpolated values already wrote a placeholder in that case.
+ *
+ * @param {unknown} value - Value about to be logged.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @param {number} depth - Nesting level of the value in the line.
+ * @returns {unknown} The sanitized copy, or the redaction marker.
+ */
+function sanitizeTolerantly(value: unknown, keys: ReadonlySet<string>, depth: number): unknown {
+  try {
+    return sanitizeLogValue(value, keys, depth);
+  } catch {
+    return REDACTED;
+  }
 }
 
 /**
@@ -243,6 +495,53 @@ function databaseErrorOf(error: Record<string, unknown>): boolean {
       SQLSTATE.test(error.code) &&
       typeof error.severity === 'string')
   );
+}
+
+/**
+ * Interface DatabaseFailure
+ *
+ * @description
+ * What `databaseFailureIn` found in the cause chain of an error.
+ */
+interface DatabaseFailure {
+  // #region Properties
+  /**
+   * Property sqlState
+   *
+   * @description
+   * First SQLSTATE of the chain, the machine code kept on the logged error, when one is known.
+   *
+   * @type {string | undefined}
+   * @readonly
+   */
+  readonly sqlState: string | undefined;
+  // #endregion
+}
+
+/**
+ * Function databaseFailureIn
+ *
+ * @description
+ * Looks for a database error in an error and its causes, the chain pino folds into the message
+ * and the stack it serializes. A cycle among the causes ends the walk.
+ *
+ * @param {Record<string, unknown>} error - Error, or its fields, to inspect.
+ * @returns {DatabaseFailure | undefined} The failure found, or `undefined` when no error of the chain is a database error.
+ */
+function databaseFailureIn(error: Record<string, unknown>): DatabaseFailure | undefined {
+  const visited: Set<object> = new Set<object>();
+  let found: boolean = false;
+  let sqlState: string | undefined;
+  for (let cause: unknown = error; isRecord(cause) && !visited.has(cause); cause = cause.cause) {
+    visited.add(cause);
+    if (databaseErrorOf(cause)) {
+      found = true;
+      if (typeof cause.code === 'string' && SQLSTATE.test(cause.code)) {
+        sqlState ??= cause.code;
+      }
+    }
+  }
+  return found ? { sqlState } : undefined;
 }
 
 /**
@@ -311,18 +610,8 @@ export function sanitizeSerializedError(
   }
   const original: Record<string, unknown> = isRecord(serialized.raw) ? serialized.raw : serialized;
   const keepsCode: boolean = serialized.raw instanceof Error;
-  const visited: Set<object> = new Set<object>();
-  let databaseError: boolean = false;
-  let sqlState: string | undefined;
-  for (let cause: unknown = original; isRecord(cause) && !visited.has(cause); cause = cause.cause) {
-    visited.add(cause);
-    if (databaseErrorOf(cause)) {
-      databaseError = true;
-      if (typeof cause.code === 'string' && SQLSTATE.test(cause.code)) {
-        sqlState ??= cause.code;
-      }
-    }
-  }
+  const failure: DatabaseFailure | undefined = databaseFailureIn(original);
+  const databaseError: boolean = failure !== undefined;
   const kept: Record<string, unknown> = {};
   for (const [key, member] of Object.entries(serialized)) {
     if (SQL_ERROR_KEYS.has(key)) {
@@ -351,8 +640,108 @@ export function sanitizeSerializedError(
       kept[key] = sanitizeLogValue(member, keys, depth + 1);
     }
   }
-  if (sqlState !== undefined) {
-    kept.code = sqlState;
+  if (failure?.sqlState !== undefined) {
+    kept.code = failure.sqlState;
   }
   return kept;
+}
+
+/**
+ * Function sanitizeErrorMessage
+ *
+ * @description
+ * Returns the message of an error as the `message` of a logged error is written: the fixed
+ * database message when the error or one of its causes is a database error, the message with
+ * e-mail addresses masked otherwise. Unlike the logged `message`, the messages of the causes are
+ * not appended: pino writes the error's own message when it takes the message of a line from it.
+ *
+ * @param {Record<string, unknown>} error - Error, or error-like object, whose message is written.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {unknown} The sanitized message; a message that is not a string is sanitized as a logged value.
+ */
+function sanitizeErrorMessage(error: Record<string, unknown>, keys: ReadonlySet<string>): unknown {
+  const { message } = error;
+  if (typeof message !== 'string') {
+    return sanitizeLogValue(message, keys);
+  }
+  return databaseFailureIn(error) === undefined ? maskEmails(message) : DATABASE_ERROR_MESSAGE;
+}
+
+/**
+ * Function errorOfMergeObject
+ *
+ * @description
+ * Finds the error pino takes the message of a line from when the line has none: the first
+ * argument itself when it is an `Error`, otherwise its `err` field when it has no `msg` field.
+ *
+ * @param {unknown} mergeObject - First argument of the log call.
+ * @returns {Record<string, unknown> | undefined} The error, or `undefined` when pino would take no message from one.
+ */
+function errorOfMergeObject(mergeObject: unknown): Record<string, unknown> | undefined {
+  if (mergeObject instanceof Error) {
+    return mergeObject as unknown as Record<string, unknown>;
+  }
+  if (!isRecord(mergeObject) || mergeObject[MESSAGE_FIELD] !== undefined) {
+    return undefined;
+  }
+  const error: unknown = mergeObject[ERROR_FIELD];
+  return isRecord(error) ? error : undefined;
+}
+
+/**
+ * Function sanitizeInterpolatedValue
+ *
+ * @description
+ * Sanitizes a value that pino may interpolate into the message (`%s`, `%d`, `%j`, `%o`, `%O`) or
+ * write as the message itself: a string with its e-mail addresses masked, an `Error` as its name
+ * and sanitized message (the text `%s` gives), anything else as a logged value.
+ *
+ * @param {unknown} value - Argument of the log call after the first one.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {unknown} The sanitized argument.
+ */
+function sanitizeInterpolatedValue(value: unknown, keys: ReadonlySet<string>): unknown {
+  if (!(value instanceof Error)) {
+    return sanitizeTolerantly(value, keys, 0);
+  }
+  const message: unknown = sanitizeErrorMessage(value as unknown as Record<string, unknown>, keys);
+  return [maskEmails(value.name), message]
+    .filter((part: unknown) => typeof part === 'string' && part !== '')
+    .join(': ');
+}
+
+/**
+ * Function sanitizeLogArguments
+ *
+ * @description
+ * Sanitizes the arguments of a log call before pino formats them, for the `logMethod` hook. The
+ * first argument stays when it is an object: the `log` formatter and the serializers sanitize the
+ * fields of the line; an HTTP message, or the copy of one nestjs-pino made, is moved under `req`
+ * or `res` first, by `liftHttpMessage`. Every other argument is a message or a value interpolated
+ * into it, and is sanitized by `sanitizeInterpolatedValue`. When the call has no message and pino
+ * would take it from an error, the sanitized message of that error is passed as the message.
+ * E-mail addresses are masked in each part of the message, before pino joins the parts.
+ *
+ * @param {readonly unknown[]} args - Arguments of the log call.
+ * @param {ReadonlySet<string>} keys - Normalized keys to mask, from `redactedKeySet`.
+ * @returns {unknown[]} The arguments to hand to pino.
+ */
+export function sanitizeLogArguments(
+  args: readonly unknown[],
+  keys: ReadonlySet<string>,
+): unknown[] {
+  const sanitized: unknown[] = args.map((argument: unknown, index: number) => {
+    if (typeof argument === 'string') {
+      return maskEmails(argument);
+    }
+    return index === 0 ? liftHttpMessage(argument) : sanitizeInterpolatedValue(argument, keys);
+  });
+  if (sanitized[1] === undefined) {
+    const error: Record<string, unknown> | undefined = errorOfMergeObject(sanitized[0]);
+    const message: unknown = error === undefined ? undefined : sanitizeErrorMessage(error, keys);
+    if (message !== undefined) {
+      sanitized[1] = message;
+    }
+  }
+  return sanitized;
 }

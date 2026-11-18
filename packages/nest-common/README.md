@@ -225,16 +225,16 @@ Every line is one JSON object with `level` (as a label), `time` (ISO 8601, UTC),
 `method`, `route` (the matched pattern, `null` when no route matched), `status` and `durationMs`:
 `info` below 400, `warn` from 400, `error` from 500.
 
-| Never written                                 | Why                                                                                                                                                                  |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Request and response bodies, headers, cookies | The request object is not attached to the lines                                                                                                                      |
-| Query strings and raw paths                   | Only the route pattern is logged                                                                                                                                     |
-| Remote addresses                              | Same                                                                                                                                                                 |
-| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                                                                                                                     |
-| Values of the redacted keys                   | Replaced by `[REDACTED]` at any depth, whatever the case and separators of the key                                                                                   |
-| Anything nested deeper than six levels        | Replaced whole by `[REDACTED]`: a line carries identifiers, not payloads                                                                                             |
-| SQL values                                    | Recognized database errors and their wrappers use a fixed message. SQL fields and cause text are dropped, while the SQLSTATE and available stack frames are retained |
-| E-mail addresses                              | Replaced by `[REDACTED]` in every message, logged error and string value of a logged object                                                                          |
+| Never written                                 | Why                                                                                                                                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and response bodies, headers, cookies | The request object is not attached to the lines; one logged anyway is written as a summary (below)                                                                                            |
+| Query strings and raw paths                   | Only the route pattern is logged                                                                                                                                                              |
+| Remote addresses                              | Same                                                                                                                                                                                          |
+| Probe requests under `/health/`               | A probe every few seconds would bury the traffic                                                                                                                                              |
+| Values of the redacted keys                   | Replaced by `[REDACTED]` at any depth, whatever the case and separators of the key, in the fields of a line, the bindings of a logger and the values interpolated into a message              |
+| Anything nested deeper than six levels        | Replaced whole by `[REDACTED]`: a line carries identifiers, not payloads                                                                                                                      |
+| SQL values                                    | Recognized database errors and their wrappers use a fixed message, wherever the error sits. SQL fields and cause text are dropped, while the SQLSTATE and available stack frames are retained |
+| E-mail addresses                              | Replaced by `[REDACTED]` in every message (with what is interpolated into it), logged error, bound field and string value of a logged object                                                  |
 
 Redacted keys (`DEFAULT_REDACTED_KEYS`): `authorization`, `cookie`, `set-cookie`,
 `__Host-cw_session`, `__Host-cw_trusted_device`, `password`, `currentPassword`, `newPassword`,
@@ -249,6 +249,29 @@ of an error logged under `err`, and of the errors serialized inside it (`Error`-
 `aggregateErrors`), is its machine code (a SQLSTATE, `ECONNREFUSED`) and stays, even when
 `redactKeys` names `code`. A `code` in a logged object, or in a plain object among an error's
 members (the problem body of a `ProblemException`, for example), is masked.
+
+The same rules apply to every way a value reaches a line:
+
+| Value                                                                                                                                                                                                                | Written as                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An `Error` under a key other than `err`, at any depth, or in a plain member of an error (the `options.cause` of an `HttpException`)                                                                                  | Like `err`: `type`, `message`, `stack` and its members, sanitized, with its machine `code`                                                                                                                                                                                                      |
+| Bindings of `child()`, `setBindings()` and the `assign()` and `runInContext()` of `PinoLogger`                                                                                                                       | Like the fields of a line, on every logger the module creates; the `msgPrefix` of a child with its e-mail addresses masked                                                                                                                                                                      |
+| A value interpolated into the message (`%s`, `%d`, `%j`, `%o`, `%O`)                                                                                                                                                 | Like a logged value; an `Error` as the string of its name and sanitized message, which `%j`, `%o` and `%O` quote                                                                                                                                                                                |
+| The message of a line logged with an error and without a message                                                                                                                                                     | The error's own message, sanitized like `err.message`                                                                                                                                                                                                                                           |
+| A request or response object (`IncomingMessage`, `ServerResponse`, `ClientRequest`), or the shallow copy of one that the NestJS `Logger` and a `PinoLogger` with a context make, under any key or as the line itself | `{ id, method, route }` for a request (the request id, the method, the route pattern; and `statusCode` for an upstream response), `{ statusCode }` for a response, `{ method }` for an outgoing request: never its headers, `rawHeaders`, `Set-Cookie`, path, query string, socket or addresses |
+| A value that throws while it is read (a getter, a revoked proxy), below the top level of a line, in a binding or interpolated                                                                                        | `[REDACTED]`, instead of failing the log call                                                                                                                                                                                                                                                   |
+
+An object is written as its own enumerable members, in a binding or interpolated as in a field: a
+class instance loses its prototype, its `toString()` and its `toJSON()` (a `URL` gives
+`[object Object]` with `%s` and `{}` with `%j`); a `Date` stays. Log `url.href`, or the text of the
+value, instead.
+
+Up to 0.6.1 these were written without this sanitization: a request or response object was walked
+member by member, `rawHeaders` included, and a request under `req` was written with its `url`,
+query string included, and its `params`.
+
+E-mail addresses are masked in each part of a message before pino joins the parts: an address
+built by interpolation itself (`'%s@%s'`) is not recognized.
 
 ### Options
 
