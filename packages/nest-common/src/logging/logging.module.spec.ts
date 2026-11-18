@@ -13,7 +13,7 @@ import {
   type INestApplication,
 } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { PinoLogger } from 'nestjs-pino';
+import { InjectPinoLogger, Logger, PinoLogger } from 'nestjs-pino';
 import pino from 'pino';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
@@ -305,12 +305,20 @@ class SampleController {
    * Constructor
    *
    * @description
-   * Receives the request-scoped logger.
+   * Receives the request-scoped logger, the same logger with a context, and the NestJS logger
+   * service of nestjs-pino, the one `createApplication` routes the NestJS `Logger` to. The last
+   * two copy the first argument of a call next to its context.
    *
    * @param {PinoLogger} logger - Logger bound to the current request.
+   * @param {PinoLogger} contextLogger - The same logger, with the context `SampleContext`.
+   * @param {Logger} nestLogger - NestJS logger service of nestjs-pino.
    * @constructor
    */
-  public constructor(private readonly logger: PinoLogger) {}
+  public constructor(
+    private readonly logger: PinoLogger,
+    @InjectPinoLogger('SampleContext') private readonly contextLogger: PinoLogger,
+    private readonly nestLogger: Logger,
+  ) {}
   // #endregion
 
   // #region Methods
@@ -454,6 +462,9 @@ class SampleController {
     child.info('child line');
     child.setBindings({ password: 'bound-password-fixture' });
     child.info('rebound line');
+    child
+      .child({}, { msgPrefix: 'for camille.martin@ateliernord.example: ' })
+      .info('prefixed line');
     this.logger.runInContext(
       () => {
         this.logger.info('context line');
@@ -479,6 +490,11 @@ class SampleController {
       { email: 'camille.martin@ateliernord.example', token: 'interpolated-token-fixture' },
       new Error('No mailbox for camille.martin@ateliernord.example'),
     );
+    this.logger.info('unreadable %j', {
+      get value(): never {
+        throw new Error('getter fixture');
+      },
+    });
     return { ok: true };
   }
 
@@ -521,6 +537,13 @@ class SampleController {
     this.logger.info({ request: incoming, response: outgoing }, 'request objects');
     this.logger.info({ req: incoming, res: outgoing }, 'request objects under req');
     this.logger.info(incoming, 'request as the line');
+    this.contextLogger.info(incoming, 'request through a context');
+    this.nestLogger.log(incoming, 'SampleRequest');
+    outgoing.setHeader('Set-Cookie', `__Host-cw_session=${SESSION_COOKIE_VALUE}; Secure; HttpOnly`);
+    outgoing.on('finish', () => {
+      this.contextLogger.info(outgoing, 'response after send');
+      this.nestLogger.log(outgoing, 'SampleResponse');
+    });
     return { ok: true };
   }
   // #endregion
@@ -743,6 +766,9 @@ describe('LoggingModule', () => {
       password: REDACTED,
     });
     expect(lines.find((line) => line.msg === 'context line')).toMatchObject({ secret: REDACTED });
+    expect(lines.find((line) => String(line.msg).endsWith('prefixed line'))).toMatchObject({
+      msg: `for ${REDACTED}: prefixed line`,
+    });
     expect(raw.join('')).not.toMatch(
       /assign-token-fixture|child-token-fixture|bound-password-fixture|context-secret-fixture|ateliernord\.example/u,
     );
@@ -753,6 +779,9 @@ describe('LoggingModule', () => {
 
     expect(lines.find((line) => String(line.msg).startsWith('answer'))).toMatchObject({
       msg: `answer {"code":"${REDACTED}"} from {"email":"${REDACTED}","token":"${REDACTED}"} after Error: No mailbox for ${REDACTED}`,
+    });
+    expect(lines.find((line) => String(line.msg).startsWith('unreadable'))).toMatchObject({
+      msg: `unreadable '${REDACTED}'`,
     });
     expect(raw.join('')).not.toMatch(/261845|interpolated-token-fixture|ateliernord\.example/u);
   });
@@ -790,6 +819,18 @@ describe('LoggingModule', () => {
     expect(lines.find((line) => line.msg === 'request as the line')).toEqual(
       expect.objectContaining({ req: summary }),
     );
+    expect(lines.find((line) => line.msg === 'request through a context')).toEqual(
+      expect.objectContaining({ context: 'SampleContext', req: summary }),
+    );
+    expect(lines.find((line) => line.context === 'SampleRequest')).toEqual(
+      expect.objectContaining({ req: summary }),
+    );
+    expect(lines.find((line) => line.msg === 'response after send')).toEqual(
+      expect.objectContaining({ context: 'SampleContext', res: { statusCode: 200 } }),
+    );
+    expect(lines.find((line) => line.context === 'SampleResponse')).toEqual(
+      expect.objectContaining({ res: { statusCode: 200 } }),
+    );
     const output: string = raw.join('');
     for (const value of [
       'bearer-secret-fixture',
@@ -797,6 +838,7 @@ describe('LoggingModule', () => {
       'query-secret-fixture',
       '127.0.0.1',
       'rawHeaders',
+      '_header',
     ]) {
       expect(output).not.toContain(value);
     }
