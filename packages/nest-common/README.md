@@ -236,11 +236,19 @@ Every line is one JSON object with `level` (as a label), `time` (ISO 8601, UTC),
 | SQL values                                    | Recognized database errors and their wrappers use a fixed message. SQL fields and cause text are dropped, while the SQLSTATE and available stack frames are retained |
 | E-mail addresses                              | Replaced by `[REDACTED]` in every message, logged error and string value of a logged object                                                                          |
 
-Redacted keys (`DEFAULT_REDACTED_KEYS`): `authorization`, `cookie`, `set-cookie`, `password`,
-`currentPassword`, `newPassword`, `token`, `accessToken`, `refreshToken`, `idToken`,
-`sessionToken`, `secret`, `clientSecret`, `apiKey`, `privateKey`, `privateJwk`,
-`internalTokenPrivateJwk`, `databaseUrl`, `connectionString`, `email`. A key matches whatever its
-case and separators: `accessToken`, `access_token` and `Access-Token` are one key.
+Redacted keys (`DEFAULT_REDACTED_KEYS`): `authorization`, `cookie`, `set-cookie`,
+`__Host-cw_session`, `__Host-cw_trusted_device`, `password`, `currentPassword`, `newPassword`,
+`token`, `accessToken`, `refreshToken`, `idToken`, `sessionToken`, `trustedDeviceToken`, `secret`,
+`otpauthUri`, `code`, `codes`, `backupCodes`, `credential`, `clientSecret`, `apiKey`, `privateKey`,
+`privateJwk`, `internalTokenPrivateJwk`, `databaseUrl`, `connectionString`, `email`. A key matches
+whatever its case and separators: `accessToken`, `access_token` and `Access-Token` are one key.
+The cookie names mask a parsed cookie map; `code`, `codes`, `backupCodes`, `otpauthUri`,
+`trustedDeviceToken` and `credential` mask the one-time and backup codes, the authenticator app
+secret URI, the trusted device token and the WebAuthn answers of two-step verification. The `code`
+of an error logged under `err`, and of the errors serialized inside it (`Error`-valued members and
+`aggregateErrors`), is its machine code (a SQLSTATE, `ECONNREFUSED`) and stays, even when
+`redactKeys` names `code`. A `code` in a logged object, or in a plain object among an error's
+members (the problem body of a `ProblemException`, for example), is masked.
 
 ### Options
 

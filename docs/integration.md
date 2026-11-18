@@ -102,13 +102,13 @@ OpenTelemetry SDK itself.
 
 ### Logs
 
-| Concern      | Rule                                                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Format       | One JSON line per event, through `nestjs-pino`                                                                                       |
-| Fields       | `service`, `version`, `traceId`, `spanId`, `organizationId`, `userId`, `route`, `status`, `durationMs`, the request id               |
-| Redaction    | Tokens, passwords, cookies, the `authorization` header and e-mail addresses are masked by default; no e-mail address or IP at `info` |
-| Never logged | Request bodies, SQL values, query strings                                                                                            |
-| Level        | `LOG_LEVEL`; `pino-pretty` is a development transport, never a production one                                                        |
+| Concern      | Rule                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format       | One JSON line per event, through `nestjs-pino`                                                                                                                      |
+| Fields       | `service`, `version`, `traceId`, `spanId`, `organizationId`, `userId`, `route`, `status`, `durationMs`, the request id                                              |
+| Redaction    | Tokens, passwords, cookies, the `authorization` header, two-step verification secrets and e-mail addresses are masked by default; no e-mail address or IP at `info` |
+| Never logged | Request bodies, SQL values, query strings                                                                                                                           |
+| Level        | `LOG_LEVEL`; `pino-pretty` is a development transport, never a production one                                                                                       |
 
 ### Traces
 

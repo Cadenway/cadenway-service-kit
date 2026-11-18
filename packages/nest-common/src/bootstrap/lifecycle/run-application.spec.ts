@@ -166,4 +166,24 @@ describe('runApplication', () => {
     expect(line.err?.stack).toContain('at ');
     expect(chunk).not.toMatch(/diagnostic fixture|continuation fixture|row detail fixture/u);
   });
+
+  it('keeps the machine code of a start-up error and masks the two-step secrets it holds', async () => {
+    const outcome: Outcome = await run(() =>
+      Promise.reject(
+        Object.assign(new Error('listen EADDRINUSE: address already in use :::3000'), {
+          code: 'EADDRINUSE',
+          answer: { code: '261845', trustedDeviceToken: 'trusted-device-token-fixture' },
+        }),
+      ),
+    );
+
+    const chunk: string = outcome.chunks[0] ?? '';
+    expect(JSON.parse(chunk)).toMatchObject({
+      err: {
+        code: 'EADDRINUSE',
+        answer: { code: '[REDACTED]', trustedDeviceToken: '[REDACTED]' },
+      },
+    });
+    expect(chunk).not.toMatch(/261845|trusted-device-token-fixture/u);
+  });
 });

@@ -1,6 +1,16 @@
-import { Controller, Get, HttpException, type INestApplication } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  HttpException,
+  Post,
+  type INestApplication,
+} from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { PinoLogger } from 'nestjs-pino';
+import pino from 'pino';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -45,6 +55,216 @@ const lines: LogLine[] = [];
  * @type {string[]}
  */
 const raw: string[] = [];
+
+/**
+ * Constant SESSION_COOKIE_VALUE
+ *
+ * @description
+ * Fixture value of the `__Host-cw_session` cookie, which must never reach a line.
+ *
+ * @type {string}
+ */
+const SESSION_COOKIE_VALUE: string = 'session-cookie-fixture';
+
+/**
+ * Constant TRUSTED_DEVICE_COOKIE_VALUE
+ *
+ * @description
+ * Fixture value of the `__Host-cw_trusted_device` cookie, which must never reach a line.
+ *
+ * @type {string}
+ */
+const TRUSTED_DEVICE_COOKIE_VALUE: string = 'trusted-device-cookie-fixture';
+
+/**
+ * Interface TwoStepBody
+ *
+ * @description
+ * A body of the two-step verification exchanges of contracts 0.8.0 (public `auth.yaml` and
+ * internal `identity-service.yaml`), with fixture values.
+ */
+interface TwoStepBody {
+  // #region Properties
+  /**
+   * Property name
+   *
+   * @description
+   * Contract schema the body follows.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly name: string;
+
+  /**
+   * Property body
+   *
+   * @description
+   * The body, as a handler receives or returns it.
+   *
+   * @type {Record<string, unknown>}
+   * @readonly
+   */
+  readonly body: Record<string, unknown>;
+
+  /**
+   * Property logged
+   *
+   * @description
+   * What a line carrying the body must show instead.
+   *
+   * @type {Record<string, unknown>}
+   * @readonly
+   */
+  readonly logged: Record<string, unknown>;
+
+  /**
+   * Property secrets
+   *
+   * @description
+   * Fixture values of the body that must never reach a line.
+   *
+   * @type {readonly string[]}
+   * @readonly
+   */
+  readonly secrets: readonly string[];
+  // #endregion
+}
+
+/**
+ * Constant TWO_STEP_BODIES
+ *
+ * @description
+ * Bodies carrying every secret of two-step verification, and the passwords and tokens around it.
+ *
+ * @type {readonly TwoStepBody[]}
+ */
+const TWO_STEP_BODIES: readonly TwoStepBody[] = [
+  {
+    name: 'AuthenticatorAppAnswer',
+    body: { token: 'challenge-token-fixture', code: '261845', trustDevice: true },
+    logged: { token: REDACTED, code: REDACTED, trustDevice: true },
+    secrets: ['challenge-token-fixture', '261845'],
+  },
+  {
+    name: 'BackupCodeAnswer',
+    body: { token: 'challenge-token-fixture', code: '4F7K-2M9Q', trustDevice: false },
+    logged: { token: REDACTED, code: REDACTED, trustDevice: false },
+    secrets: ['challenge-token-fixture', '4F7K-2M9Q'],
+  },
+  {
+    name: 'SecurityKeyAnswer',
+    body: {
+      token: 'challenge-token-fixture',
+      credential: {
+        id: 'credential-id-fixture',
+        type: 'public-key',
+        response: {
+          clientDataJSON: 'client-data-fixture',
+          authenticatorData: 'authenticator-data-fixture',
+          signature: 'signature-fixture',
+        },
+      },
+    },
+    logged: { token: REDACTED, credential: REDACTED },
+    secrets: ['challenge-token-fixture', 'credential-id-fixture', 'signature-fixture'],
+  },
+  {
+    name: 'SecurityKeyAddition',
+    body: {
+      name: 'YubiKey 5C NFC',
+      credential: {
+        id: 'credential-id-fixture',
+        response: { attestationObject: 'attestation-fixture' },
+      },
+    },
+    logged: { name: 'YubiKey 5C NFC', credential: REDACTED },
+    secrets: ['credential-id-fixture', 'attestation-fixture'],
+  },
+  {
+    name: 'PasswordSignIn (internal)',
+    body: {
+      email: 'camille.martin@ateliernord.example',
+      password: 'password-fixture',
+      trustedDeviceToken: 'trusted-device-token-fixture',
+    },
+    logged: { email: REDACTED, password: REDACTED, trustedDeviceToken: REDACTED },
+    secrets: ['ateliernord.example', 'password-fixture', 'trusted-device-token-fixture'],
+  },
+  {
+    name: 'AuthenticatorAppSetup',
+    body: {
+      secret: 'TOTPSECRETFIXTURE',
+      otpauthUri: 'otpauth://totp/Cadenway:fixture?secret=TOTPSECRETFIXTURE&issuer=Cadenway',
+      expiresAt: '2026-11-09T08:00:00Z',
+    },
+    logged: { secret: REDACTED, otpauthUri: REDACTED, expiresAt: '2026-11-09T08:00:00Z' },
+    secrets: ['TOTPSECRETFIXTURE'],
+  },
+  {
+    name: 'AuthenticatorAppConfigured',
+    body: {
+      twoStepVerification: { enabled: true },
+      backupCodes: { codes: ['BACK-UP01', 'BACK-UP02'], generatedAt: '2026-11-09T08:00:00Z' },
+    },
+    logged: { twoStepVerification: { enabled: true }, backupCodes: REDACTED },
+    secrets: ['BACK-UP01', 'BACK-UP02'],
+  },
+  {
+    name: 'BackupCodes',
+    body: { codes: ['BACK-UP03', 'BACK-UP04'], generatedAt: '2026-11-09T08:00:00Z' },
+    logged: { codes: REDACTED, generatedAt: '2026-11-09T08:00:00Z' },
+    secrets: ['BACK-UP03', 'BACK-UP04'],
+  },
+  {
+    name: 'SessionIssued with TrustedDevice (internal)',
+    body: {
+      token: 'session-token-fixture',
+      trustedDevice: { token: 'device-token-fixture', expiresAt: '2026-12-09T08:00:00Z' },
+    },
+    logged: { token: REDACTED, trustedDevice: { token: REDACTED } },
+    secrets: ['session-token-fixture', 'device-token-fixture'],
+  },
+  {
+    name: 'PasswordResetConfirmation',
+    body: { token: 'reset-token-fixture', newPassword: 'new-password-fixture' },
+    logged: { token: REDACTED, newPassword: REDACTED },
+    secrets: ['reset-token-fixture', 'new-password-fixture'],
+  },
+  {
+    name: 'PasswordChange',
+    body: { currentPassword: 'current-password-fixture', newPassword: 'new-password-fixture' },
+    logged: { currentPassword: REDACTED, newPassword: REDACTED },
+    secrets: ['current-password-fixture', 'new-password-fixture'],
+  },
+  {
+    name: 'ReauthenticationRequest',
+    body: { code: '731406' },
+    logged: { code: REDACTED },
+    secrets: ['731406'],
+  },
+];
+
+/**
+ * Function cookiesOf
+ *
+ * @description
+ * Parses a `Cookie` header into a map from cookie name to value, as a cookie parser would.
+ *
+ * @param {string | undefined} header - Value of the `Cookie` header.
+ * @returns {Record<string, string>} The cookies by name.
+ */
+function cookiesOf(header: string | undefined): Record<string, string> {
+  return Object.fromEntries(
+    (header ?? '')
+      .split(';')
+      .filter((pair: string) => pair.includes('='))
+      .map((pair: string) => {
+        const separator: number = pair.indexOf('=');
+        return [pair.slice(0, separator).trim(), pair.slice(separator + 1).trim()];
+      }),
+  );
+}
 
 /**
  * Class SampleController
@@ -113,6 +333,45 @@ class SampleController {
       code: '23505',
     });
     this.logger.error({ err: new Error('Work failed', { cause }) }, 'database failure');
+    return { ok: true };
+  }
+
+  /**
+   * Method answer
+   *
+   * @description
+   * Logs the body, the headers and the cookies of the request, as a careless handler would, and
+   * answers 200.
+   *
+   * @param {unknown} body - Parsed JSON body.
+   * @param {Record<string, string | undefined>} headers - Headers of the request.
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Post(':sampleId/two-step')
+  @HttpCode(200)
+  public answer(
+    @Body() body: unknown,
+    @Headers() headers: Record<string, string | undefined>,
+  ): { ok: boolean } {
+    this.logger.info({ body, headers, cookies: cookiesOf(headers.cookie) }, 'two-step request');
+    return { ok: true };
+  }
+
+  /**
+   * Method logTwoStepFailure
+   *
+   * @description
+   * Logs an error with a machine code that holds a one-time code in one of its members.
+   *
+   * @returns {{ ok: boolean }} A fixed body.
+   */
+  @Get(':sampleId/two-step-error')
+  public logTwoStepFailure(): { ok: boolean } {
+    const error: Error = Object.assign(new Error('Identity service unreachable'), {
+      code: 'ECONNREFUSED',
+      answer: { code: '261845' },
+    });
+    this.logger.error({ err: error }, 'two-step failure');
     return { ok: true };
   }
   // #endregion
@@ -205,6 +464,70 @@ describe('LoggingModule', () => {
     expect(line?.requestId).toEqual(expect.any(String));
   });
 
+  it.each(TWO_STEP_BODIES)(
+    'masks the secrets of a $name body, its cookie header and its cookies by name',
+    async ({ body, logged, secrets }: TwoStepBody) => {
+      await request(app.getHttpServer())
+        .post('/samples/42/two-step')
+        .set('X-Request-Id', 'gateway-req-0002')
+        .set(
+          'Cookie',
+          `__Host-cw_session=${SESSION_COOKIE_VALUE}; __Host-cw_trusted_device=${TRUSTED_DEVICE_COOKIE_VALUE}`,
+        )
+        .send(body)
+        .expect(200);
+
+      const line: LogLine | undefined = lines.find((entry) => entry.msg === 'two-step request');
+      expect(line).toMatchObject({
+        body: logged,
+        headers: { cookie: REDACTED },
+        cookies: { '__Host-cw_session': REDACTED, '__Host-cw_trusted_device': REDACTED },
+      });
+      const output: string = raw.join('');
+      for (const value of [...secrets, SESSION_COOKIE_VALUE, TRUSTED_DEVICE_COOKIE_VALUE]) {
+        expect(output).not.toContain(value);
+      }
+    },
+  );
+
+  it('masks every secret of two-step verification in a logged object, at any depth', async () => {
+    const logger: PinoLogger = await app.resolve(PinoLogger);
+    const keys: readonly string[] = [
+      'trustedDeviceToken',
+      'otpauthUri',
+      'secret',
+      'code',
+      'codes',
+      'backupCodes',
+      'credential',
+      '__Host-cw_session',
+      '__Host-cw_trusted_device',
+    ];
+    const secrets: Record<string, string> = Object.fromEntries(
+      keys.map((key: string) => [key, `${key}-value-fixture`]),
+    );
+    const masked: Record<string, string> = Object.fromEntries(
+      keys.map((key: string) => [key, REDACTED]),
+    );
+
+    logger.info({ ...secrets, nested: { items: [secrets] } }, 'two-step object');
+
+    expect(lines.find((line) => line.msg === 'two-step object')).toMatchObject({
+      ...masked,
+      nested: { items: [masked] },
+    });
+    expect(raw.join('')).not.toContain('-value-fixture');
+  });
+
+  it('keeps the machine code of a logged error and masks a one-time code it holds', async () => {
+    await request(app.getHttpServer()).get('/samples/42/two-step-error').expect(200);
+
+    expect(lines.find((line) => line.msg === 'two-step failure')).toMatchObject({
+      err: { code: 'ECONNREFUSED', answer: { code: REDACTED } },
+    });
+    expect(raw.join('')).not.toContain('261845');
+  });
+
   it('logs a server error at error level without the e-mail address of its message', async () => {
     await request(app.getHttpServer()).get('/samples/42/failure').expect(503);
 
@@ -288,6 +611,63 @@ describe('redaction helpers', () => {
       note: `write to ${REDACTED}`,
       count: 3,
     });
+  });
+
+  it.each([
+    ['trustedDeviceToken', 'trusted_device_token'],
+    ['otpauthUri', 'OTPAUTH-URI'],
+    ['code', 'Code'],
+    ['codes', 'CODES'],
+    ['backupCodes', 'backup_codes'],
+    ['credential', 'Credential'],
+    ['__Host-cw_session', '__host-cw-session'],
+    ['__Host-cw_trusted_device', '__HOST_CW_TRUSTED_DEVICE'],
+  ])('masks %s at any depth, also spelled %s', (key: string, spelling: string) => {
+    const value: string = `${key}-value-fixture`;
+
+    const sanitized: unknown = sanitizeLogValue(
+      { [key]: value, body: { [spelling]: value }, items: [{ answer: { [key]: { value } } }] },
+      redactedKeySet(),
+    );
+
+    expect(sanitized).toEqual({
+      [key]: REDACTED,
+      body: { [spelling]: REDACTED },
+      items: [{ answer: { [key]: REDACTED } }],
+    });
+    expect(JSON.stringify(sanitized)).not.toContain(value);
+  });
+
+  it('keeps the code of an error and of the errors it holds, never the code of a plain object', () => {
+    const inner: Error = Object.assign(new Error('Reset by the peer'), { code: 'ECONNRESET' });
+    const outer: AggregateError = Object.assign(new AggregateError([inner], 'Every call failed'), {
+      code: 'ERR_CALLS_FAILED',
+      last: Object.assign(new Error('Timed out'), { code: 'ETIMEDOUT' }),
+      answer: { code: '261845' },
+    });
+
+    expect(sanitizeSerializedError(pino.stdSerializers.err(outer), redactedKeySet())).toMatchObject(
+      {
+        code: 'ERR_CALLS_FAILED',
+        last: { code: 'ETIMEDOUT' },
+        aggregateErrors: [{ code: 'ECONNRESET' }],
+        answer: { code: REDACTED },
+      },
+    );
+    expect(
+      sanitizeSerializedError({ message: 'not an error', code: '261845' }, redactedKeySet()),
+    ).toEqual({ message: 'not an error', code: REDACTED });
+  });
+
+  it('counts the depth limit of an error it holds from the outer error', () => {
+    const inner: Error = Object.assign(new Error('Inner'), {
+      a: { b: { c: { d: { e: { f: 'deep' } } } } },
+    });
+    const outer: Error = Object.assign(new Error('Outer'), { inner });
+
+    expect(sanitizeSerializedError(pino.stdSerializers.err(outer), redactedKeySet())).toMatchObject(
+      { inner: { a: { b: { c: { d: { e: REDACTED } } } } } },
+    );
   });
 
   it('masks whole whatever is nested deeper than six levels', () => {
