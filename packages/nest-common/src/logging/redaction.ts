@@ -13,9 +13,13 @@ export const REDACTED: string = '[REDACTED]';
  *
  * @description
  * Keys whose value is masked wherever they appear in a logged object: tokens, passwords,
- * cookies, the `authorization` header, e-mail addresses, key material and connection strings.
+ * cookies (the headers, and the session and trusted-device cookies by name, as in a parsed
+ * cookie map), the `authorization` header, e-mail addresses, the secrets of two-step
+ * verification (one-time and backup codes, the authenticator app secret and its `otpauth://`
+ * URI, WebAuthn answers), key material and connection strings.
  * A key matches whatever its case and its separators: `accessToken`, `access_token` and
- * `Access-Token` are the same key.
+ * `Access-Token` are the same key. The `code` of an error logged under `err` is its machine
+ * code, not a one-time code, and stays, as the Logs section of the package README describes.
  *
  * @type {readonly string[]}
  */
@@ -23,6 +27,8 @@ export const DEFAULT_REDACTED_KEYS: readonly string[] = [
   'authorization',
   'cookie',
   'set-cookie',
+  '__Host-cw_session',
+  '__Host-cw_trusted_device',
   'password',
   'currentPassword',
   'newPassword',
@@ -31,7 +37,13 @@ export const DEFAULT_REDACTED_KEYS: readonly string[] = [
   'refreshToken',
   'idToken',
   'sessionToken',
+  'trustedDeviceToken',
   'secret',
+  'otpauthUri',
+  'code',
+  'codes',
+  'backupCodes',
+  'credential',
   'clientSecret',
   'apiKey',
   'privateKey',
@@ -41,6 +53,19 @@ export const DEFAULT_REDACTED_KEYS: readonly string[] = [
   'connectionString',
   'email',
 ];
+
+/**
+ * Constant ERROR_CODE_KEY
+ *
+ * @description
+ * Member of an `Error` that holds its machine code by the Node.js convention: the SQLSTATE of a
+ * PostgreSQL error, a system error code such as `ECONNREFUSED`, a library code such as
+ * `ERR_JWT_EXPIRED`. It stays on an error the error serializer handles although `code` is a
+ * redacted key, which masks the one-time codes of request bodies in logged objects.
+ *
+ * @type {string}
+ */
+const ERROR_CODE_KEY: string = 'code';
 
 /**
  * Constant MAX_DEPTH
@@ -242,23 +267,50 @@ function databaseStack(error: Record<string, unknown>): string {
 }
 
 /**
+ * Function sanitizeNestedError
+ *
+ * @description
+ * Sanitizes a serialized error held by another one, at its nesting level in the logged line, so
+ * the six-level limit counts from the outer error.
+ *
+ * @param {Record<string, unknown>} serialized - Serialized error held by a member of another error.
+ * @param {ReadonlySet<string>} keys - Normalized field names to mask in the log.
+ * @param {number} depth - Nesting level of the serialized error in the logged value.
+ * @returns {unknown} The sanitized error, or the redaction marker past the depth limit.
+ */
+function sanitizeNestedError(
+  serialized: Record<string, unknown>,
+  keys: ReadonlySet<string>,
+  depth: number,
+): unknown {
+  return depth >= MAX_DEPTH ? REDACTED : sanitizeSerializedError(serialized, keys, depth);
+}
+
+/**
  * Function sanitizeSerializedError
  *
  * @description
- * Redacts SQL errors, including causes that Pino folds into the outer message and stack.
+ * Sanitizes a serialized error as `sanitizeLogValue` sanitizes a logged value, and redacts SQL
+ * errors, including causes that Pino folds into the outer message and stack. The `code` of an
+ * `Error` Pino serialized, and of the errors Pino serialized inside it (`Error`-valued members
+ * and `aggregateErrors`), is its machine code and stays, e-mail addresses masked; the `code` of a
+ * plain object logged under `err`, or of a plain object among an error's members, is masked.
  *
  * @param {unknown} serialized - Raw Pino serialized error, which may retain the original error as a cause source.
  * @param {ReadonlySet<string>} keys - Normalized field names to mask in the log.
+ * @param {number} depth - Nesting level of the error in the logged value; callers leave the default.
  * @returns {Record<string, unknown>} The sanitized fields suitable for serialization to the log.
  */
 export function sanitizeSerializedError(
   serialized: unknown,
   keys: ReadonlySet<string>,
+  depth: number = 0,
 ): Record<string, unknown> {
   if (!isRecord(serialized)) {
     return {};
   }
   const original: Record<string, unknown> = isRecord(serialized.raw) ? serialized.raw : serialized;
+  const keepsCode: boolean = serialized.raw instanceof Error;
   const visited: Set<object> = new Set<object>();
   let databaseError: boolean = false;
   let sqlState: string | undefined;
@@ -276,22 +328,31 @@ export function sanitizeSerializedError(
     if (SQL_ERROR_KEYS.has(key)) {
       continue;
     }
-    if (typeof member === 'string' && databaseError && key === 'message') {
+    if (keepsCode && key === ERROR_CODE_KEY) {
+      kept[key] = sanitizeLogValue(member, keys, depth + 1);
+    } else if (keys.has(normalizeKey(key))) {
+      kept[key] = REDACTED;
+    } else if (typeof member === 'string' && databaseError && key === 'message') {
       kept[key] = DATABASE_ERROR_MESSAGE;
     } else if (typeof member === 'string' && databaseError && key === 'stack') {
-      kept[key] = databaseStack(original);
+      kept[key] = maskEmails(databaseStack(original));
     } else if (isRecord(member) && member.raw instanceof Error) {
-      kept[key] = sanitizeSerializedError(member, keys);
+      kept[key] = sanitizeNestedError(member, keys, depth + 1);
     } else if (key === 'aggregateErrors' && Array.isArray(member)) {
-      kept[key] = member.map((item: unknown) =>
-        isRecord(item) ? sanitizeSerializedError(item, keys) : item,
-      );
+      kept[key] =
+        depth + 1 >= MAX_DEPTH
+          ? REDACTED
+          : member.map((item: unknown) =>
+              isRecord(item)
+                ? sanitizeNestedError(item, keys, depth + 2)
+                : sanitizeLogValue(item, keys, depth + 2),
+            );
     } else {
-      kept[key] = member;
+      kept[key] = sanitizeLogValue(member, keys, depth + 1);
     }
   }
   if (sqlState !== undefined) {
     kept.code = sqlState;
   }
-  return sanitizeLogValue(kept, keys) as Record<string, unknown>;
+  return kept;
 }
