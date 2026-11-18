@@ -51,8 +51,9 @@ export interface ValidationIssue {
    *
    * @description
    * Part of the request the value came from. `parseIfMatch` and `assertVersionMatch` also answer
-   * `request.invalid` with an issue in `header` on the `If-Match` header; this type keeps its
-   * released members, so code that reads issues of any origin also expects `header`.
+   * `request.invalid` with an issue in `header` on the `If-Match` header, and the
+   * `Idempotency-Key` interceptor of `@cadenway/nest-common/database` on that header; this type
+   * keeps its released members, so code that reads issues of any origin also expects `header`.
    *
    * @type {'body' | 'query' | 'param' | 'custom'}
    * @readonly

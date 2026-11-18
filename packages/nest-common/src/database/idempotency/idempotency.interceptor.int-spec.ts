@@ -3,9 +3,11 @@ import {
   Controller,
   Post,
   Res,
+  UseInterceptors,
   type INestApplication,
-  type ValueProvider,
+  type Provider,
 } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { Test, type TestingModule } from '@nestjs/testing';
 import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
@@ -15,6 +17,7 @@ import { InternalAccess } from '../../auth/internal-token/internal-token.guard.j
 import { InternalTokenSigner } from '../../auth/internal-token/internal-token-signer.js';
 import type { Ed25519PrivateJwk } from '../../auth/internal-token/internal-token.js';
 import { InternalTokenModule } from '../../auth/internal-token/internal-token.module.js';
+import { EtagInterceptor } from '../../http/concurrency/etag.js';
 import { ProblemFilter } from '../../problem/problem.filter.js';
 import { ProblemException } from '../../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
@@ -154,6 +157,52 @@ class TaskController {
   }
 
   /**
+   * Method createSpace
+   *
+   * @description
+   * Creates a space whose body has no top-level `version`, so the handler sets `ETag` itself,
+   * along with a cookie the replay must not carry.
+   *
+   * @param {{ name: string }} body - Name of the space.
+   * @param {{ setHeader(name: string, value: string): unknown }} response - Response, to set the headers.
+   * @returns {Promise<{ space: { id: string; name: string; version: number } }>} The created space.
+   */
+  @Post('spaces')
+  @Idempotent()
+  public async createSpace(
+    @Body() body: { name: string },
+    @Res({ passthrough: true }) response: { setHeader(name: string, value: string): unknown },
+  ): Promise<{ space: { id: string; name: string; version: number } }> {
+    probe.runs += 1;
+    const id: string = await this.insertTask(body.name);
+    response.setHeader('Location', `/internal/v1/spaces/${id}`);
+    response.setHeader('ETag', '"3"');
+    response.setHeader('Set-Cookie', 'preference=compact');
+    return { space: { id, name: body.name, version: 3 } };
+  }
+
+  /**
+   * Method createList
+   *
+   * @description
+   * Creates a list whose `ETag` an `EtagInterceptor` of the route derives from the body, inside
+   * the idempotency interceptor.
+   *
+   * @param {{ name: string }} body - Name of the list.
+   * @returns {Promise<{ id: string; name: string; version: number }>} The created list.
+   */
+  @Post('lists')
+  @Idempotent()
+  @UseInterceptors(EtagInterceptor)
+  public async createList(
+    @Body() body: { name: string },
+  ): Promise<{ id: string; name: string; version: number }> {
+    probe.runs += 1;
+    const id: string = await this.insertTask(body.name);
+    return { id, name: body.name, version: 4 };
+  }
+
+  /**
    * Method slow
    *
    * @description
@@ -190,6 +239,25 @@ class TaskController {
         [body.name],
       );
       return { id: (inserted.rows[0] as { id: string }).id };
+    });
+  }
+
+  /**
+   * Method insertTask
+   *
+   * @description
+   * Inserts a row in the transaction of the use case, which joins the one of the interceptor.
+   *
+   * @param {string} title - Title of the row.
+   * @returns {Promise<string>} Its id.
+   */
+  private insertTask(title: string): Promise<string> {
+    return this.tenant.run(async (scope: TransactionScope) => {
+      const inserted: { rows: unknown[] } = await scope.client.query(
+        'insert into tasks (organization_id, title) values ($1, $2) returning id',
+        [scope.organizationId, title],
+      );
+      return (inserted.rows[0] as { id: string }).id;
     });
   }
   // #endregion
@@ -231,6 +299,23 @@ describe('IdempotencyInterceptor', () => {
   }
 
   /**
+   * Function storedHeaders
+   *
+   * @description
+   * Reads the headers stored with the response of a key.
+   *
+   * @param {string} key - Idempotency key.
+   * @returns {Promise<unknown>} The stored `response_headers`.
+   */
+  async function storedHeaders(key: string): Promise<unknown> {
+    const result: { rows: unknown[] } = await database.admin.query(
+      'select response_headers from idempotency_keys where key = $1',
+      [key],
+    );
+    return (result.rows[0] as { response_headers: unknown }).response_headers;
+  }
+
+  /**
    * Function count
    *
    * @description
@@ -262,7 +347,12 @@ describe('IdempotencyInterceptor', () => {
     );
     const gatewayJwk: Ed25519PrivateJwk = await generateSigningJwk('gateway-2026-11');
     gateway = await InternalTokenSigner.create({ issuer: 'api-gateway', privateJwk: gatewayJwk });
-    const probeProvider: ValueProvider<Probe> = { provide: Probe, useValue: probe };
+    // The `EtagInterceptor` of the root module wraps the `Idempotency-Key` interceptor of
+    // `DatabaseModule`, as in `createApplication`.
+    const providers: Provider[] = [
+      { provide: Probe, useValue: probe },
+      { provide: APP_INTERCEPTOR, useClass: EtagInterceptor },
+    ];
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [
         InternalTokenModule.forRoot({
@@ -274,7 +364,7 @@ describe('IdempotencyInterceptor', () => {
         DatabaseModule.forRoot({ connectionString: database.appUrl, idempotency: true }),
       ],
       controllers: [TaskController],
-      providers: [probeProvider],
+      providers,
     }).compile();
     app = moduleRef.createNestApplication();
     app.useGlobalFilters(new ProblemFilter());
@@ -322,6 +412,45 @@ describe('IdempotencyInterceptor', () => {
     expect(await count('idempotency_keys')).toBe(1);
   });
 
+  it('replays the ETag the handler set, and neither its cookie nor any other header', async () => {
+    const first: Response = await send('/internal/v1/spaces', { name: 'Produit' }, 'key-0010');
+    const replay: Response = await send('/internal/v1/spaces', { name: 'Produit' }, 'key-0010');
+
+    expect(first.headers.etag).toBe('"3"');
+    expect(first.headers['set-cookie']).toEqual(['preference=compact']);
+    expect(replay.status).toBe(201);
+    expect(replay.body).toEqual(first.body);
+    expect(replay.headers.etag).toBe('"3"');
+    expect(replay.headers.location).toBe(first.headers.location);
+    expect(replay.headers['set-cookie']).toBeUndefined();
+    expect(await storedHeaders('key-0010')).toEqual({
+      location: first.headers.location,
+      etag: '"3"',
+    });
+    expect(probe.runs).toBe(1);
+  });
+
+  it('replays the ETag an EtagInterceptor inside the idempotency interceptor derived', async () => {
+    const first: Response = await send('/internal/v1/lists', { name: 'Sprint 12' }, 'key-0011');
+    const replay: Response = await send('/internal/v1/lists', { name: 'Sprint 12' }, 'key-0011');
+
+    expect(first.headers.etag).toBe('"4"');
+    expect(replay.headers.etag).toBe('"4"');
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(await storedHeaders('key-0011')).toMatchObject({ etag: '"4"' });
+    expect(probe.runs).toBe(1);
+  });
+
+  it('derives the ETag of a replay again when the EtagInterceptor wraps the idempotency one', async () => {
+    const first: Response = await send('/internal/v1/tasks', { title: 'CAD-482' }, 'key-0012');
+    const replay: Response = await send('/internal/v1/tasks', { title: 'CAD-482' }, 'key-0012');
+
+    expect(first.headers.etag).toBe('"0"');
+    expect(replay.headers.etag).toBe('"0"');
+    expect(await storedHeaders('key-0012')).toEqual({ location: first.headers.location });
+    expect(probe.runs).toBe(1);
+  });
+
   it('answers 422 to the same key with another body', async () => {
     await send('/internal/v1/tasks', { title: 'CAD-482' }, 'key-0002');
     const reused: Response = await send('/internal/v1/tasks', { title: 'CAD-999' }, 'key-0002');
@@ -349,7 +478,11 @@ describe('IdempotencyInterceptor', () => {
     const replay: Response = await send('/internal/v1/slow-tasks', {}, 'key-0003');
 
     expect(concurrent.status).toBe(409);
-    expect(concurrent.body).toMatchObject({ status: 409, code: 'idempotency.in-progress' });
+    expect(concurrent.body).toMatchObject({
+      status: 409,
+      code: 'idempotency.request-in-progress',
+      detail: 'A request with this Idempotency-Key is still running.',
+    });
     expect(finished.status).toBe(201);
     expect(replay.status).toBe(201);
     expect(replay.headers['idempotent-replayed']).toBe('true');
@@ -457,11 +590,28 @@ describe('IdempotencyInterceptor', () => {
     await send('/internal/v1/tasks', { title: 'CAD-482' }, undefined);
     await send('/internal/v1/tasks', { title: 'CAD-482' }, undefined);
     const missing: Response = await send('/internal/v1/slow-tasks', {}, undefined);
-    const malformed: Response = await send('/internal/v1/tasks', { title: 'x' }, 'a'.repeat(256));
+    const tooLong: Response = await send('/internal/v1/tasks', { title: 'x' }, 'a'.repeat(256));
+    const withSpace: Response = await send('/internal/v1/tasks', { title: 'x' }, 'key 0008');
 
     expect(await count('tasks')).toBe(2);
     expect(await count('idempotency_keys')).toBe(0);
     expect(missing.body).toMatchObject({ status: 400, code: 'idempotency.key-required' });
-    expect(malformed.body).toMatchObject({ status: 400, code: 'idempotency.key-invalid' });
+    for (const malformed of [tooLong, withSpace]) {
+      expect(malformed.status).toBe(400);
+      expect(malformed.body).toMatchObject({
+        code: 'request.invalid',
+        details: {
+          issues: [
+            {
+              in: 'header',
+              path: 'Idempotency-Key',
+              code: 'invalid_format',
+              message: 'Expected 1 to 255 printable ASCII characters.',
+            },
+          ],
+        },
+      });
+    }
+    expect(JSON.stringify(withSpace.body)).not.toContain('key 0008');
   });
 });
