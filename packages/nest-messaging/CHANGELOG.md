@@ -1,5 +1,14 @@
 # @cadenway/nest-messaging
 
+## 0.3.2
+
+### Patch Changes
+
+- b4d31ba: Keep legacy outbox publication outside ambient transactions and on one database attempt. The
+  relay still retries failed settlements and JetStream still redelivers failed consumer transactions.
+- Updated dependencies [b4d31ba]
+  - @cadenway/nest-common@0.8.0
+
 ## 0.3.1
 
 ### Patch Changes
