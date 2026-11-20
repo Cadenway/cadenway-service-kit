@@ -1,5 +1,11 @@
 # @cadenway/nest-common
 
+## 0.8.1
+
+### Patch Changes
+
+- 68a9004: Preserve the numeric transaction retry limit when spreading `databaseConfigShape` into a Zod schema. Manually supplied `DatabaseConfig` values can still omit the setting.
+
 ## 0.8.0
 
 ### Minor Changes
