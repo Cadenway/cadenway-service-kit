@@ -19,6 +19,18 @@ export interface JobEnqueueOptions {
    * @readonly
    */
   readonly occurrenceKey?: string;
+
+  /**
+   * Property startAfter
+   *
+   * @description
+   * Earliest instant at which a worker may take the job. The queue's waiting retention starts
+   * at this instant. Defaults to the transaction's current time.
+   *
+   * @type {Date}
+   * @readonly
+   */
+  readonly startAfter?: Date;
   // #endregion
 }
 

@@ -18,8 +18,9 @@ import { toJobEnvelope, type JobEnvelope } from '../../jobs/execution/job-envelo
  * @param {JobsTransaction} tx - Caller transaction and its organization.
  * @param {string} queue - Validated queue name.
  * @param {unknown} payload - Job payload.
- * @param {JobEnqueueOptions} options - Optional occurrence key.
+ * @param {JobEnqueueOptions} options - Optional occurrence key and earliest start.
  * @returns {Promise<JobEnqueueResult>} Job id and whether the occurrence already existed.
+ * @throws {TypeError} When a supplied start date is invalid.
  */
 export async function enqueueJob(
   boss: Pick<PgBoss, 'send'>,
@@ -33,12 +34,20 @@ export async function enqueueJob(
   if (occurrenceKey !== undefined) {
     assertOccurrenceKey(occurrenceKey);
   }
+  const startAfter: unknown = options.startAfter;
+  if (
+    startAfter !== undefined &&
+    (!(startAfter instanceof Date) || !Number.isFinite(startAfter.getTime()))
+  ) {
+    throw new TypeError('startAfter must be a valid Date.');
+  }
   const id: string | undefined =
     occurrenceKey === undefined
       ? undefined
       : deriveOccurrenceJobId(queue, envelope.organizationId, occurrenceKey);
   const created: string | null = await boss.send(queue, envelope, {
     ...(id === undefined ? {} : { id }),
+    ...(startAfter === undefined ? {} : { startAfter }),
     db: {
       executeSql: (text: string, values?: unknown[]): Promise<JobsQueryResult> =>
         tx.client.query(text, values),

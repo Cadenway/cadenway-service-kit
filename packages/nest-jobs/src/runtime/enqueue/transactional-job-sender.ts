@@ -81,7 +81,7 @@ export class TransactionalJobSender {
    * @param {JobsTransaction} tx - Open transaction used for metadata queries and the job insert.
    * @param {string} queue - Declared queue that receives the job.
    * @param {unknown} payload - JSON-serializable job data.
-   * @param {JobEnqueueOptions} options - Optional occurrence key for deduplication.
+   * @param {JobEnqueueOptions} options - Optional occurrence key and earliest start.
    * @returns {Promise<JobEnqueueResult>} Job identifier and whether another enqueue already recorded the occurrence.
    */
   public async enqueue(

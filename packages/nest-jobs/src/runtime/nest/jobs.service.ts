@@ -113,9 +113,9 @@ export class JobsService implements OnModuleInit, BeforeApplicationShutdown {
    * @param {JobsTransaction} tx - Open transaction of the use case and its organization.
    * @param {string} queue - Declared queue to enqueue in.
    * @param {unknown} payload - JSON-serializable payload given back to the handler.
-   * @param {JobEnqueueOptions} [options] - Occurrence key, if any.
+   * @param {JobEnqueueOptions} [options] - Occurrence key and earliest start, if supplied.
    * @returns {Promise<JobEnqueueResult>} The job id and whether the occurrence already existed.
-   * @throws {Error} When the runtime is not started, the queue is not declared or the key is empty.
+   * @throws {Error} When the runtime is unavailable or the queue, key or start date is invalid.
    */
   public async enqueue(
     tx: JobsTransaction,
