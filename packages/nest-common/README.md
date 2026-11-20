@@ -334,6 +334,14 @@ exported, as with the loader; without either, only the HTTP span is.
 | Second call      | Returns the handle of the first                                                                                                                     |
 | Shutdown         | `shutdownTelemetry()`, from either entry point, flushes and stops; it resolves at once when telemetry was never started                             |
 
+Use `sensitiveHttpPathPrefixes` for routes with credentials or other private values in the
+URL path. Each entry is a literal absolute path of static segments, ending in a slash. For
+example, `['/public/share/']` protects the remainder of each matching path, including its query.
+Matching is case-insensitive and applies to Node HTTP and Express server spans and to Node HTTP
+and fetch client spans, including requests that reach a fallback or a response error. Matched route
+templates and trace propagation are preserved. If omitted or empty, the attributes exported
+by OpenTelemetry keep their existing defaults.
+
 `RouteNameInterceptor` (main entry point) names the server span `<METHOD> <route>` and sets
 `http.route`, which the HTTP instrumentation also copies onto the request duration metric.
 `nameHttpSpan(method, route)` does the same from other code.
@@ -755,19 +763,26 @@ called service and give it to the generated client as its fetch implementation.
 const response = await client.fetch('/internal/v1/tasks/CAD-482');
 ```
 
-| Concern         | Behavior                                                                                                                    |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Internal token  | Signed for the called service on every call, from the current organization context, or from `init.claims` outside one       |
-| Deadline        | A call gets the time left to the current request, 2 seconds at most, and tells the called service in `X-Request-Timeout-Ms` |
-| Retry           | One, for an idempotent call, after a connection error or a 503 only, when time is left                                      |
-| Circuit breaker | One per client: opened by 5 consecutive failures, one trial call after 10 seconds                                           |
-| Request id      | The `X-Request-Id` of the current request is forwarded                                                                      |
-| Trace           | `traceparent` is added by the undici instrumentation of `startTelemetry`                                                    |
-| Failures        | Thrown as `ProblemException`; `fetch` only resolves with a response below 400                                               |
+| Concern         | Behavior                                                                                                              |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Internal token  | Signed for the called service on every call, from the current organization context, or from `init.claims` outside one |
+| Deadline        | A call gets the time left to the current request, 2 seconds at most by default, in `X-Request-Timeout-Ms`             |
+| Retry           | One, for an idempotent call, after a connection error or a 503 only, when time is left                                |
+| Circuit breaker | One per client: opened by 5 consecutive failures, one trial call after 10 seconds                                     |
+| Request id      | The `X-Request-Id` of the current request is forwarded                                                                |
+| Trace           | `traceparent` is added by the undici instrumentation of `startTelemetry`                                              |
+| Failures        | Thrown as `ProblemException`; `fetch` only resolves with a response below 400                                         |
 
 `fetch(path, init)` takes a path of the called service, starting with one slash. Anything that
 would resolve to another origin throws, and redirects are refused: the internal token never leaves
 the called service.
+
+Set `init.streamTimeoutMs` when a streaming response needs more time to read the body. It is a
+positive safe integer in milliseconds, capped at 120 000 and shortened by the current request's
+deadline. The client forwards the remaining total budget in `X-Request-Timeout-Ms` and still uses
+`callTimeoutMs` for response headers and error bodies. The caller's cancellation signal and the
+total deadline continue to apply when reading the successful response body. Omitting the option
+keeps the ordinary timeout for headers and body.
 
 A call is idempotent when its method is `GET`, `HEAD`, `PUT`, `DELETE` or `OPTIONS`, when it carries
 an `Idempotency-Key` header, or when `init.idempotent` says so; and only a call without a body or
@@ -791,15 +806,15 @@ caller aborted nor a timeout shortened by the budget of the incoming request: th
 about the called service, and one caller with a tiny budget must not open the circuit for
 everyone.
 
-| Option                   | Default  | Effect                                          |
-| ------------------------ | -------- | ----------------------------------------------- |
-| `service`                | Required | `aud` of the tokens and name in the problems    |
-| `baseUrl`                | Required | Base URL, from the `<SERVICE>_URL` variable     |
-| `signer`                 | Required | `InternalTokenSigner` of this application       |
-| `callTimeoutMs`          | 2000     | Longest time of one call; cannot exceed 2000    |
-| `breakerThreshold`       | 5        | Consecutive failures that open the circuit      |
-| `breakerHalfOpenAfterMs` | 10 000   | Time the circuit stays open before a trial call |
-| `fetch`                  | Native   | Fetch implementation, for tests                 |
+| Option                   | Default  | Effect                                                 |
+| ------------------------ | -------- | ------------------------------------------------------ |
+| `service`                | Required | `aud` of the tokens and name in the problems           |
+| `baseUrl`                | Required | Base URL, from the `<SERVICE>_URL` variable            |
+| `signer`                 | Required | `InternalTokenSigner` of this application              |
+| `callTimeoutMs`          | 2000     | Ordinary call or stream header timeout, capped at 2000 |
+| `breakerThreshold`       | 5        | Consecutive failures that open the circuit             |
+| `breakerHalfOpenAfterMs` | 10 000   | Time the circuit stays open before a trial call        |
+| `fetch`                  | Native   | Fetch implementation, for tests                        |
 
 ### Request deadline
 

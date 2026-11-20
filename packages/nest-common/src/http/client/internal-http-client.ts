@@ -31,11 +31,21 @@ import { UpstreamFailure } from './upstream-failure.js';
  * Constant MAX_CALL_TIMEOUT_MS
  *
  * @description
- * Longest time one call to another service may take, in milliseconds.
+ * Longest ordinary call timeout, in milliseconds. For streams it bounds the response headers.
  *
  * @type {number}
  */
 export const MAX_CALL_TIMEOUT_MS: number = 2000;
+
+/**
+ * Constant MAX_STREAM_TIMEOUT_MS
+ *
+ * @description
+ * Longest total deadline for a call that explicitly requests a streaming response, in milliseconds.
+ *
+ * @type {number}
+ */
+const MAX_STREAM_TIMEOUT_MS: number = 120_000;
 
 /**
  * Interface InternalHttpClientOptions
@@ -83,8 +93,8 @@ export interface InternalHttpClientOptions {
    * Property callTimeoutMs
    *
    * @description
-   * Longest time one call may take, in milliseconds. Defaults to 2000 and cannot exceed it; the
-   * time left to the current request shortens it further.
+   * Longest time one ordinary call or the response headers of a streaming call may take, in
+   * milliseconds. Defaults to 2000 and cannot exceed it; the current request may shorten it.
    *
    * @type {number | undefined}
    * @readonly
@@ -131,8 +141,8 @@ export interface InternalHttpClientOptions {
  * Interface InternalRequestInit
  *
  * @description
- * Options of one call: those of `fetch`, plus who the call is made for and whether it may be
- * sent twice.
+ * Options of one call: those of `fetch`, its internal identity, its retry policy and the optional
+ * total deadline for a streaming response.
  */
 export interface InternalRequestInit extends RequestInit {
   // #region Properties
@@ -160,7 +170,38 @@ export interface InternalRequestInit extends RequestInit {
    * @readonly
    */
   readonly idempotent?: boolean;
+
+  /**
+   * Property streamTimeoutMs
+   *
+   * @description
+   * Opts in to a total deadline through consumption of the response body. The value must be a
+   * positive safe integer in milliseconds; the client caps it at 120 000 and the current request
+   * may shorten it. Response headers still have the ordinary call timeout. Omission keeps the
+   * ordinary call timeout for both headers and body.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly streamTimeoutMs?: number;
   // #endregion
+}
+
+/**
+ * Function streamExpiration
+ *
+ * @description
+ * Opens the deadline shared by all attempts of a streaming call.
+ *
+ * @param {number} timeoutMs - Requested total deadline in milliseconds.
+ * @returns {number} Expiration on the monotonic clock.
+ * @throws {RangeError} When the requested deadline is not a positive safe integer.
+ */
+function streamExpiration(timeoutMs: number): number {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('streamTimeoutMs must be a positive safe integer.');
+  }
+  return performance.now() + Math.min(timeoutMs, MAX_STREAM_TIMEOUT_MS);
 }
 
 /**
@@ -244,7 +285,7 @@ function claimsOf(context: OrganizationContext): InternalTokenClaims {
  * | Concern         | Behavior                                                                                   |
  * | --------------- | ------------------------------------------------------------------------------------------ |
  * | Internal token  | Signed for the called service and sent on every call, for the current organization context |
- * | Deadline        | A call gets the time left to the current request, 2 seconds at most, and tells the called service in `X-Request-Timeout-Ms` |
+ * | Deadline        | The request budget caps each call and is forwarded in `X-Request-Timeout-Ms`; ordinary calls get 2 seconds at most, streaming calls can opt in to a longer body deadline |
  * | Retry           | One, for an idempotent call, after a connection error or a 503 only, when time is left     |
  * | Circuit breaker | One per client, opened by 5 consecutive failures, tried again after 10 seconds             |
  * | Request id      | The `X-Request-Id` of the current request is forwarded                                     |
@@ -281,7 +322,7 @@ export class InternalHttpClient {
    * Property callTimeoutMs
    *
    * @description
-   * Longest time one call may take, in milliseconds.
+   * Longest time one ordinary call or the response headers of a streaming call may take.
    *
    * @type {number}
    * @readonly
@@ -338,12 +379,22 @@ export class InternalHttpClient {
    * `(path, init) => client.fetch(path, init)`.
    *
    * @param {string} path - Path of the route, relative to the base URL, such as `/internal/v1/tasks/CAD-482`.
-   * @param {InternalRequestInit} init - Options of `fetch`, plus `claims` and `idempotent`.
+   * @param {InternalRequestInit} init - Options of `fetch` with the internal call settings.
    * @returns {Promise<Response>} The response, whose status is below 400.
-   * @throws {ProblemException} For every failure, as listed on the class.
+   * @throws {ProblemException} For failures reported before returning the response.
    * @throws {Error} When there is neither `claims` nor an organization context: a programming error.
+   * @throws {RangeError} When `streamTimeoutMs` is present and invalid.
    */
   public async fetch(path: string, init: InternalRequestInit = {}): Promise<Response> {
+    const { streamTimeoutMs, ...requestInit } = init;
+    const streamExpiresAt: number | undefined =
+      streamTimeoutMs === undefined ? undefined : streamExpiration(streamTimeoutMs);
+    const remainingAttemptMs = (): number => {
+      const limit: number =
+        streamExpiresAt === undefined ? this.callTimeoutMs : streamExpiresAt - performance.now();
+      return Math.floor(Math.min(limit, remainingBudgetMs() ?? limit));
+    };
+
     const context: OrganizationContext | undefined = getOrganizationContext();
     const claims: InternalTokenClaims | undefined =
       init.claims ?? (context === undefined ? undefined : claimsOf(context));
@@ -368,9 +419,7 @@ export class InternalHttpClient {
     }
     let failure: UpstreamFailure | undefined;
     for (let attempt: number = 1; attempt <= 2; attempt += 1) {
-      const timeoutMs: number = Math.floor(
-        Math.min(this.callTimeoutMs, remainingBudgetMs() ?? this.callTimeoutMs),
-      );
+      let timeoutMs: number = remainingAttemptMs();
       if (timeoutMs <= 0) {
         throw this.unavailable(failure === undefined ? 'deadline-exceeded' : failure.kind, failure);
       }
@@ -378,11 +427,20 @@ export class InternalHttpClient {
         'Authorization',
         `Bearer ${await this.options.signer.sign(this.options.service, claims)}`,
       );
+      if (streamExpiresAt !== undefined) {
+        timeoutMs = remainingAttemptMs();
+        if (timeoutMs <= 0) {
+          throw this.unavailable(
+            failure === undefined ? 'deadline-exceeded' : failure.kind,
+            failure,
+          );
+        }
+      }
       headers.set(REQUEST_TIMEOUT_HEADER, String(timeoutMs));
       let result: AttemptResponse;
       try {
         result = await this.breaker.execute(() =>
-          this.attempt(url, { ...init, method, headers }, timeoutMs),
+          this.attempt(url, { ...requestInit, method, headers }, timeoutMs),
         );
       } catch (error) {
         if (error instanceof BrokenCircuitError) {
@@ -434,8 +492,9 @@ export class InternalHttpClient {
    * Method attempt
    *
    * @description
-   * Sends the call once. A connection error, a timeout and a server error reject, so the circuit
-   * breaker counts them; a client error resolves.
+   * Sends the call once. A disarmable header deadline enforces the ordinary timeout when the
+   * attempt has a larger total budget. The native timeout and caller cancellation still bound
+   * the body after the fetch resolves.
    *
    * @param {URL} url - Address of the route, already checked against the base URL.
    * @param {RequestInit} init - Options of `fetch`, with the final headers.
@@ -446,8 +505,23 @@ export class InternalHttpClient {
   private async attempt(url: URL, init: RequestInit, timeoutMs: number): Promise<AttemptResponse> {
     const timeout: AbortSignal = AbortSignal.timeout(timeoutMs);
     const caller: AbortSignal | null | undefined = init.signal;
-    const signal: AbortSignal =
-      caller === undefined || caller === null ? timeout : AbortSignal.any([caller, timeout]);
+    const headerDeadline: AbortController | undefined =
+      timeoutMs > this.callTimeoutMs ? new AbortController() : undefined;
+    const signals: AbortSignal[] = [timeout];
+    if (caller !== undefined && caller !== null) {
+      signals.push(caller);
+    }
+    if (headerDeadline !== undefined) {
+      signals.push(headerDeadline.signal);
+    }
+    const signal: AbortSignal = signals.length === 1 ? timeout : AbortSignal.any(signals);
+    const headerExpiresAt: number = performance.now() + this.callTimeoutMs;
+    const headerTimer: NodeJS.Timeout | undefined =
+      headerDeadline === undefined
+        ? undefined
+        : setTimeout(() => {
+            headerDeadline.abort(new DOMException('Response headers timed out.', 'TimeoutError'));
+          }, this.callTimeoutMs).unref();
     let response: Response;
     try {
       response = await this.fetchImplementation(url, {
@@ -460,15 +534,21 @@ export class InternalHttpClient {
       if (caller?.aborted === true) {
         throw caller.reason;
       }
-      if (timeout.aborted) {
+      if (timeout.aborted || headerDeadline?.signal.aborted === true) {
         throw new UpstreamFailure('timeout', timeoutMs >= this.callTimeoutMs, error);
       }
       throw new UpstreamFailure('unreachable', true, error);
+    } finally {
+      clearTimeout(headerTimer);
     }
     if (response.status >= 500) {
       // Classify the response even if the transport cannot release its body promptly.
       void response.body?.cancel().catch(() => undefined);
       throw new UpstreamFailure(response.status === 503 ? 'unavailable' : 'failed', true);
+    }
+    if (headerDeadline !== undefined && response.status >= 400) {
+      const errorBudgetMs: number = Math.max(0, Math.floor(headerExpiresAt - performance.now()));
+      return [response, AbortSignal.any([signal, AbortSignal.timeout(errorBudgetMs)])];
     }
     return [response, signal];
   }
