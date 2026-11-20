@@ -43,9 +43,12 @@ const addedMembers = {
   '@cadenway/nest-messaging#EventSubscription': ['redelivery', 'transactionIsolationLevel'],
 };
 
-// The standalone consumer below checks the two reviewed additive class methods directly.
+// The standalone consumer below checks the reviewed additive class methods directly.
 const addedClassMethods = {
-  '@cadenway/nest-messaging#MessagingConnection': ['watchAvailability'],
+  '@cadenway/nest-messaging#MessagingConnection': [
+    'isConsumerAdvisoryStreamClear',
+    'watchAvailability',
+  ],
   '@cadenway/nest-messaging#EventConsumers': ['areCaughtUp'],
 };
 
@@ -95,7 +98,13 @@ const stopWatching: () => void = messagingConnection.watchAvailability((availabl
 });
 const caughtUp: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test'], AbortSignal.timeout(1000));
 const caughtUpWithoutSignal: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test']);
-void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal];
+const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisoryStreamClear(
+  'TEST_ADVISORIES',
+  'EVENTS',
+  ['test__relay'],
+  AbortSignal.timeout(1000),
+);
+void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, advisoryClear];
 `,
   );
   const released = Object.fromEntries(
