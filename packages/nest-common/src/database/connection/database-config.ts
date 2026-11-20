@@ -39,12 +39,13 @@ export interface DatabaseConfig {
  * Constant databaseConfigShape
  *
  * @description
- * Zod shape of the PostgreSQL URL and the defaulted total transaction attempt limit. Spread it
- * into the application schema.
+ * Zod shape of the PostgreSQL URL and the defaulted total transaction attempt limit. Both
+ * validators are always present, so spreading this shape into a Zod object preserves the parsed
+ * retry limit as a number.
  *
- * @type {ConfigShape<DatabaseConfig>}
+ * @type {ConfigShape<Required<DatabaseConfig>>}
  */
-export const databaseConfigShape: ConfigShape<DatabaseConfig> = {
+export const databaseConfigShape: ConfigShape<Required<DatabaseConfig>> = {
   DATABASE_TRANSACTION_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
   DATABASE_URL: z.url({ protocol: /^postgres(?:ql)?$/u }),
 };

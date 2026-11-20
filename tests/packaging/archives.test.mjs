@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
@@ -55,6 +56,22 @@ test('packed Service Kit preserves the released public API and supports isolated
     minimalEntries,
   );
   install(full, { ...fullPeers, ...dependencies(archives) }, entryPoints);
+  appendFileSync(
+    join(full, 'consumer.mts'),
+    `
+import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
+import { z } from 'zod';
+
+const schema = z.object({ ...databaseConfigShape, SERVICE_NAME: z.string() });
+const parsed = schema.parse({
+  DATABASE_URL: 'postgres://localhost/task',
+  SERVICE_NAME: 'packaging-test',
+});
+const config: DatabaseConfig = parsed;
+const attempts: number = parsed.DATABASE_TRANSACTION_MAX_ATTEMPTS;
+void [config, attempts];
+`,
+  );
   const released = Object.fromEntries(
     Object.entries(baseline).map(([name, version]) => [
       name,
@@ -80,8 +97,20 @@ test('packed Service Kit preserves the released public API and supports isolated
   for (const [entry, signatures] of readPublicApi(reference, entryPoints)) {
     for (const [name, declarations] of signatures) {
       const candidate = candidateApi.get(entry)?.get(name);
-      if (!isDeepStrictEqual(candidate, declarations)) {
-        differences.push({ export: `${entry}#${name}`, released: declarations, candidate });
+      const exportName = `${entry}#${name}`;
+      // The installed consumer above verifies that the shape still composes with Zod and keeps
+      // every parsed key present. A hand-built DatabaseConfig can still omit the retry setting.
+      const expected =
+        exportName === '@cadenway/nest-common/database#databaseConfigShape'
+          ? declarations.map((declaration) =>
+              declaration.replace(
+                'ConfigShape<DatabaseConfig>',
+                'ConfigShape<Required<DatabaseConfig>>',
+              ),
+            )
+          : declarations;
+      if (!isDeepStrictEqual(candidate, expected)) {
+        differences.push({ export: exportName, expected, candidate });
       }
     }
   }
