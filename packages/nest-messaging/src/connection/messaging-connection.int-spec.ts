@@ -1,7 +1,15 @@
-import { jetstreamManager, type JetStreamManager, type StreamInfo } from '@nats-io/jetstream';
+import {
+  DiscardPolicy,
+  RetentionPolicy,
+  StorageType,
+  jetstream,
+  jetstreamManager,
+  type JetStreamManager,
+  type StreamInfo,
+} from '@nats-io/jetstream';
 import { RequestError, type NatsConnection } from '@nats-io/transport-node';
 import type { TestingModule } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { z } from 'zod';
 
@@ -13,7 +21,7 @@ import { RebuildEmitter } from '../rebuild/emitter/rebuild-emitter.js';
 import { isolatedNames, messagingOptions, startApplication } from '../testing/application.js';
 import { eventSchemas, taskUpdated, type TaskUpdatedV1 } from '../testing/events.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
-import { waitFor } from '../testing/wait.js';
+import { deferred, waitFor } from '../testing/wait.js';
 import { MessagingConnection, messagingHealthIndicator } from './messaging-connection.js';
 
 /**
@@ -298,4 +306,200 @@ describe('messaging connection on a real NATS server', () => {
     expect(rejected).toEqual(availability);
     expect(removed).toEqual([true]);
   }, 120_000);
+
+  it('keeps the advisory guard closed for native terminal advisories until an operator clears it', async () => {
+    const suffix = 'advisory';
+    const names = isolatedNames(suffix);
+    const eventStream = `EVENTS_${suffix}`;
+    const stream = 'TERMINAL_ADVISORIES';
+    const durable = 'task-service__fail-test';
+    const maxDeliveries = `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.${eventStream}.${durable}`;
+    const terminated = `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.${eventStream}.${durable}`;
+    const first: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, names)),
+    ]);
+    const second: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, { ...names, manageStreams: false })),
+    ]);
+    const firstConnection = first.get(MessagingConnection);
+    const secondConnection = second.get(MessagingConnection);
+    try {
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+      await manager.streams.add({
+        name: stream,
+        subjects: [terminated, maxDeliveries],
+        storage: StorageType.File,
+        retention: RetentionPolicy.Limits,
+        discard: DiscardPolicy.Old,
+        max_msgs: 1,
+        max_age: 0,
+        max_bytes: -1,
+        max_msg_size: -1,
+        max_msgs_per_subject: -1,
+      });
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(true);
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [
+          'task-service__different',
+        ]),
+      ).resolves.toBe(false);
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(
+          stream,
+          eventStream,
+          [durable],
+          AbortSignal.abort(),
+        ),
+      ).resolves.toBe(false);
+
+      await first.get(EventConsumers).subscribe({
+        handler: 'fail-test',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        redelivery: { maxDeliveries: 1, delaysMs: [] },
+        handle: (): Promise<void> => Promise.reject(new Error('Test failure.')),
+      });
+      await first.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await waitFor(
+        async (): Promise<boolean> => (await manager.streams.info(stream)).state.messages === 1,
+      );
+      const beforeRestart = await manager.streams.getMessage(stream, {
+        last_by_subj: maxDeliveries,
+      });
+      expect(beforeRestart?.subject).toBe(maxDeliveries);
+      await expect(
+        secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+
+      await nats.restart();
+      await waitFor(async (): Promise<boolean> => {
+        try {
+          return (await manager.streams.info(stream)).state.messages === 1;
+        } catch {
+          return false;
+        }
+      });
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+      await expect(
+        secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+
+      await jetstream(client).publish(`evt-${suffix}.task.updated.v1`, '{');
+      await waitFor(async (): Promise<boolean> => {
+        try {
+          return (
+            (await manager.streams.getMessage(stream, { last_by_subj: terminated }))?.subject ===
+            terminated
+          );
+        } catch {
+          return false;
+        }
+      });
+      const retained = await manager.streams.info(stream);
+      expect(retained.state.messages).toBe(1);
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+
+      expect(await manager.streams.deleteMessage(stream, retained.state.last_seq)).toBe(true);
+      await waitFor(() =>
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      );
+      await waitFor(() =>
+        secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      );
+      await manager.streams.update(stream, { max_bytes: 1024 });
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+      await manager.streams.update(stream, { max_bytes: -1, deny_delete: true });
+      expect((await manager.streams.info(stream)).config).toMatchObject({
+        max_bytes: -1,
+        deny_delete: true,
+      });
+      await expect(
+        firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
+      ).resolves.toBe(false);
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  }, 60_000);
+
+  it('discards an in-flight empty advisory snapshot after cancellation or a new availability epoch', async () => {
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('advisory-cancellation'))),
+    ]);
+    const connection = application.get(MessagingConnection);
+    const stream = 'ADVISORY_CANCELLATION';
+    const durable = 'task-service__check-test';
+    const prefix = '$JS.EVENT.ADVISORY.CONSUMER';
+    const validInfo = await manager.streams.add({
+      name: stream,
+      subjects: [
+        `${prefix}.MAX_DELIVERIES.EVENTS.${durable}`,
+        `${prefix}.MSG_TERMINATED.EVENTS.${durable}`,
+      ],
+      storage: StorageType.File,
+      max_msgs: 1,
+    });
+    const internals = connection as MessagingConnection & {
+      manager(): Promise<JetStreamManager>;
+      reportConsumer(consumer: string, problem: string | null): void;
+    };
+    const info = vi.spyOn((await internals.manager()).streams, 'info');
+    const duringAbort = deferred<StreamInfo>();
+    const duringLoss = deferred<StreamInfo>();
+    try {
+      info.mockReturnValueOnce(duringAbort.promise).mockReturnValueOnce(duringLoss.promise);
+      const cancellation = new AbortController();
+      const aborted = connection.isConsumerAdvisoryStreamClear(
+        stream,
+        'EVENTS',
+        [durable],
+        cancellation.signal,
+      );
+      await waitFor(() => info.mock.calls.length === 1);
+      cancellation.abort();
+      await expect(aborted).resolves.toBe(false);
+      duringAbort.resolve(validInfo);
+
+      const interrupted = connection.isConsumerAdvisoryStreamClear(stream, 'EVENTS', [durable]);
+      await waitFor(() => info.mock.calls.length === 2);
+      internals.reportConsumer(durable, 'Test interruption.');
+      internals.reportConsumer(durable, null);
+      duringLoss.resolve(validInfo);
+      await expect(interrupted).resolves.toBe(false);
+      await expect(
+        connection.isConsumerAdvisoryStreamClear(stream, 'EVENTS', [durable]),
+      ).resolves.toBe(true);
+      expect(info.mock.calls.map(([name]) => name)).toEqual([stream, stream, stream]);
+      info.mockClear();
+      for (const names of [
+        [],
+        [durable, durable],
+        ['*'],
+        Array.from({ length: 33 }, () => durable),
+      ]) {
+        await expect(
+          connection.isConsumerAdvisoryStreamClear(stream, 'EVENTS', names),
+        ).resolves.toBe(false);
+      }
+      await expect(
+        connection.isConsumerAdvisoryStreamClear('ADVISORY.*', 'EVENTS', [durable]),
+      ).resolves.toBe(false);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      duringAbort.resolve(validInfo);
+      duringLoss.resolve(validInfo);
+      info.mockRestore();
+      await application.close();
+    }
+  });
 });

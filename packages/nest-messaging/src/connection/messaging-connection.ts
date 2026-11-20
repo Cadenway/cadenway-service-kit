@@ -1,14 +1,21 @@
+import { addAbortListener } from 'node:events';
+
 import { natsIndicator, type HealthIndicator, type NatsProbe } from '@cadenway/nest-common';
 import {
   jetstream,
   jetstreamManager,
   type JetStreamClient,
   type JetStreamManager,
+  type StreamInfo,
 } from '@nats-io/jetstream';
 import { connect, type NatsConnection } from '@nats-io/transport-node';
 import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 
 import type { ResolvedMessagingOptions } from '../configuration/messaging-options.js';
+import {
+  consumerAdvisorySubjects,
+  isEmptyConsumerAdvisoryStream,
+} from './consumer-advisory-stream.js';
 import { prepareStreams } from './stream-administration.js';
 
 /**
@@ -288,6 +295,85 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     return (): void => {
       this.availabilityListeners.delete(notify);
     };
+  }
+
+  /**
+   * Method isConsumerAdvisoryStreamClear
+   *
+   * @description
+   * Reads one operator-provisioned JetStream stream that retains the latest terminal advisory
+   * for the configured consumers. It requests only stream metadata and never changes broker state.
+   * An unavailable or misconfigured stream cannot establish that no advisory was recorded.
+   *
+   * @param {string} advisoryStream - The exact operational stream name from trusted configuration.
+   * @param {string} eventStream - The event stream of all monitored durables.
+   * @param {readonly string[]} durables - Between one and 32 distinct full JetStream durable names.
+   * @param {AbortSignal | undefined} signal - Cancels waiting for the result.
+   * @returns {Promise<boolean>} Whether the stream has the exact latch configuration and is empty in the current available interval.
+   */
+  public async isConsumerAdvisoryStreamClear(
+    advisoryStream: string,
+    eventStream: string,
+    durables: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const epoch: number | undefined = this.currentAvailabilityEpoch();
+    const subjects: ReadonlySet<string> | undefined = consumerAdvisorySubjects(
+      advisoryStream,
+      eventStream,
+      durables,
+    );
+    if (signal?.aborted === true || epoch === undefined || subjects === undefined) {
+      return false;
+    }
+    return new Promise<boolean>((resolve: (value: boolean) => void) => {
+      const stopWatching: () => void = this.watchAvailability((available: boolean): void => {
+        if (!available) resolve(false);
+      });
+      const abortListener: Disposable | undefined =
+        signal === undefined
+          ? undefined
+          : addAbortListener(signal, () => {
+              resolve(false);
+            });
+      void this.readConsumerAdvisoryStream(advisoryStream, subjects, epoch, signal).then(
+        (clear: boolean): void => {
+          stopWatching();
+          abortListener?.[Symbol.dispose]();
+          resolve(clear && !signal?.aborted && this.currentAvailabilityEpoch() === epoch);
+        },
+      );
+    });
+  }
+
+  /**
+   * Method readConsumerAdvisoryStream
+   *
+   * @description
+   * Uses the management request timeout. The availability epoch fences both sides of the read.
+   *
+   * @param {string} streamName - Name of the stream permitted by the operator.
+   * @param {ReadonlySet<string>} subjects - Expected native advisory subjects.
+   * @param {number} epoch - Available interval in which the check started.
+   * @param {AbortSignal | undefined} signal - Cancellation of the check.
+   * @returns {Promise<boolean>} Whether the broker returned a matching empty stream.
+   */
+  private async readConsumerAdvisoryStream(
+    streamName: string,
+    subjects: ReadonlySet<string>,
+    epoch: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    try {
+      const manager: JetStreamManager = await this.manager();
+      if (signal?.aborted === true || this.currentAvailabilityEpoch() !== epoch) {
+        return false;
+      }
+      const info: StreamInfo = await manager.streams.info(streamName);
+      return isEmptyConsumerAdvisoryStream(info, streamName, subjects);
+    } catch {
+      return false;
+    }
   }
 
   /**

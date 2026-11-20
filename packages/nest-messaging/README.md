@@ -372,6 +372,33 @@ the configured JetStream timeout. Catch-up only samples current broker state and
 when a new message arrives. It does not confirm the effects of expired, terminated or
 dead-lettered messages.
 
+### Terminal consumer advisory guard
+
+`MessagingConnection.isConsumerAdvisoryStreamClear(advisoryStream, eventStream, durables, signal?)`
+checks a persistent operational stream provisioned by the broker operator. Pass trusted
+configuration for a single event stream and one to 32 distinct **full** durable names
+(`<service>__<handler>`). Names must contain only letters, digits, underscores or hyphens and
+may have at most 128 characters. The probe reads only metadata through the exact
+`$JS.API.STREAM.INFO.<advisoryStream>` permission. It does not read the advisory bodies or
+create, consume or purge the stream.
+
+The stream must capture both native `MAX_DELIVERIES` and `MSG_TERMINATED` subjects for each
+configured durable, using the exact stream and durable tokens with no wildcards. It uses file
+storage, limits retention and discard-old with one retained message, no age limit and no byte,
+per-message size or per-subject limit. Disable per-message TTL, rollups and scheduled messages.
+The stream must accept new advisories directly without mirrors, sources, subject transforms or
+republishing. Keep `deny_delete` disabled so an operator can rearm the guard. After reconciling
+the failure, the operator deletes only the inspected advisory's stream sequence. A newer advisory
+that replaced it during reconciliation keeps the guard closed. Provision the stream before the
+protected consumers start.
+
+The probe returns `false` when there is an advisory, the stream is missing or its configuration
+does not match, or the check is invalid, interrupted or unsuccessful. Cancellation stops waiting.
+Issued requests remain subject to the JetStream timeout. Pair this probe with the availability
+watch and catch-up check, and refresh the probe while serving traffic. This is a snapshot of
+advisories already stored. The probe cannot detect an event evicted before JetStream emits an
+advisory or a failure that happened before the operational stream was provisioned.
+
 ### Redelivery schedule
 
 A handler whose effects must not be given up after a few minutes, such as a security projection
@@ -704,6 +731,7 @@ the application; the JetStream API prefix is the default `$JS.API`. Every reques
 | Feature                                    | Publishes to                                                                                                                                                                 | Subscribes to                                                                                                          |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Start-up check (`manageStreams` off)       | `$JS.API.STREAM.INFO.EVENTS`; `.EVENTS_RESTRICTED` with restricted events or the worker; `.EVENTS_DLQ` with the worker                                                       | `_INBOX.<user>.>`                                                                                                      |
+| Terminal consumer advisory guard           | `$JS.API.STREAM.INFO.<advisoryStream>`                                                                                                                                       | `_INBOX.<user>.>`                                                                                                      |
 | Stream management (`manageStreams`, admin) | `$JS.API.STREAM.INFO.<stream>`, `$JS.API.STREAM.CREATE.<stream>`, `$JS.API.STREAM.UPDATE.<stream>` for the three streams                                                     | `_INBOX.<user>.>`                                                                                                      |
 | Publish an event                           | `evt.<event>`, or `restricted.<event>` for a restricted one (a JetStream publish, acknowledged on the inbox)                                                                 | `_INBOX.<user>.>`                                                                                                      |
 | Create or update a consumer                | `$JS.API.CONSUMER.INFO.<stream>.<service>__<handler>`, `$JS.API.CONSUMER.CREATE.<stream>.<service>__<handler>.<filter subject>`                                              | `_INBOX.<user>.>`                                                                                                      |
