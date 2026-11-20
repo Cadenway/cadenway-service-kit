@@ -1,6 +1,6 @@
 {
   "name": "@cadenway/nest-messaging",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Messaging plumbing for the Cadenway NestJS services and gateways: NATS JetStream connection, outbox publication, subscriptions with retries and dead letters, deduplication.",
   "license": "UNLICENSED",
   "repository": {
