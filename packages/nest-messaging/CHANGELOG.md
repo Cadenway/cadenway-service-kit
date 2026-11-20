@@ -1,5 +1,11 @@
 # @cadenway/nest-messaging
 
+## 0.6.0
+
+### Minor Changes
+
+- fa682e9: Add a bounded readiness probe for an empty, persistent JetStream consumer advisory stream.
+
 ## 0.5.0
 
 ### Minor Changes
