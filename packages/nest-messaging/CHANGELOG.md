@@ -1,5 +1,11 @@
 # @cadenway/nest-messaging
 
+## 0.5.0
+
+### Minor Changes
+
+- 75810b4: Expose delivery availability changes and bounded catch-up checks for registered durable event handlers.
+
 ## 0.4.0
 
 ### Minor Changes
