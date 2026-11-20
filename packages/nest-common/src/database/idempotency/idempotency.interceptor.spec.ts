@@ -1,3 +1,5 @@
+import type { OutgoingHttpHeader, OutgoingHttpHeaders } from 'node:http';
+
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
 import { defer, lastValueFrom, of, type Observable } from 'rxjs';
@@ -6,7 +8,11 @@ import { describe, expect, it } from 'vitest';
 import { ProblemException, type Problem } from '../../problem/problem.js';
 import type { SystemTransactionRunner } from '../transactions/system-transaction-runner.js';
 import type { TenantTransactionRunner } from '../transactions/tenant-transaction-runner.js';
-import type { DatabaseSchema, TransactionScope } from '../transactions/transaction-contracts.js';
+import type {
+  DatabaseSchema,
+  TransactionOptions,
+  TransactionScope,
+} from '../transactions/transaction-contracts.js';
 import { IdempotencyInterceptor, type IdempotentOptions } from './idempotency.interceptor.js';
 
 /**
@@ -47,6 +53,16 @@ interface FakeTable {
    * @type {number}
    */
   transactions: number;
+
+  /**
+   * Property transactionOptions
+   *
+   * @description
+   * Options received by the outer transaction runner.
+   *
+   * @type {TransactionOptions | undefined}
+   */
+  transactionOptions?: TransactionOptions;
   // #endregion
 }
 
@@ -58,6 +74,17 @@ interface FakeTable {
  */
 class FakeResponse {
   // #region Properties
+  /**
+   * Property headersSent
+   *
+   * @description
+   * Fake handlers stage headers without writing them to a socket.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  public readonly headersSent: boolean = false;
+
   /**
    * Property statusCode
    *
@@ -74,10 +101,10 @@ class FakeResponse {
    * @description
    * Headers set so far, keyed by their lower-case name.
    *
-   * @type {Map<string, string>}
+   * @type {Map<string, OutgoingHttpHeader>}
    * @readonly
    */
-  public readonly headers: Map<string, string> = new Map<string, string>();
+  public readonly headers: Map<string, OutgoingHttpHeader> = new Map<string, OutgoingHttpHeader>();
   // #endregion
 
   // #region Methods
@@ -88,10 +115,46 @@ class FakeResponse {
    * Reads a header set so far.
    *
    * @param {string} name - Header name, in any case.
-   * @returns {string | undefined} Its value, or `undefined`.
+   * @returns {OutgoingHttpHeader | undefined} Its value, or `undefined`.
    */
-  public getHeader(name: string): string | undefined {
+  public getHeader(name: string): OutgoingHttpHeader | undefined {
     return this.headers.get(name.toLowerCase());
+  }
+
+  /**
+   * Method getHeaders
+   *
+   * @description
+   * Reads a shallow copy of the staged headers, as the HTTP response does.
+   *
+   * @returns {OutgoingHttpHeaders} The staged headers.
+   */
+  public getHeaders(): OutgoingHttpHeaders {
+    return Object.fromEntries(this.headers);
+  }
+
+  /**
+   * Method getHeaderNames
+   *
+   * @description
+   * Lists the names of the staged headers.
+   *
+   * @returns {string[]} The lower-cased names.
+   */
+  public getHeaderNames(): string[] {
+    return [...this.headers.keys()];
+  }
+
+  /**
+   * Method removeHeader
+   *
+   * @description
+   * Discards a staged header.
+   *
+   * @param {string} name - Header name, in any case.
+   */
+  public removeHeader(name: string): void {
+    this.headers.delete(name.toLowerCase());
   }
 
   /**
@@ -101,10 +164,10 @@ class FakeResponse {
    * Sets a header.
    *
    * @param {string} name - Header name, in any case.
-   * @param {string} value - Header value.
+   * @param {OutgoingHttpHeader} value - Header value.
    * @returns {void}
    */
-  public setHeader(name: string, value: string): void {
+  public setHeader(name: string, value: OutgoingHttpHeader): void {
     this.headers.set(name.toLowerCase(), value);
   }
   // #endregion
@@ -154,15 +217,32 @@ function scopeOf(table: FakeTable): TransactionScope<DatabaseSchema> {
  *
  * @param {FakeTable} table - State shared by the requests of a spec.
  * @param {IdempotentOptions} options - Declaration of the route.
+ * @param {number} attempts - Total attempts, simulating rollbacks before the final commit.
+ * @param {Error | undefined} finalError - Simulated error when committing the final attempt.
  * @returns {IdempotencyInterceptor} The interceptor.
  */
-function interceptorOf(table: FakeTable, options: IdempotentOptions = {}): IdempotencyInterceptor {
+function interceptorOf(
+  table: FakeTable,
+  options: IdempotentOptions = {},
+  attempts: number = 1,
+  finalError?: Error,
+): IdempotencyInterceptor {
   const runner: object = {
-    run: (
+    run: async (
       work: (scope: TransactionScope<DatabaseSchema>) => Promise<unknown>,
+      transactionOptions: TransactionOptions,
     ): Promise<unknown> => {
+      table.transactionOptions = transactionOptions;
+      for (let attempt: number = 1; attempt < attempts; attempt += 1) {
+        table.transactions += 1;
+        await work(scopeOf(table));
+        table.row = undefined;
+      }
       table.transactions += 1;
-      return work(scopeOf(table));
+      const result: unknown = await work(scopeOf(table));
+      if (finalError === undefined) return result;
+      table.row = undefined;
+      throw finalError;
     },
   };
   const reflector: object = { get: (): IdempotentOptions => options };
@@ -382,6 +462,75 @@ describe('IdempotencyInterceptor', () => {
       'idempotent-replayed': 'true',
     });
     expect(counter.runs).toBe(1);
+  });
+
+  it('uses route isolation and attempt limits for the outer transaction', async () => {
+    const table: FakeTable = freshTable();
+    await lastValueFrom(
+      interceptorOf(table, { isolationLevel: 'serializable', maxAttempts: 1 }).intercept(
+        contextOf('route-option', new FakeResponse()),
+        { handle: () => of(undefined) },
+      ),
+    );
+
+    expect(table.transactionOptions).toEqual({ isolationLevel: 'serializable', maxAttempts: 1 });
+  });
+
+  it('discards the staged status and headers from an aborted attempt before running the handler again', async () => {
+    const table: FakeTable = freshTable();
+    const response: FakeResponse = new FakeResponse();
+    response.setHeader('Set-Cookie', ['preference=compact']);
+    let runs: number = 0;
+    const body: unknown = await lastValueFrom(
+      interceptorOf(table, {}, 3).intercept(contextOf('retry-headers', response), {
+        handle: () => {
+          runs += 1;
+          if (runs < 3) {
+            response.statusCode = 200;
+            response.setHeader('Location', '/internal/v1/spaces/discarded');
+            response.setHeader('ETag', '"discarded"');
+            const cookies = response.getHeader('Set-Cookie');
+            if (Array.isArray(cookies)) cookies.push('preference=discarded');
+          }
+          return of({ attempt: runs });
+        },
+      }),
+    );
+
+    expect(body).toEqual({ attempt: 3 });
+    expect(response.statusCode).toBe(201);
+    expect(table.row?.responseStatus).toBe(201);
+    expect(table.row?.responseHeaders).toEqual({});
+    expect(response.getHeaders()).toEqual({ 'set-cookie': ['preference=compact'] });
+  });
+
+  it('restores the original status and headers when every attempt rolls back', async () => {
+    const table: FakeTable = freshTable();
+    const response: FakeResponse = new FakeResponse();
+    response.setHeader('X-Request-Id', 'original-request');
+    const failure = new Error('serialization failure after the handler', {
+      cause: { code: '40001' },
+    });
+    let runs: number = 0;
+
+    await expect(
+      lastValueFrom(
+        interceptorOf(table, {}, 3, failure).intercept(contextOf('failed-retries', response), {
+          handle: () => {
+            runs += 1;
+            response.statusCode = 200;
+            response.setHeader('Location', '/internal/v1/spaces/discarded');
+            response.setHeader('ETag', '"discarded"');
+            response.setHeader('Set-Cookie', 'preference=discarded');
+            return of({ attempt: runs });
+          },
+        }),
+      ),
+    ).rejects.toBe(failure);
+    expect(runs).toBe(3);
+    expect(table.row).toBeUndefined();
+    expect(response.statusCode).toBe(201);
+    expect(response.getHeaders()).toEqual({ 'x-request-id': 'original-request' });
   });
 
   it('keeps answering 400 idempotency.key-required when a route requires the key', () => {

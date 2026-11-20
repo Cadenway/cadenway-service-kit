@@ -1,6 +1,7 @@
 import {
   SystemTransactionRunner,
   TenantTransactionRunner,
+  assertNoActiveTransaction,
   type DatabaseSchema,
   type TransactionScope,
 } from '@cadenway/nest-common/database';
@@ -66,18 +67,19 @@ export class PostgresEventDeduplicator implements EventDeduplicator {
    * Method run
    *
    * @description
-   * Runs the handler in a transaction unless this consumer already processed the event. It must
-   * be called inside the organization context of the event, as the consumers do.
+   * Runs the handler in its own transaction unless this consumer already processed the event.
+   * The caller must establish the event's organization context before calling this method.
    *
    * @param {EventDelivery} delivery - Consumer, event name and validated envelope.
    * @param {(claimVersion: VersionClaim) => Promise<void>} handle - Calls the handler with the version claim of this delivery.
    * @returns {Promise<DeduplicationOutcome>} `handled` once the transaction committed, `duplicate` when the handler was skipped.
-   * @throws {Error} When the handler rejects, the processed id stays locked by another delivery past the lock timeout, or the transaction fails; nothing is recorded.
+   * @throws {Error} When the caller holds a transaction, the handler rejects, or the transaction fails.
    */
   public async run(
     delivery: EventDelivery,
     handle: (claimVersion: VersionClaim) => Promise<void>,
   ): Promise<DeduplicationOutcome> {
+    assertNoActiveTransaction();
     const work: (tx: TransactionScope<DatabaseSchema>) => Promise<DeduplicationOutcome> = async (
       tx: TransactionScope<DatabaseSchema>,
     ): Promise<DeduplicationOutcome> => {
@@ -105,9 +107,10 @@ export class PostgresEventDeduplicator implements EventDeduplicator {
       await handle((aggregateKey: string) => this.claimVersion(tx, delivery, aggregateKey));
       return 'handled';
     };
+    // JetStream owns redelivery. A handler can perform an effect outside PostgreSQL.
     return delivery.envelope.organizationId === null
-      ? this.system.run(work)
-      : this.tenant.run(work);
+      ? this.system.run(work, { maxAttempts: 1 })
+      : this.tenant.run(work, { maxAttempts: 1 });
   }
 
   /**

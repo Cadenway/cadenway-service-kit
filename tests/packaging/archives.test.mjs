@@ -22,9 +22,15 @@ const baseline = {
   '@cadenway/nest-jobs': '0.3.0',
 };
 
-// Optional interface properties added by reviewed minors since the baseline. Each export must
-// otherwise match its release; clear an entry when the baseline moves past the release adding it.
+// Optional interface properties and trailing constructor parameters added since the baseline.
+// Each export must otherwise match its release. Clear an entry when the baseline includes it.
 const addedMembers = {
+  '@cadenway/nest-common/database#DatabaseConfig': ['DATABASE_TRANSACTION_MAX_ATTEMPTS'],
+  '@cadenway/nest-common/database#DatabaseModuleOptions': ['transactionMaxAttempts'],
+  '@cadenway/nest-common/database#IdempotentOptions': ['maxAttempts'],
+  '@cadenway/nest-common/database#SystemTransactionRunner': ['maxAttempts'],
+  '@cadenway/nest-common/database#TenantTransactionRunner': ['maxAttempts'],
+  '@cadenway/nest-common/database#TransactionOptions': ['maxAttempts'],
   '@cadenway/nest-messaging#EventSubscription': ['redelivery'],
 };
 

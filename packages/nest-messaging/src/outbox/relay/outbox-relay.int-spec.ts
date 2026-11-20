@@ -487,6 +487,24 @@ describe('outbox relay on real PostgreSQL and NATS', () => {
     expect(written.get(unrestricted.id)?.payload).toMatchObject({ taskId: 'CAD-PLAIN' });
   });
 
+  it('refuses a manual publication pass inside an open transaction', async () => {
+    const application: TestingModule = await startService(
+      database,
+      nats,
+      { ...isolatedNames('intransaction'), service: 'task-service' },
+      { relay: false },
+    );
+    try {
+      const relay: OutboxRelay = application.get(OutboxRelay);
+      const system: SystemTransactionRunner = application.get(SystemTransactionRunner);
+      await expect(system.run(() => relay.publishPending())).rejects.toThrow(
+        'outside an active transaction',
+      );
+    } finally {
+      await application.close();
+    }
+  });
+
   it('never requeues nor publishes again a redacted row, and still requeues an unrestricted one', async () => {
     const application: TestingModule = await startService(
       database,

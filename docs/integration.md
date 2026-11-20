@@ -40,6 +40,12 @@ Source: rule `common.md` ([Claude](../.claude/rules/common.md), [Codex](../.code
 | Tenant | A use case acting for one organization                                                   | `SET LOCAL app.organization_id`, read from the organization context |
 | System | Work that crosses organizations: outbox relay, schedules, events without an organization | `SET LOCAL app.system_access`                                       |
 
+A runner may execute its entire unit of work more than once after a deadlock or serialization
+failure. Keep side effects outside the database out of that work; write the outbox row in the
+same transaction instead. Only a committed attempt persists its row, and publication follows the
+outbox delivery and deduplication protocol below. The default is three total attempts; see the
+[database runner options](../packages/nest-common/README.md#database) for configuration.
+
 Two PostgreSQL roles per service: `<svc>_migrator` runs the migrations, `<svc>_app` runs the service and is subject to the row-level security policies. Nothing else opens a transaction or sets these parameters.
 
 ### Idempotency-Key

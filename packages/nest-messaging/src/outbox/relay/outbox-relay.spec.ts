@@ -107,6 +107,26 @@ describe('OutboxRelay', () => {
     vi.restoreAllMocks();
   });
 
+  it('leaves a failed settlement for the next relay pass after an acknowledged publish', async () => {
+    const failure = Object.assign(new Error('serialization failure'), { code: '40001' });
+    const query = vi
+      .fn<TransactionClient['query']>()
+      .mockResolvedValueOnce({ rows: [pendingRow('first')] })
+      .mockRejectedValueOnce(failure);
+    const system = systemWith(query);
+    const run = vi.spyOn(system, 'run');
+    const publishEnvelope = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const relay = new OutboxRelay(
+      system,
+      { publishEnvelope } as unknown as EventPublisher,
+      resolveOutboxOptions({ relay: false }),
+    );
+
+    await expect(relay.publishPending()).rejects.toBe(failure);
+    expect(publishEnvelope).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledExactlyOnceWith(expect.any(Function), { maxAttempts: 1 });
+  });
+
   it('waits for the current acknowledgement, then settles only the rows processed before expiry', async () => {
     let elapsedMs: number = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => elapsedMs);

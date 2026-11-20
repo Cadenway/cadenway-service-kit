@@ -227,10 +227,11 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
    *
    * @description
    * Publishes and settles up to one batch of due rows within the publication budget. It can be
-   * called while automatic publication is disabled. A transaction failure leaves the rows pending.
+   * called outside a transaction while automatic publication is disabled. A transaction failure
+   * leaves the rows pending.
    *
    * @returns {Promise<RelayPass>} Outcome of this caller’s independent publication pass.
-   * @throws When shutdown has started or the publication transaction fails.
+   * @throws When shutdown has started, a transaction is already active, or publication fails.
    */
   public async publishPending(): Promise<RelayPass> {
     if (this.shuttingDown) {

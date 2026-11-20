@@ -6,7 +6,7 @@ import type { ConfigShape } from '../../config/base-config.js';
  * Interface DatabaseConfig
  *
  * @description
- * Variable of a service with a database, as validated by `databaseConfigShape`.
+ * Database settings of a service. `databaseConfigShape` fills the retry limit when parsing.
  */
 export interface DatabaseConfig {
   // #region Properties
@@ -20,6 +20,18 @@ export interface DatabaseConfig {
    * @readonly
    */
   readonly DATABASE_URL: string;
+
+  /**
+   * Property DATABASE_TRANSACTION_MAX_ATTEMPTS
+   *
+   * @description
+   * Maximum total attempts for an owning transaction. Schema-validated configuration fills
+   * the default of 3. Manually supplied configuration may leave the option unset.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly DATABASE_TRANSACTION_MAX_ATTEMPTS?: number;
   // #endregion
 }
 
@@ -27,11 +39,12 @@ export interface DatabaseConfig {
  * Constant databaseConfigShape
  *
  * @description
- * Zod shape of `DATABASE_URL`, a `postgres://` or `postgresql://` URL. Spread it into the
- * application schema.
+ * Zod shape of the PostgreSQL URL and the defaulted total transaction attempt limit. Spread it
+ * into the application schema.
  *
  * @type {ConfigShape<DatabaseConfig>}
  */
 export const databaseConfigShape: ConfigShape<DatabaseConfig> = {
+  DATABASE_TRANSACTION_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
   DATABASE_URL: z.url({ protocol: /^postgres(?:ql)?$/u }),
 };

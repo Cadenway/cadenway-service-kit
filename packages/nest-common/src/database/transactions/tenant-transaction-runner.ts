@@ -8,6 +8,7 @@ import type {
   TransactionScope,
 } from './transaction-contracts.js';
 import { executeTransaction } from './transaction-executor.js';
+import { retryTransaction } from './transaction-retry.js';
 
 // The policies cast the organization id to uuid in PostgreSQL.
 /**
@@ -37,11 +38,13 @@ export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<str
    *
    * @param {Pool} pool - PostgreSQL pool that owns the checked-out connection.
    * @param {TSchema | undefined} schema - Optional Drizzle schema for the scoped database.
+   * @param {number} maxAttempts - Default maximum total attempts, or 1 to disable retries.
    * @constructor
    */
   public constructor(
     private readonly pool: Pool,
     private readonly schema?: TSchema,
+    private readonly maxAttempts: number = 3,
   ) {}
   // #endregion
 
@@ -77,7 +80,10 @@ export class TenantTransactionRunner<TSchema extends DatabaseSchema = Record<str
       },
     );
     return active === undefined
-      ? executeTransaction(this.pool, this.schema, 'tenant', organizationId, work, options)
+      ? retryTransaction(
+          () => executeTransaction(this.pool, this.schema, 'tenant', organizationId, work, options),
+          options.maxAttempts ?? this.maxAttempts,
+        )
       : work(active);
   }
   // #endregion
