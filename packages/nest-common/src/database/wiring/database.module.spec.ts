@@ -2,7 +2,7 @@ import { Controller, HttpCode, Module, Post } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import pg from 'pg';
 import request, { type Response } from 'supertest';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { createApplication } from '../../bootstrap/application/create-application.js';
@@ -21,9 +21,11 @@ import { DatabaseModule } from './database.module.js';
 describe('database configuration', () => {
   it('accepts existing manual configs and defaults the schema-validated attempt limit', () => {
     const config: DatabaseConfig = { DATABASE_URL: 'postgres://notes_app@127.0.0.1:1/notes' };
-    const schema = z.object(databaseConfigShape);
+    const schema = z.object({ ...databaseConfigShape });
+    const parsed = loadConfig(schema, { DATABASE_URL: config.DATABASE_URL });
 
-    expect(loadConfig(schema, { DATABASE_URL: config.DATABASE_URL })).toEqual({
+    expectTypeOf(parsed.DATABASE_TRANSACTION_MAX_ATTEMPTS).toEqualTypeOf<number>();
+    expect(parsed).toEqual({
       ...config,
       DATABASE_TRANSACTION_MAX_ATTEMPTS: 3,
     });
