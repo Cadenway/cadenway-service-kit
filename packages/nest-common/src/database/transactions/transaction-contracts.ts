@@ -138,5 +138,16 @@ export interface TransactionOptions {
    * @readonly
    */
   readonly readOnly?: boolean;
+
+  /**
+   * Property maxAttempts
+   *
+   * @description
+   * Maximum total attempts for an owning transaction; 1 disables retries. Nested calls use the outer policy.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly maxAttempts?: number;
   // #endregion
 }

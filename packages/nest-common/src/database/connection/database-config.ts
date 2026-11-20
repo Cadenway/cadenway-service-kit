@@ -20,6 +20,17 @@ export interface DatabaseConfig {
    * @readonly
    */
   readonly DATABASE_URL: string;
+
+  /**
+   * Property DATABASE_TRANSACTION_MAX_ATTEMPTS
+   *
+   * @description
+   * Maximum total attempts for an owning transaction, defaulting to 3.
+   *
+   * @type {number}
+   * @readonly
+   */
+  readonly DATABASE_TRANSACTION_MAX_ATTEMPTS: number;
   // #endregion
 }
 
@@ -33,5 +44,6 @@ export interface DatabaseConfig {
  * @type {ConfigShape<DatabaseConfig>}
  */
 export const databaseConfigShape: ConfigShape<DatabaseConfig> = {
+  DATABASE_TRANSACTION_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
   DATABASE_URL: z.url({ protocol: /^postgres(?:ql)?$/u }),
 };

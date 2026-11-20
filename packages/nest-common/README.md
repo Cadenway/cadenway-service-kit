@@ -863,6 +863,20 @@ Its providers are those of `forRoot`, the interceptor included when the resolved
 
 ### Transaction runners
 
+`databaseConfigShape` also validates `DATABASE_TRANSACTION_MAX_ATTEMPTS`, a positive integer
+with default `3`. Pass it to `DatabaseModule` as `transactionMaxAttempts: config.DATABASE_TRANSACTION_MAX_ATTEMPTS`;
+the module option also defaults to 3 when omitted. Set it to 1 to disable retries globally.
+
+An outermost runner retries the whole transaction after PostgreSQL SQLSTATE `40P01` or `40001`,
+up to the configured total attempts. It waits with jitter between attempts and logs `code` and the
+failed `attempt`, without SQL or parameters. The final error is propagated with its cause intact.
+Use `run(work, { maxAttempts: 1 })` to disable retry for one call, or supply another positive
+attempt limit. Nested calls join the outer transaction and use its retry policy.
+
+A unit of work can run more than once. It must not perform side effects outside the database:
+write an outbox row within the transaction instead of publishing directly. A rolled-back attempt
+leaves no committed outbox row; delivery still follows the outbox's delivery guarantees.
+
 Nothing else opens a transaction. A unit of work is one call to `run`:
 
 ```ts

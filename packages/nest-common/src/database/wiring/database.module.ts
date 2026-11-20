@@ -89,6 +89,17 @@ export interface DatabaseModuleOptions<TSchema extends DatabaseSchema = Record<s
    * @readonly
    */
   readonly idempotency?: boolean;
+
+  /**
+   * Property transactionMaxAttempts
+   *
+   * @description
+   * Default maximum total attempts for an owning transaction. Defaults to 3; 1 disables retries.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly transactionMaxAttempts?: number;
   // #endregion
 }
 
@@ -169,7 +180,11 @@ function databaseProviders(): Provider[] {
         pool: pg.Pool,
         options: DatabaseModuleOptions<DatabaseSchema>,
       ): TenantTransactionRunner<DatabaseSchema> =>
-        new TenantTransactionRunner<DatabaseSchema>(pool, options.schema),
+        new TenantTransactionRunner<DatabaseSchema>(
+          pool,
+          options.schema,
+          options.transactionMaxAttempts,
+        ),
       inject: [DATABASE_POOL, DATABASE_OPTIONS],
     },
     {
@@ -178,7 +193,11 @@ function databaseProviders(): Provider[] {
         pool: pg.Pool,
         options: DatabaseModuleOptions<DatabaseSchema>,
       ): SystemTransactionRunner<DatabaseSchema> =>
-        new SystemTransactionRunner<DatabaseSchema>(pool, options.schema),
+        new SystemTransactionRunner<DatabaseSchema>(
+          pool,
+          options.schema,
+          options.transactionMaxAttempts,
+        ),
       inject: [DATABASE_POOL, DATABASE_OPTIONS],
     },
     DatabasePoolLifecycle,

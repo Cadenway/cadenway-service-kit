@@ -110,6 +110,35 @@ describe('PostgreSQL transactions', () => {
     await database.stop();
   });
 
+  it('retries a real deadlock loser and commits both transactions', async () => {
+    let ready: number = 0;
+    let release: () => void = () => undefined;
+    const barrier: Promise<void> = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const attempts: number[] = [0, 0];
+    const run = (index: number, first: string, second: string): Promise<void> =>
+      system.run(async (scope) => {
+        attempts[index] = (attempts[index] ?? 0) + 1;
+        await scope.client.query('update tasks set title = title where title = $1', [first]);
+        if (attempts[index] === 1) {
+          ready += 1;
+          if (ready === 2) release();
+          await barrier;
+        }
+        await scope.client.query('update tasks set title = title where title = $1', [second]);
+        await scope.client.query('insert into tasks (organization_id, title) values ($1, $2)', [
+          ATELIER_NORD,
+          `committed-${String(index)}`,
+        ]);
+      });
+    await Promise.all([run(0, 'CAD-482', 'CAD-483'), run(1, 'CAD-483', 'CAD-482')]);
+    expect(attempts.sort()).toEqual([1, 2]);
+    expect(scopeTitles(await database.admin.query('select title from tasks'))).toEqual(
+      expect.arrayContaining(['committed-0', 'committed-1']),
+    );
+  });
+
   it('runs as a role that neither owns the table nor bypasses row-level security', async () => {
     const role: { rows: unknown[] } = await pool.query(
       `select rolsuper, rolbypassrls, has_database_privilege(current_user, current_database(), 'CREATE') as can_create
