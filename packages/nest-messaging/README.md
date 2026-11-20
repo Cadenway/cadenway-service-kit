@@ -351,6 +351,27 @@ delivery transaction and is retried through the configured JetStream redelivery 
 
 `subscribe` and `onRebuild` reject once the application is shutting down.
 
+### Catch-up before serving traffic
+
+`MessagingConnection.watchAvailability(listener)` calls a synchronous listener with the current
+combined transport and durable health, then with each transition. A detected broker disconnect,
+an unhealthy local durable or shutdown reports `false`. Reconnection or durable recovery can
+restore availability once transport and local consumers are healthy. The returned function removes
+the listener. A listener throwing or returning a rejected promise does not interrupt other watches.
+During application shutdown availability closes before waiting for running handlers. This watch is
+opt-in and leaves normal delivery unchanged.
+
+`EventConsumers.areCaughtUp(handlerNames, signal?)` reads the broker's pending-delivery and
+unacknowledged counts, using the same exact consumer info permissions as subscription registration.
+Pass one to 32 registered local handler names, without service prefixes. The check returns
+`false` if a count is nonzero, a handler is unknown or stopped, availability was interrupted,
+the broker read failed or the optional signal was aborted. Build any startup or reconnect gate
+by closing it on an unavailable transition and performing a fresh, nonoverlapping check in the
+next available interval. Cancellation stops waiting. Requests already sent remain bounded by
+the configured JetStream timeout. Catch-up only samples current broker state and can change
+when a new message arrives. It does not confirm the effects of expired, terminated or
+dead-lettered messages.
+
 ### Redelivery schedule
 
 A handler whose effects must not be given up after a few minutes, such as a security projection

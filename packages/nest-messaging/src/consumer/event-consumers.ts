@@ -118,7 +118,7 @@ export class EventConsumers implements BeforeApplicationShutdown {
    * @constructor
    */
   public constructor(
-    connection: MessagingConnection,
+    private readonly connection: MessagingConnection,
     @Inject(MESSAGING_OPTIONS) private readonly options: ResolvedMessagingOptions,
     @Inject(MESSAGING_TUNING) tuning: MessagingTuning,
     @Optional() @Inject(EVENT_DEDUPLICATOR) private readonly deduplicator?: EventDeduplicator,
@@ -194,6 +194,23 @@ export class EventConsumers implements BeforeApplicationShutdown {
   }
 
   /**
+   * Method areCaughtUp
+   *
+   * @description
+   * Samples the broker for locally running durable handlers. A handler is caught up when both
+   * its pending and its unacknowledged message counts are zero. The result is a point-in-time
+   * observation: new events can arrive immediately after it. Use it with the connection's
+   * availability watch and run a fresh check after any interrupted availability interval.
+   *
+   * @param {readonly string[]} handlerNames - Between one and 32 registered handler names, without the service prefix.
+   * @param {AbortSignal | undefined} signal - Optional cancellation for the check.
+   * @returns {Promise<boolean>} False for backlog, invalid names, unavailable delivery, cancellation or an unsuccessful broker read.
+   */
+  public areCaughtUp(handlerNames: readonly string[], signal?: AbortSignal): Promise<boolean> {
+    return this.subscriptions.areCaughtUp(handlerNames, signal);
+  }
+
+  /**
    * Method beforeApplicationShutdown
    *
    * @description
@@ -205,6 +222,7 @@ export class EventConsumers implements BeforeApplicationShutdown {
    */
   public async beforeApplicationShutdown(): Promise<void> {
     this.stop.abort();
+    this.connection.stopDeliveryAvailability();
     const running: Promise<void>[] = [...this.subscriptions.close(), ...this.rebuilds.close()];
     let timer: NodeJS.Timeout | undefined;
     const timedOut: Promise<boolean> = new Promise<boolean>((resolve: (value: boolean) => void) => {

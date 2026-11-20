@@ -43,6 +43,12 @@ const addedMembers = {
   '@cadenway/nest-messaging#EventSubscription': ['redelivery', 'transactionIsolationLevel'],
 };
 
+// The standalone consumer below checks the two reviewed additive class methods directly.
+const addedClassMethods = {
+  '@cadenway/nest-messaging#MessagingConnection': ['watchAvailability'],
+  '@cadenway/nest-messaging#EventConsumers': ['areCaughtUp'],
+};
+
 test('packed Service Kit preserves the released public API and supports isolated optional peers', (context) => {
   const scratch = createScratch(context);
 
@@ -70,6 +76,7 @@ test('packed Service Kit preserves the released public API and supports isolated
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
+import type { EventConsumers, MessagingConnection } from '@cadenway/nest-messaging';
 import { z } from 'zod';
 
 const schema = z.object({ ...databaseConfigShape, SERVICE_NAME: z.string() });
@@ -81,7 +88,14 @@ const config: DatabaseConfig = parsed;
 const attempts: number = parsed.DATABASE_TRANSACTION_MAX_ATTEMPTS;
 const enqueue: JobEnqueueOptions = { startAfter: new Date() };
 const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
-void [config, attempts, runtimeEnqueue];
+declare const messagingConnection: MessagingConnection;
+declare const eventConsumers: EventConsumers;
+const stopWatching: () => void = messagingConnection.watchAvailability((available: boolean) => {
+  void available;
+});
+const caughtUp: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test'], AbortSignal.timeout(1000));
+const caughtUpWithoutSignal: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test']);
+void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal];
 `,
   );
   const released = Object.fromEntries(
@@ -104,7 +118,7 @@ void [config, attempts, runtimeEnqueue];
   }
 
   readPublicApi(limited, minimalEntries);
-  const candidateApi = readPublicApi(full, entryPoints, addedMembers);
+  const candidateApi = readPublicApi(full, entryPoints, addedMembers, addedClassMethods);
   const differences = [];
   for (const [entry, signatures] of readPublicApi(reference, entryPoints)) {
     for (const [name, declarations] of signatures) {
