@@ -50,7 +50,7 @@ import {
 import { taskUpdatedV1Schema } from '../testing/contracts/events/task-service.js';
 import { startTestNats, type TestNats } from '../testing/nats.js';
 import { deferred, delay, waitFor } from '../testing/wait.js';
-import { EventConsumers, type EventContext } from './event-consumers.js';
+import { EventConsumers, type EventContext, type EventSubscription } from './event-consumers.js';
 
 /**
  * Constant nextEventSchemas
@@ -279,6 +279,36 @@ describe('event consumers on a real NATS server, without a database', () => {
       role: null,
       scopes: [],
     });
+  });
+
+  it('requires a supported PostgreSQL isolation configuration before binding a consumer', async () => {
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('isolationoptions'))),
+    ]);
+    const consumers = application.get(EventConsumers);
+    const subscription: EventSubscription<typeof eventSchemas, 'task.updated.v1'> = {
+      handler: 'index-task',
+      schemas: eventSchemas,
+      event: 'task.updated.v1',
+      transactionIsolationLevel: 'repeatable read',
+      handle: () => Promise.resolve(),
+    };
+    try {
+      await expect(consumers.subscribe(subscription)).rejects.toThrow(
+        /requires PostgreSQL event deduplication/u,
+      );
+      await expect(
+        consumers.subscribe({
+          ...subscription,
+          transactionIsolationLevel: 'serializable' as 'repeatable read',
+        }),
+      ).rejects.toThrow(/unsupported transaction isolation/u);
+      await expect(
+        manager.consumers.info('EVENTS_isolationoptions', 'task-service__index-task'),
+      ).rejects.toThrow(/consumer not found/u);
+    } finally {
+      await application.close();
+    }
   });
 
   it('calls the handler for every copy of an event when the application has no deduplicator', async () => {

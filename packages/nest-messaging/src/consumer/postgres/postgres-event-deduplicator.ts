@@ -3,6 +3,7 @@ import {
   TenantTransactionRunner,
   assertNoActiveTransaction,
   type DatabaseSchema,
+  type TransactionOptions,
   type TransactionScope,
 } from '@cadenway/nest-common/database';
 import { Inject, Injectable } from '@nestjs/common';
@@ -35,9 +36,9 @@ import { MESSAGING_TUNING, type MessagingTuning } from '../../configuration/mess
  * commit. A handler that fails or is abandoned before commit rolls back its writes and claims.
  * A redelivery after commit but before acknowledgement skips the handler.
  *
- * Two deliveries of the same event handled at the same time meet on the primary key: the second
- * waits for the first transaction for at most five seconds (`lock_timeout`), then fails and is
- * retried after the next delay, when it sees the id of the first and skips the handler.
+ * Two deliveries of the same event meet on the primary key. The claim wait is bounded by the
+ * configured lock timeout. A claim that times out or suffers a serialization failure is retried
+ * by JetStream, when the committed id can be seen and the handler skipped.
  */
 @Injectable()
 export class PostgresEventDeduplicator implements EventDeduplicator {
@@ -70,7 +71,7 @@ export class PostgresEventDeduplicator implements EventDeduplicator {
    * Runs the handler in its own transaction unless this consumer already processed the event.
    * The caller must establish the event's organization context before calling this method.
    *
-   * @param {EventDelivery} delivery - Consumer, event name and validated envelope.
+   * @param {EventDelivery} delivery - Consumer, event name, validated envelope and optional isolation.
    * @param {(claimVersion: VersionClaim) => Promise<void>} handle - Calls the handler with the version claim of this delivery.
    * @returns {Promise<DeduplicationOutcome>} `handled` once the transaction committed, `duplicate` when the handler was skipped.
    * @throws {Error} When the caller holds a transaction, the handler rejects, or the transaction fails.
@@ -108,9 +109,13 @@ export class PostgresEventDeduplicator implements EventDeduplicator {
       return 'handled';
     };
     // JetStream owns redelivery. A handler can perform an effect outside PostgreSQL.
+    const options: TransactionOptions =
+      delivery.transactionIsolationLevel === undefined
+        ? { maxAttempts: 1 }
+        : { maxAttempts: 1, isolationLevel: delivery.transactionIsolationLevel };
     return delivery.envelope.organizationId === null
-      ? this.system.run(work, { maxAttempts: 1 })
-      : this.tenant.run(work, { maxAttempts: 1 });
+      ? this.system.run(work, options)
+      : this.tenant.run(work, options);
   }
 
   /**

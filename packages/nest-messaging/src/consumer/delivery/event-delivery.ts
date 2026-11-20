@@ -379,7 +379,14 @@ export class EventDelivery {
       return 'handled';
     }
     return this.deduplicator.run(
-      { consumer: target.consumer, event: target.event, envelope: prepared.envelope },
+      {
+        consumer: target.consumer,
+        event: target.event,
+        envelope: prepared.envelope,
+        ...(target.transactionIsolationLevel === undefined
+          ? {}
+          : { transactionIsolationLevel: target.transactionIsolationLevel }),
+      },
       handle,
     );
   }

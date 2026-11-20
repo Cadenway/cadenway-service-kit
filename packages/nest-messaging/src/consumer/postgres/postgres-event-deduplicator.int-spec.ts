@@ -210,6 +210,97 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
     expect(processed).toEqual([{ consumer: 'search-service__index-task', event_id: appended.id }]);
   });
 
+  it.each(['tenant', 'system'] as const)(
+    'keeps a repeatable snapshot and rolls back a concurrent write conflict in a %s delivery',
+    async (scope) => {
+      const names = isolatedNames(`snapshot${scope}`);
+      const application: TestingModule = await startService(
+        database,
+        nats,
+        { ...names, service: 'search-service' },
+        { relay: false },
+        { retryDelaysMs: [20, 20, 20, 20] },
+      );
+      const task = scope === 'tenant';
+      const runner = task
+        ? application.get(TenantTransactionRunner)
+        : application.get(SystemTransactionRunner);
+      const publisher = application.get(EventPublisher);
+      const outbox = application.get(OutboxWriter);
+      const attempts: { deliveryCount: number; versions: unknown[][] }[] = [];
+      const beforeRetry: unknown[][] = [];
+      try {
+        await database.admin.query(
+          "insert into search_index (task_id, version) values ('seed', 1)",
+        );
+        await application.get(EventConsumers).subscribe({
+          handler: 'snapshot',
+          schemas: eventSchemas,
+          event: task ? 'task.updated.v1' : 'user.signed-up.v1',
+          transactionIsolationLevel: 'repeatable read',
+          handle: async (_payload, { deliveryCount }: EventContext): Promise<void> => {
+            const before: { rows: unknown[] } = await runner.run(
+              (tx) => tx.client.query("select version from search_index where task_id = 'seed'"),
+              { isolationLevel: 'repeatable read' },
+            );
+            if (deliveryCount === 1) {
+              await database.admin.query(
+                "update search_index set version = 2 where task_id = 'seed'",
+              );
+            } else {
+              beforeRetry.push(
+                await table('select event_id from processed_events'),
+                await table('select id from outbox_events'),
+                await table("select task_id from search_index where task_id = 'decision'"),
+              );
+            }
+            const after: { rows: unknown[] } = await runner.run((tx) =>
+              tx.client.query("select version from search_index where task_id = 'seed'"),
+            );
+            attempts.push({ deliveryCount, versions: [before.rows, after.rows] });
+            await runner.run(async (tx) => {
+              await tx.client.query(
+                "insert into search_index (task_id, version) values ('decision', 3)",
+              );
+              if (task) {
+                await outbox.append(tx, eventSchemas, 'task.updated.v1', taskUpdated());
+              } else {
+                await outbox.append(tx, eventSchemas, 'user.signed-up.v1', userSignedUp());
+              }
+              // The first attempt writes a row changed by another session after its snapshot.
+              await tx.client.query(
+                "update search_index set writes = writes + 1 where task_id = 'seed'",
+              );
+            });
+          },
+        });
+        const event = task
+          ? await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated())
+          : await publisher.publish(eventSchemas, 'user.signed-up.v1', userSignedUp());
+        await waitFor(() =>
+          settled(event.stream, 'search-service__snapshot', event.streamSequence),
+        );
+
+        expect(attempts).toEqual([
+          { deliveryCount: 1, versions: [[{ version: 1 }], [{ version: 1 }]] },
+          { deliveryCount: 2, versions: [[{ version: 2 }], [{ version: 2 }]] },
+        ]);
+        expect(beforeRetry).toEqual([[], [], []]);
+        expect(
+          await table("select task_id, version from search_index where task_id = 'decision'"),
+        ).toEqual([{ task_id: 'decision', version: 3 }]);
+        expect(await table('select event_id from processed_events')).toEqual([
+          { event_id: event.id },
+        ]);
+        expect(await table('select organization_id, status from outbox_events')).toEqual([
+          { organization_id: task ? ATELIER_NORD : null, status: 'pending' },
+        ]);
+      } finally {
+        await application.close();
+      }
+    },
+  );
+
   it('rolls back a serialization failure and lets JetStream redeliver the event', async () => {
     const application: TestingModule = await startService(
       database,

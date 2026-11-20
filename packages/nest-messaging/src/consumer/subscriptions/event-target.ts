@@ -88,6 +88,17 @@ export interface EventTarget {
   readonly redelivery: RedeliveryPolicy;
 
   /**
+   * Property transactionIsolationLevel
+   *
+   * @description
+   * Optional repeatable snapshot for the delivery's deduplication and handler transaction.
+   *
+   * @type {'repeatable read' | undefined}
+   * @readonly
+   */
+  readonly transactionIsolationLevel?: 'repeatable read';
+
+  /**
    * Property prepare
    *
    * @description

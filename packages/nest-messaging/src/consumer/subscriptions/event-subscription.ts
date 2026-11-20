@@ -79,6 +79,19 @@ export interface EventSubscription<
   readonly redelivery?: EventRedelivery;
 
   /**
+   * Property transactionIsolationLevel
+   *
+   * @description
+   * Starts the deduplication and handler transaction with a repeatable snapshot. Requires the
+   * PostgreSQL deduplicator. Omitting the option uses the database default. Serialization
+   * failures follow the normal JetStream redelivery policy.
+   *
+   * @type {'repeatable read' | undefined}
+   * @readonly
+   */
+  readonly transactionIsolationLevel?: 'repeatable read';
+
+  /**
    * Property handle
    *
    * @description

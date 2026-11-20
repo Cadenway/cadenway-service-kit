@@ -121,7 +121,7 @@ export class EventConsumers implements BeforeApplicationShutdown {
     connection: MessagingConnection,
     @Inject(MESSAGING_OPTIONS) private readonly options: ResolvedMessagingOptions,
     @Inject(MESSAGING_TUNING) tuning: MessagingTuning,
-    @Optional() @Inject(EVENT_DEDUPLICATOR) deduplicator?: EventDeduplicator,
+    @Optional() @Inject(EVENT_DEDUPLICATOR) private readonly deduplicator?: EventDeduplicator,
   ) {
     const delivery: EventDelivery = new EventDelivery(
       this.logger,
@@ -153,12 +153,25 @@ export class EventConsumers implements BeforeApplicationShutdown {
    *
    * @param {EventSubscription<TSchemas, TName>} subscription - Event name and schemas, durable handler name, optional redelivery schedule and handler.
    * @returns {Promise<void>} Resolves once the durable consumer is present and the pull loop has started.
-   * @throws {Error} When the handler is already registered, its redelivery schedule is invalid,
-   * the application is closing or the broker cannot supply the required consumer.
+   * @throws {Error} When the handler is already registered, its redelivery schedule or isolation
+   * configuration is invalid, the application is closing or the broker cannot supply the consumer.
    */
   public async subscribe<TSchemas extends EventSchemas, TName extends EventNameOf<TSchemas>>(
     subscription: EventSubscription<TSchemas, TName>,
   ): Promise<void> {
+    const isolationLevel: unknown = subscription.transactionIsolationLevel;
+    if (isolationLevel !== undefined) {
+      if (isolationLevel !== 'repeatable read') {
+        throw new Error(
+          `The handler ${subscription.handler} requests unsupported transaction isolation.`,
+        );
+      }
+      if (this.deduplicator === undefined) {
+        throw new Error(
+          `The handler ${subscription.handler} requires PostgreSQL event deduplication for repeatable read.`,
+        );
+      }
+    }
     return this.subscriptions.subscribe(subscription);
   }
 
