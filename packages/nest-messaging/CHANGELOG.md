@@ -1,5 +1,11 @@
 # @cadenway/nest-messaging
 
+## 0.7.0
+
+### Minor Changes
+
+- ac36fb3: Add `EventConsumers.readProgress()` for bounded, read-only JetStream progress checks across the configured event stream and registered durables.
+
 ## 0.6.0
 
 ### Minor Changes
