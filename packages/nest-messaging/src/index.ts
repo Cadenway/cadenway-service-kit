@@ -21,6 +21,10 @@ export {
   type EventSubscription,
   type RebuildSubscription,
 } from './consumer/event-consumers.js';
+export type {
+  EventConsumerProgress,
+  EventStreamProgress,
+} from './consumer/subscriptions/event-stream-progress.js';
 export { DeadLetterWorker, type DeadLetterReason } from './dead-letter/dead-letter-worker.js';
 export type {
   DistributiveOmit,

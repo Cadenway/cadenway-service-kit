@@ -26,6 +26,7 @@ import type { EventContext } from '../delivery/event-context.js';
 import type { EventDelivery } from '../delivery/event-delivery.js';
 import { ConsumerRecovery } from '../recovery/consumer-recovery.js';
 import type { EventSubscription } from './event-subscription.js';
+import { readEventStreamProgress, type EventStreamProgress } from './event-stream-progress.js';
 import type { EventTarget, PreparedEvent } from './event-target.js';
 import { resolveRedelivery } from './redelivery-policy.js';
 import type { RunningConsumer } from './running-consumer.js';
@@ -204,6 +205,68 @@ export class DurableSubscriptions {
     handlerNames: readonly string[],
     signal?: AbortSignal,
   ): Promise<boolean> {
+    const ready: boolean | undefined = await this.inspectRegistered(
+      handlerNames,
+      signal,
+      async (manager, targets): Promise<boolean> => {
+        const results: boolean[] = await Promise.all(
+          [...targets.values()].map(async (target): Promise<boolean> => {
+            const info: ConsumerInfo = await manager.consumers.info(
+              target.route.stream,
+              target.consumer,
+            );
+            return (
+              info.config.filter_subject === target.route.subject &&
+              info.num_pending === 0 &&
+              info.num_ack_pending === 0
+            );
+          }),
+        );
+        return results.every(Boolean);
+      },
+    );
+    return ready ?? false;
+  }
+
+  /**
+   * Method readProgress
+   *
+   * @description
+   * Reads guarded stream and durable metadata for the registered handlers on the events stream.
+   *
+   * @param {readonly string[]} handlerNames - Handler names as passed to subscribe.
+   * @param {AbortSignal | undefined} signal - Cancels waiting for the result.
+   * @returns {Promise<EventStreamProgress | undefined>} Metadata when the sample is usable.
+   */
+  public readProgress(
+    handlerNames: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<EventStreamProgress | undefined> {
+    return this.inspectRegistered(handlerNames, signal, (manager, targets, cancellation) =>
+      readEventStreamProgress(manager, this.options.eventsStream, targets, cancellation),
+    );
+  }
+
+  /**
+   * Method inspectRegistered
+   *
+   * @description
+   * Bounds the number of registrations and stops waiting when the caller or application stops.
+   *
+   * @param {readonly string[]} handlerNames - Handler names to inspect.
+   * @param {AbortSignal | undefined} signal - Caller cancellation.
+   * @param {(manager: JetStreamManager, targets: ReadonlyMap<string, EventTarget>, signal: AbortSignal) => Promise<TResult | undefined>} read - Metadata operation scoped to the selected registrations.
+   * @returns {Promise<TResult | undefined>} The observation, if delivery stayed available.
+   */
+  private async inspectRegistered<TResult>(
+    handlerNames: readonly string[],
+    signal: AbortSignal | undefined,
+    read: (
+      manager: JetStreamManager,
+      targets: ReadonlyMap<string, EventTarget>,
+      signal: AbortSignal,
+    ) => Promise<TResult | undefined>,
+  ): Promise<TResult | undefined> {
     const cancellation: AbortSignal =
       signal === undefined ? this.shutdown : AbortSignal.any([this.shutdown, signal]);
     const epoch: number | undefined = this.connection.currentAvailabilityEpoch();
@@ -213,78 +276,78 @@ export class DurableSubscriptions {
       handlerNames.length === 0 ||
       handlerNames.length > MAX_CATCH_UP_HANDLERS
     ) {
-      return false;
+      return undefined;
     }
-    const probe: Promise<boolean> = this.readCatchUp(handlerNames, epoch, cancellation).catch(
-      () => false,
-    );
-    return new Promise<boolean>((resolve: (value: boolean) => void) => {
+    const probe: Promise<TResult | undefined> = this.readRegistered(
+      handlerNames,
+      epoch,
+      cancellation,
+      read,
+    ).catch(() => undefined);
+    return new Promise<TResult | undefined>((resolve: (value: TResult | undefined) => void) => {
       const abortListener: Disposable = addAbortListener(cancellation, () => {
-        resolve(false);
+        resolve(undefined);
       });
-      void probe.then((caughtUp: boolean): void => {
+      void probe.then((result: TResult | undefined): void => {
         abortListener[Symbol.dispose]();
         resolve(
-          caughtUp && !cancellation.aborted && this.connection.currentAvailabilityEpoch() === epoch,
+          !cancellation.aborted && this.connection.currentAvailabilityEpoch() === epoch
+            ? result
+            : undefined,
         );
       });
     });
   }
 
   /**
-   * Method readCatchUp
+   * Method readRegistered
    *
    * @description
-   * Reads only exact consumer-info subjects for locally running registrations. A replaced pull
-   * loop or interrupted availability makes any previously sampled counts stale.
+   * Reads only locally running registrations. A replaced pull loop or interrupted availability
+   * invalidates the observation.
    *
    * @param {readonly string[]} handlerNames - Handler names as passed to subscribe.
    * @param {number} epoch - Available interval in which the read began.
    * @param {AbortSignal} signal - Cancellation of the check or application shutdown.
-   * @returns {Promise<boolean>} Whether every sampled consumer has neither pending nor unacknowledged messages.
+   * @param {(manager: JetStreamManager, targets: ReadonlyMap<string, EventTarget>, signal: AbortSignal) => Promise<TResult | undefined>} read - Metadata operation scoped to the selected registrations.
+   * @returns {Promise<TResult | undefined>} The observation, if the selected registrations are still running.
    */
-  private async readCatchUp(
+  private async readRegistered<TResult>(
     handlerNames: readonly string[],
     epoch: number,
     signal: AbortSignal,
-  ): Promise<boolean> {
+    read: (
+      manager: JetStreamManager,
+      targets: ReadonlyMap<string, EventTarget>,
+      signal: AbortSignal,
+    ) => Promise<TResult | undefined>,
+  ): Promise<TResult | undefined> {
     const snapshots: Map<RunningConsumer, ConsumerMessages> = new Map<
       RunningConsumer,
       ConsumerMessages
     >();
+    const targets: Map<string, EventTarget> = new Map<string, EventTarget>();
     for (const handler of new Set(handlerNames)) {
       const running: RunningConsumer | undefined = this.consumers.get(
         durableConsumerName(this.options.service, handler),
       );
       if (running?.messages === undefined) {
-        return false;
+        return undefined;
       }
       snapshots.set(running, running.messages);
+      targets.set(handler, running.target);
     }
     const manager: JetStreamManager = await this.connection.manager();
     signal.throwIfAborted();
     if (this.connection.currentAvailabilityEpoch() !== epoch) {
-      return false;
+      return undefined;
     }
-    const ready: boolean[] = await Promise.all(
-      [...snapshots.keys()].map(async ({ target }: RunningConsumer): Promise<boolean> => {
-        const info: ConsumerInfo = await manager.consumers.info(
-          target.route.stream,
-          target.consumer,
-        );
-        return (
-          info.config.filter_subject === target.route.subject &&
-          info.num_pending === 0 &&
-          info.num_ack_pending === 0
-        );
-      }),
-    );
+    const result: TResult | undefined = await read(manager, targets, signal);
     signal.throwIfAborted();
-    return (
-      this.connection.currentAvailabilityEpoch() === epoch &&
-      ready.every(Boolean) &&
+    return this.connection.currentAvailabilityEpoch() === epoch &&
       [...snapshots].every(([running, messages]) => running.messages === messages)
-    );
+      ? result
+      : undefined;
   }
 
   /**

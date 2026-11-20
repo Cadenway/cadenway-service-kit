@@ -439,14 +439,50 @@ describe('event consumers on a real NATS server, without a database', () => {
       const cancelled: AbortController = new AbortController();
       cancelled.abort();
       await expect(consumers.areCaughtUp(['read-task'], cancelled.signal)).resolves.toBe(false);
+      const initial = await consumers.readProgress(['read-task', 'read-task']);
+      const streamInfo = await manager.streams.info(stream);
+      const durableInfo = await manager.consumers.info(stream, durable);
+      expect(initial).toEqual({
+        stream,
+        createdAt: streamInfo.created,
+        firstSequence: streamInfo.state.first_seq,
+        lastSequence: 0,
+        retainedGapCount: 0,
+        consumers: [
+          {
+            handler: 'read-task',
+            createdAt: durableInfo.created,
+            deliveredSequence: 0,
+            ackFloorSequence: 0,
+            pending: 0,
+            ackPending: 0,
+          },
+        ],
+      });
+      await expect(consumers.readProgress([])).resolves.toBeUndefined();
+      await expect(consumers.readProgress(['read-task', 'unregistered'])).resolves.toBeUndefined();
+      await expect(
+        consumers.readProgress(Array.from({ length: 33 }, () => 'read-task')),
+      ).resolves.toBeUndefined();
+      await expect(
+        consumers.readProgress(['read-task'], cancelled.signal),
+      ).resolves.toBeUndefined();
 
       await manager.consumers.pause(stream, durable, new Date(Date.now() + 60_000));
-      await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      const published: PublishedEvent = await application
+        .get(EventPublisher)
+        .publish(eventSchemas, 'task.updated.v1', taskUpdated());
       expect(await manager.consumers.info(stream, durable)).toMatchObject({
         num_pending: 1,
         num_ack_pending: 0,
       });
       await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+      await expect(consumers.readProgress(['read-task'])).resolves.toMatchObject({
+        createdAt: initial?.createdAt,
+        firstSequence: published.streamSequence,
+        lastSequence: published.streamSequence,
+        consumers: [{ createdAt: durableInfo.created, pending: 1, ackPending: 0 }],
+      });
 
       await manager.consumers.resume(stream, durable);
       await started.promise;
@@ -455,14 +491,122 @@ describe('event consumers on a real NATS server, without a database', () => {
         num_ack_pending: 1,
       });
       await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+      await expect(consumers.readProgress(['read-task'])).resolves.toMatchObject({
+        consumers: [
+          {
+            deliveredSequence: published.streamSequence,
+            ackFloorSequence: 0,
+            pending: 0,
+            ackPending: 1,
+          },
+        ],
+      });
 
       finish.resolve(undefined);
       await waitFor(() => consumers.areCaughtUp(['read-task']));
+      await expect(consumers.readProgress(['read-task'])).resolves.toMatchObject({
+        consumers: [
+          {
+            deliveredSequence: published.streamSequence,
+            ackFloorSequence: published.streamSequence,
+            pending: 0,
+            ackPending: 0,
+          },
+        ],
+      });
     } finally {
       finish.resolve(undefined);
       await application.close();
     }
     await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+    await expect(consumers.readProgress(['read-task'])).resolves.toBeUndefined();
+  }, 30_000);
+
+  it('discards progress when the stream is recreated during the sample', async () => {
+    const stream = 'EVENTS_progress';
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('progress'))),
+    ]);
+    const consumers: EventConsumers = application.get(EventConsumers);
+    try {
+      await consumers.subscribe({
+        handler: 'read-task',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.resolve(),
+      });
+      await waitFor(async () => (await consumers.readProgress(['read-task'])) !== undefined);
+      const initial = await manager.streams.info(stream);
+      const connection: MessagingConnection = application.get(MessagingConnection);
+      const broker: JetStreamManager = await (
+        connection as MessagingConnection & { manager(): Promise<JetStreamManager> }
+      ).manager();
+      const readStream = broker.streams.info.bind(broker.streams);
+      const observe = vi.spyOn(broker.streams, 'info');
+      observe.mockImplementationOnce(readStream).mockImplementationOnce(async (name) => {
+        await manager.streams.delete(stream);
+        await manager.streams.add(initial.config);
+        return readStream(name);
+      });
+      try {
+        await expect(consumers.readProgress(['read-task'])).resolves.toBeUndefined();
+        expect(observe).toHaveBeenCalledTimes(2);
+      } finally {
+        observe.mockRestore();
+      }
+      const replacement = await manager.streams.info(stream);
+      expect(replacement.created).not.toBe(initial.created);
+    } finally {
+      await application.close();
+    }
+  }, 30_000);
+
+  it('reports retained gaps and discards a sample when a gap appears between stream reads', async () => {
+    const stream = 'EVENTS_progress-gaps';
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('progress-gaps'))),
+    ]);
+    const consumers: EventConsumers = application.get(EventConsumers);
+    const publisher: EventPublisher = application.get(EventPublisher);
+    try {
+      await consumers.subscribe({
+        handler: 'read-task',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.resolve(),
+      });
+      const first = await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      const middle = await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      const last = await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await waitFor(() => consumers.areCaughtUp(['read-task']));
+      const range = { firstSequence: first.streamSequence, lastSequence: last.streamSequence };
+      await expect(consumers.readProgress(['read-task'])).resolves.toMatchObject({
+        ...range,
+        retainedGapCount: 0,
+      });
+      const connection: MessagingConnection = application.get(MessagingConnection);
+      const broker: JetStreamManager = await (
+        connection as MessagingConnection & { manager(): Promise<JetStreamManager> }
+      ).manager();
+      const readStream = broker.streams.info.bind(broker.streams);
+      const observe = vi.spyOn(broker.streams, 'info');
+      observe.mockImplementationOnce(readStream).mockImplementationOnce(async (name) => {
+        expect(await manager.streams.deleteMessage(stream, middle.streamSequence)).toBe(true);
+        return readStream(name);
+      });
+      try {
+        await expect(consumers.readProgress(['read-task'])).resolves.toBeUndefined();
+        expect(observe).toHaveBeenCalledTimes(2);
+      } finally {
+        observe.mockRestore();
+      }
+      await expect(consumers.readProgress(['read-task'])).resolves.toMatchObject({
+        ...range,
+        retainedGapCount: 1,
+      });
+    } finally {
+      await application.close();
+    }
   }, 30_000);
 
   it('rejects a pending registration if shutdown starts while opening the consumer', async () => {
@@ -849,6 +993,8 @@ describe('event consumers on a real NATS server, without a database', () => {
     });
     await expect(readiness.check()).resolves.toBeUndefined();
     await waitFor(() => consumers.areCaughtUp(['index-task']));
+    const initial = await consumers.readProgress(['index-task']);
+    expect(initial?.consumers[0]?.createdAt).toBeDefined();
     expect(availability).toEqual([true]);
 
     await manager.consumers.delete('EVENTS_ready', 'search-service__index-task');
@@ -864,6 +1010,7 @@ describe('event consumers on a real NATS server, without a database', () => {
     }, 15_000);
     expect(availability).toEqual([true, false]);
     await expect(consumers.areCaughtUp(['index-task'])).resolves.toBe(false);
+    await expect(consumers.readProgress(['index-task'])).resolves.toBeUndefined();
     await manager.consumers.add('EVENTS_ready', consumerConfig);
     await waitFor(async () => {
       try {
@@ -874,6 +1021,10 @@ describe('event consumers on a real NATS server, without a database', () => {
       }
     }, 15_000);
     await waitFor(() => consumers.areCaughtUp(['index-task']));
+    const recovered = await consumers.readProgress(['index-task']);
+    expect(recovered?.createdAt).toBe(initial?.createdAt);
+    expect(recovered?.consumers[0]?.createdAt).toBeDefined();
+    expect(recovered?.consumers[0]?.createdAt).not.toBe(initial?.consumers[0]?.createdAt);
     expect(availability).toEqual([true, false, true]);
     await owner.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
     await waitFor(() => received.length === 1);

@@ -49,7 +49,7 @@ const addedClassMethods = {
     'isConsumerAdvisoryStreamClear',
     'watchAvailability',
   ],
-  '@cadenway/nest-messaging#EventConsumers': ['areCaughtUp'],
+  '@cadenway/nest-messaging#EventConsumers': ['areCaughtUp', 'readProgress'],
 };
 
 test('packed Service Kit preserves the released public API and supports isolated optional peers', (context) => {
@@ -79,7 +79,7 @@ test('packed Service Kit preserves the released public API and supports isolated
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
-import type { EventConsumers, MessagingConnection } from '@cadenway/nest-messaging';
+import type { EventConsumers, EventStreamProgress, MessagingConnection } from '@cadenway/nest-messaging';
 import { z } from 'zod';
 
 const schema = z.object({ ...databaseConfigShape, SERVICE_NAME: z.string() });
@@ -98,13 +98,20 @@ const stopWatching: () => void = messagingConnection.watchAvailability((availabl
 });
 const caughtUp: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test'], AbortSignal.timeout(1000));
 const caughtUpWithoutSignal: Promise<boolean> = eventConsumers.areCaughtUp(['relay-test']);
+const progress: Promise<EventStreamProgress | undefined> = eventConsumers.readProgress(
+  ['relay-test'],
+  AbortSignal.timeout(1000),
+);
+const progressWithoutSignal: Promise<EventStreamProgress | undefined> = eventConsumers.readProgress([
+  'relay-test',
+]);
 const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisoryStreamClear(
   'TEST_ADVISORIES',
   'EVENTS',
   ['test__relay'],
   AbortSignal.timeout(1000),
 );
-void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, advisoryClear];
+void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
 `,
   );
   const released = Object.fromEntries(
