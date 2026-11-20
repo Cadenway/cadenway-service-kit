@@ -342,6 +342,13 @@ and fetch client spans, including requests that reach a fallback or a response e
 templates and trace propagation are preserved. If omitted or empty, the attributes exported
 by OpenTelemetry keep their existing defaults.
 
+Set `redactRedisCommandArguments: true` when Redis command arguments carry private keys or
+values. Exported ioredis spans retain the command name, timing, error status and trace context.
+The exporter omits free-form error messages and exception details from ioredis and automatic HTTP,
+Express and undici spans, since a Redis reply can carry an argument into an HTTP error.
+The option defaults to `false`. Application code that records its own spans or logs controls
+the details it adds to them.
+
 `RouteNameInterceptor` (main entry point) names the server span `<METHOD> <route>` and sets
 `http.route`, which the HTTP instrumentation also copies onto the request duration metric.
 `nameHttpSpan(method, route)` does the same from other code.
