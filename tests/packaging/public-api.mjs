@@ -53,13 +53,21 @@ function withoutAddedOptionalConstructorParameters(node, added) {
   );
 }
 
-function publicDeclaration(node, added = []) {
+function publicDeclaration(node, added = [], addedMethods = []) {
   if (ts.isInterfaceDeclaration(node) && added.length > 0) {
     return withoutAddedOptionalMembers(node, added);
   }
   if (!ts.isClassDeclaration(node)) return node;
   // Private fields are emitted for nominal typing. Moving private implementation details is allowed.
   const members = node.members
+    .filter(
+      (member) =>
+        !(
+          ts.isMethodDeclaration(member) &&
+          ts.isIdentifier(member.name) &&
+          addedMethods.includes(member.name.text)
+        ),
+    )
     .filter(
       (member) =>
         ts.isConstructorDeclaration(member) ||
@@ -104,8 +112,10 @@ function normalizeOptionalParameters(context) {
   return (node) => ts.visitNode(node, visit);
 }
 
-function signature(node, added) {
-  const result = ts.transform(publicDeclaration(node, added), [normalizeOptionalParameters]);
+function signature(node, added, addedMethods) {
+  const result = ts.transform(publicDeclaration(node, added, addedMethods), [
+    normalizeOptionalParameters,
+  ]);
   try {
     return printer
       .printNode(ts.EmitHint.Unspecified, result.transformed[0], node.getSourceFile())
@@ -118,9 +128,10 @@ function signature(node, added) {
 /**
  * Reads public declarations through an installed package's export map. `addedMembers` maps an
  * export (`<entry point>#<name>`) to optional interface properties or trailing constructor
- * parameters added since the baseline. Only those additions are omitted from the declaration.
+ * parameters added since the baseline. `addedClassMethods` separately names reviewed new
+ * class methods. The declaration comparison omits only those additions.
  */
-export function readPublicApi(directory, entryPoints, addedMembers = {}) {
+export function readPublicApi(directory, entryPoints, addedMembers = {}, addedClassMethods = {}) {
   const importer = join(directory, 'consumer.mts');
   const entryFiles = entryPoints.map((entryPoint) => {
     const module = ts.resolveModuleName(
@@ -166,10 +177,12 @@ export function readPublicApi(directory, entryPoints, addedMembers = {}) {
           target.declarations?.length,
           `Unresolved declaration for ${entryPoint}#${symbol.name}`,
         );
-        const added = addedMembers[`${entryPoint}#${symbol.name}`] ?? [];
+        const exportName = `${entryPoint}#${symbol.name}`;
+        const added = addedMembers[exportName] ?? [];
+        const methods = addedClassMethods[exportName] ?? [];
         return [
           symbol.name,
-          target.declarations.map((declaration) => signature(declaration, added)),
+          target.declarations.map((declaration) => signature(declaration, added, methods)),
         ];
       });
       return [entryPoint, new Map(declarations)];

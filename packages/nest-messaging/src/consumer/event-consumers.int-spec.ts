@@ -410,6 +410,61 @@ describe('event consumers on a real NATS server, without a database', () => {
     }
   });
 
+  it('reports catch-up only after both undelivered and unacknowledged work drains', async () => {
+    const stream = 'EVENTS_catchup';
+    const durable = 'task-service__read-task';
+    const application: TestingModule = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, isolatedNames('catchup'))),
+    ]);
+    const consumers: EventConsumers = application.get(EventConsumers);
+    const started = deferred<undefined>();
+    const finish = deferred<undefined>();
+
+    try {
+      await consumers.subscribe({
+        handler: 'read-task',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => {
+          started.resolve(undefined);
+          return finish.promise;
+        },
+      });
+      await waitFor(() => consumers.areCaughtUp(['read-task']));
+      await expect(consumers.areCaughtUp([])).resolves.toBe(false);
+      await expect(consumers.areCaughtUp(['read-task', 'unregistered'])).resolves.toBe(false);
+      await expect(
+        consumers.areCaughtUp(Array.from({ length: 33 }, () => 'read-task')),
+      ).resolves.toBe(false);
+      const cancelled: AbortController = new AbortController();
+      cancelled.abort();
+      await expect(consumers.areCaughtUp(['read-task'], cancelled.signal)).resolves.toBe(false);
+
+      await manager.consumers.pause(stream, durable, new Date(Date.now() + 60_000));
+      await application.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      expect(await manager.consumers.info(stream, durable)).toMatchObject({
+        num_pending: 1,
+        num_ack_pending: 0,
+      });
+      await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+
+      await manager.consumers.resume(stream, durable);
+      await started.promise;
+      expect(await manager.consumers.info(stream, durable)).toMatchObject({
+        num_pending: 0,
+        num_ack_pending: 1,
+      });
+      await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+
+      finish.resolve(undefined);
+      await waitFor(() => consumers.areCaughtUp(['read-task']));
+    } finally {
+      finish.resolve(undefined);
+      await application.close();
+    }
+    await expect(consumers.areCaughtUp(['read-task'])).resolves.toBe(false);
+  }, 30_000);
+
   it('rejects a pending registration if shutdown starts while opening the consumer', async () => {
     const application: TestingModule = await startApplication([
       MessagingModule.forRoot(messagingOptions(nats, isolatedNames('register-stop'))),
@@ -538,6 +593,11 @@ describe('event consumers on a real NATS server, without a database', () => {
     const started = deferred<AbortSignal>();
     const release = deferred<undefined>();
     const steps: string[] = [];
+    const connection: MessagingConnection = application.get(MessagingConnection);
+    const availability: boolean[] = [];
+    const unwatch: () => void = connection.watchAvailability((available) => {
+      availability.push(available);
+    });
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
       schemas: eventSchemas,
@@ -554,10 +614,17 @@ describe('event consumers on a real NATS server, without a database', () => {
 
     // Call the hook directly to observe the grace period before the connection closes.
     const shutdown: Promise<void> = application.get(EventConsumers).beforeApplicationShutdown();
-    expect(signal.aborted).toBe(false);
-    release.resolve(undefined);
-    await shutdown;
-    await application.close();
+    try {
+      expect(signal.aborted).toBe(false);
+      expect(connection.isClosed()).toBe(false);
+      expect(availability).toEqual([true, false]);
+      expect(steps).toEqual(['started']);
+    } finally {
+      release.resolve(undefined);
+      await shutdown;
+      await application.close();
+      unwatch();
+    }
     steps.push('closed');
     const consumer: ConsumerInfo = await manager.consumers.info(
       'EVENTS_shutdown',
@@ -566,6 +633,7 @@ describe('event consumers on a real NATS server, without a database', () => {
 
     expect(steps).toEqual(['started', 'finished', 'closed']);
     expect(consumer.num_ack_pending).toBe(0);
+    expect(availability).toEqual([true, false]);
   });
 
   it('gives the handler the transformed output of its registered schema', async () => {
@@ -763,6 +831,12 @@ describe('event consumers on a real NATS server, without a database', () => {
     const readiness: HealthIndicator = messagingHealthIndicator(
       application.get(MessagingConnection),
     );
+    const availability: boolean[] = [];
+    const connection: MessagingConnection = application.get(MessagingConnection);
+    const unwatch: () => void = connection.watchAvailability((available) => {
+      availability.push(available);
+    });
+    const consumers: EventConsumers = application.get(EventConsumers);
     const received: string[] = [];
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
@@ -774,6 +848,8 @@ describe('event consumers on a real NATS server, without a database', () => {
       },
     });
     await expect(readiness.check()).resolves.toBeUndefined();
+    await waitFor(() => consumers.areCaughtUp(['index-task']));
+    expect(availability).toEqual([true]);
 
     await manager.consumers.delete('EVENTS_ready', 'search-service__index-task');
     await waitFor(async () => {
@@ -786,6 +862,8 @@ describe('event consumers on a real NATS server, without a database', () => {
         );
       }
     }, 15_000);
+    expect(availability).toEqual([true, false]);
+    await expect(consumers.areCaughtUp(['index-task'])).resolves.toBe(false);
     await manager.consumers.add('EVENTS_ready', consumerConfig);
     await waitFor(async () => {
       try {
@@ -795,11 +873,15 @@ describe('event consumers on a real NATS server, without a database', () => {
         return false;
       }
     }, 15_000);
+    await waitFor(() => consumers.areCaughtUp(['index-task']));
+    expect(availability).toEqual([true, false, true]);
     await owner.get(EventPublisher).publish(eventSchemas, 'task.updated.v1', taskUpdated());
     await waitFor(() => received.length === 1);
     await application.close();
+    unwatch();
     await owner.close();
 
     expect(received).toEqual(['CAD-482']);
+    expect(availability).toEqual([true, false, true, false]);
   });
 });

@@ -246,6 +246,23 @@ describe('messaging connection on a real NATS server', () => {
       MessagingModule.forRoot(messagingOptions(nats, isolatedNames('restart'))),
     ]);
     const publisher: EventPublisher = application.get(EventPublisher);
+    const connection: MessagingConnection = application.get(MessagingConnection);
+    const availability: boolean[] = [];
+    const rejected: boolean[] = [];
+    const removed: boolean[] = [];
+    const rejectingListener = (available: boolean): Promise<never> => {
+      rejected.push(available);
+      return Promise.reject(new Error('The observer rejected.'));
+    };
+    const watchRejecting: (listener: typeof rejectingListener) => () => void =
+      connection.watchAvailability.bind(connection);
+    const unwatchRejected: () => void = watchRejecting(rejectingListener);
+    const unwatch: () => void = connection.watchAvailability((available) => {
+      availability.push(available);
+    });
+    connection.watchAvailability((available) => {
+      removed.push(available);
+    })();
     const received: string[] = [];
     await application.get(EventConsumers).subscribe({
       handler: 'index-task',
@@ -258,6 +275,7 @@ describe('messaging connection on a real NATS server', () => {
     });
     await publisher.publish(eventSchemas, 'task.updated.v1', taskUpdated({ taskId: 'CAD-1' }));
     await waitFor(() => received.length === 1);
+    expect(availability).toEqual([true]);
 
     await nats.restart();
     await waitFor(async () => {
@@ -269,9 +287,15 @@ describe('messaging connection on a real NATS server', () => {
       }
     }, 60_000);
     await waitFor(() => received.includes('CAD-2'), 60_000);
+    await waitFor(() => availability.includes(false) && availability.at(-1) === true, 60_000);
     await application.close();
+    unwatch();
+    unwatchRejected();
 
     expect(received[0]).toBe('CAD-1');
-    expect(application.get(MessagingConnection).isClosed()).toBe(true);
+    expect(connection.isClosed()).toBe(true);
+    expect(availability.at(-1)).toBe(false);
+    expect(rejected).toEqual(availability);
+    expect(removed).toEqual([true]);
   }, 120_000);
 });

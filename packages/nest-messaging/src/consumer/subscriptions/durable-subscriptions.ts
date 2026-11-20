@@ -1,3 +1,5 @@
+import { addAbortListener } from 'node:events';
+
 import {
   AckPolicy,
   DeliverPolicy,
@@ -5,6 +7,7 @@ import {
   JetStreamApiError,
   type Consumer,
   type ConsumerInfo,
+  type ConsumerMessages,
   type JetStreamManager,
 } from '@nats-io/jetstream';
 import { nanos } from '@nats-io/transport-node';
@@ -26,6 +29,16 @@ import type { EventSubscription } from './event-subscription.js';
 import type { EventTarget, PreparedEvent } from './event-target.js';
 import { resolveRedelivery } from './redelivery-policy.js';
 import type { RunningConsumer } from './running-consumer.js';
+
+/**
+ * Constant MAX_CATCH_UP_HANDLERS
+ *
+ * @description
+ * Limits the broker information requests issued by one catch-up check.
+ *
+ * @type {number}
+ */
+const MAX_CATCH_UP_HANDLERS: number = 32;
 
 /**
  * Class DurableSubscriptions
@@ -175,6 +188,103 @@ export class DurableSubscriptions {
       void consumer.messages?.close().catch(() => undefined);
     }
     return running;
+  }
+
+  /**
+   * Method areCaughtUp
+   *
+   * @description
+   * Checks a bounded set of active durable handlers without querying unregistered consumers.
+   *
+   * @param {readonly string[]} handlerNames - Handler names as passed to subscribe.
+   * @param {AbortSignal | undefined} signal - Cancels waiting for the result.
+   * @returns {Promise<boolean>} Whether the check found every handler caught up in a continuous available interval.
+   */
+  public async areCaughtUp(
+    handlerNames: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const cancellation: AbortSignal =
+      signal === undefined ? this.shutdown : AbortSignal.any([this.shutdown, signal]);
+    const epoch: number | undefined = this.connection.currentAvailabilityEpoch();
+    if (
+      cancellation.aborted ||
+      epoch === undefined ||
+      handlerNames.length === 0 ||
+      handlerNames.length > MAX_CATCH_UP_HANDLERS
+    ) {
+      return false;
+    }
+    const probe: Promise<boolean> = this.readCatchUp(handlerNames, epoch, cancellation).catch(
+      () => false,
+    );
+    return new Promise<boolean>((resolve: (value: boolean) => void) => {
+      const abortListener: Disposable = addAbortListener(cancellation, () => {
+        resolve(false);
+      });
+      void probe.then((caughtUp: boolean): void => {
+        abortListener[Symbol.dispose]();
+        resolve(
+          caughtUp && !cancellation.aborted && this.connection.currentAvailabilityEpoch() === epoch,
+        );
+      });
+    });
+  }
+
+  /**
+   * Method readCatchUp
+   *
+   * @description
+   * Reads only exact consumer-info subjects for locally running registrations. A replaced pull
+   * loop or interrupted availability makes any previously sampled counts stale.
+   *
+   * @param {readonly string[]} handlerNames - Handler names as passed to subscribe.
+   * @param {number} epoch - Available interval in which the read began.
+   * @param {AbortSignal} signal - Cancellation of the check or application shutdown.
+   * @returns {Promise<boolean>} Whether every sampled consumer has neither pending nor unacknowledged messages.
+   */
+  private async readCatchUp(
+    handlerNames: readonly string[],
+    epoch: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const snapshots: Map<RunningConsumer, ConsumerMessages> = new Map<
+      RunningConsumer,
+      ConsumerMessages
+    >();
+    for (const handler of new Set(handlerNames)) {
+      const running: RunningConsumer | undefined = this.consumers.get(
+        durableConsumerName(this.options.service, handler),
+      );
+      if (running?.messages === undefined) {
+        return false;
+      }
+      snapshots.set(running, running.messages);
+    }
+    const manager: JetStreamManager = await this.connection.manager();
+    signal.throwIfAborted();
+    if (this.connection.currentAvailabilityEpoch() !== epoch) {
+      return false;
+    }
+    const ready: boolean[] = await Promise.all(
+      [...snapshots.keys()].map(async ({ target }: RunningConsumer): Promise<boolean> => {
+        const info: ConsumerInfo = await manager.consumers.info(
+          target.route.stream,
+          target.consumer,
+        );
+        return (
+          info.config.filter_subject === target.route.subject &&
+          info.num_pending === 0 &&
+          info.num_ack_pending === 0
+        );
+      }),
+    );
+    signal.throwIfAborted();
+    return (
+      this.connection.currentAvailabilityEpoch() === epoch &&
+      ready.every(Boolean) &&
+      [...snapshots].every(([running, messages]) => running.messages === messages)
+    );
   }
 
   /**

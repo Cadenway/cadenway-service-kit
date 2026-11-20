@@ -63,6 +63,59 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
   private readonly unhealthyConsumers: Map<string, string> = new Map<string, string>();
 
   /**
+   * Property availabilityListeners
+   *
+   * @description
+   * Observers of availability transitions, with one entry per watch.
+   *
+   * @type {Set<(available: boolean) => void>}
+   * @readonly
+   */
+  private readonly availabilityListeners: Set<(available: boolean) => void> = new Set<
+    (available: boolean) => void
+  >();
+
+  /**
+   * Property connected
+   *
+   * @description
+   * Whether the transport's latest status permits delivery.
+   *
+   * @type {boolean}
+   */
+  private connected: boolean = true;
+
+  /**
+   * Property closing
+   *
+   * @description
+   * Once delivery shutdown starts, later transport events cannot reopen admission.
+   *
+   * @type {boolean}
+   */
+  private closing: boolean = false;
+
+  /**
+   * Property available
+   *
+   * @description
+   * The most recent combination of transport availability and local durable health.
+   *
+   * @type {boolean}
+   */
+  private available: boolean = true;
+
+  /**
+   * Property availabilityEpoch
+   *
+   * @description
+   * Identifies a continuous availability interval for asynchronous backlog checks.
+   *
+   * @type {number}
+   */
+  private availabilityEpoch: number = 0;
+
+  /**
    * Property shutdownTimeoutMs
    *
    * @description
@@ -205,6 +258,52 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
   }
 
   /**
+   * Method watchAvailability
+   *
+   * @description
+   * Calls the listener synchronously with the current transport and durable health, then whenever
+   * their combined availability changes. A disconnect, stale connection, shutdown or unhealthy
+   * local durable makes the state false. A successful reconnect or consumer recovery can restore
+   * it once all those conditions are healthy. Inspect backlog separately through EventConsumers.
+   *
+   * @param {(available: boolean) => void} listener - Observer invoked synchronously. A thrown error or rejected promise is isolated.
+   * @returns {() => void} Removes this watch.
+   */
+  public watchAvailability(listener: (available: boolean) => void): () => void {
+    const observer: (available: boolean) => unknown = listener;
+    const observerFailed = (): void => {
+      this.logger.warn('NATS availability observer failed');
+    };
+    const notify = (available: boolean): void => {
+      try {
+        void Promise.resolve(observer(available)).catch(observerFailed);
+      } catch {
+        observerFailed();
+      }
+    };
+    if (!this.closing && !this.nats.isClosed()) {
+      this.availabilityListeners.add(notify);
+    }
+    notify(this.currentAvailabilityEpoch() !== undefined);
+    return (): void => {
+      this.availabilityListeners.delete(notify);
+    };
+  }
+
+  /**
+   * Method currentAvailabilityEpoch
+   *
+   * @description
+   * Identifies the available interval that a caller can check again after an asynchronous read.
+   *
+   * @returns {number | undefined} The current epoch when delivery is available.
+   * @internal
+   */
+  public currentAvailabilityEpoch(): number | undefined {
+    return this.available && !this.nats.isClosed() ? this.availabilityEpoch : undefined;
+  }
+
+  /**
    * Method reportConsumer
    *
    * @description
@@ -220,6 +319,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     } else {
       this.unhealthyConsumers.set(consumer, problem);
     }
+    this.updateAvailability();
   }
 
   /**
@@ -239,6 +339,19 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
   }
 
   /**
+   * Method stopDeliveryAvailability
+   *
+   * @description
+   * Closes admission at the beginning of shutdown without interrupting handlers in flight.
+   *
+   * @internal
+   */
+  public stopDeliveryAvailability(): void {
+    this.closing = true;
+    this.updateAvailability();
+  }
+
+  /**
    * Method onApplicationShutdown
    *
    * @description
@@ -250,6 +363,7 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @returns {Promise<void>} Resolves once the connection is closed.
    */
   public async onApplicationShutdown(): Promise<void> {
+    this.stopDeliveryAvailability();
     if (this.nats.isClosed()) {
       return;
     }
@@ -292,28 +406,72 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @returns {Promise<void>} Resolves when the connection is closed.
    */
   private async logStatus(): Promise<void> {
-    for await (const status of this.nats.status()) {
-      switch (status.type) {
-        case 'disconnect':
-          this.logger.warn({ server: status.server }, 'NATS connection lost');
-          break;
-        case 'reconnect':
-          this.logger.log({ server: status.server }, 'NATS connection restored');
-          break;
-        case 'reconnecting':
-          this.logger.debug('reconnecting to NATS');
-          break;
-        case 'staleConnection':
-          this.logger.warn('NATS connection is stale');
-          break;
-        case 'slowConsumer':
-          this.logger.warn({ pending: status.pending }, 'NATS subscription is a slow consumer');
-          break;
-        case 'error':
-          this.logger.error({ err: status.error }, 'NATS connection error');
-          break;
-        default:
-          break;
+    try {
+      for await (const status of this.nats.status()) {
+        switch (status.type) {
+          case 'disconnect':
+            this.connected = false;
+            this.updateAvailability();
+            this.logger.warn({ server: status.server }, 'NATS connection lost');
+            break;
+          case 'reconnect':
+            this.connected = true;
+            this.updateAvailability();
+            this.logger.log({ server: status.server }, 'NATS connection restored');
+            break;
+          case 'reconnecting':
+            this.connected = false;
+            this.updateAvailability();
+            this.logger.debug('reconnecting to NATS');
+            break;
+          case 'staleConnection':
+            this.connected = false;
+            this.updateAvailability();
+            this.logger.warn('NATS connection is stale');
+            break;
+          case 'slowConsumer':
+            this.logger.warn({ pending: status.pending }, 'NATS subscription is a slow consumer');
+            break;
+          case 'error':
+            this.logger.error({ err: status.error }, 'NATS connection error');
+            break;
+          default:
+            break;
+        }
+      }
+    } catch {
+      this.logger.warn('NATS status monitoring stopped');
+    } finally {
+      this.connected = false;
+      this.updateAvailability();
+      this.availabilityListeners.clear();
+    }
+  }
+
+  /**
+   * Method updateAvailability
+   *
+   * @description
+   * Invalidates outstanding snapshots and synchronously notifies observers when delivery changes.
+   */
+  private updateAvailability(): void {
+    const available: boolean =
+      this.connected &&
+      !this.closing &&
+      !this.nats.isClosed() &&
+      this.unhealthyConsumers.size === 0;
+    if (available === this.available) {
+      return;
+    }
+    this.available = available;
+    this.availabilityEpoch += 1;
+    const epoch: number = this.availabilityEpoch;
+    for (const listener of [...this.availabilityListeners]) {
+      if (this.availabilityEpoch !== epoch) {
+        return;
+      }
+      if (this.availabilityListeners.has(listener)) {
+        listener(available);
       }
     }
   }
