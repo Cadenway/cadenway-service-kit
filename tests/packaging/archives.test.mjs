@@ -26,6 +26,8 @@ const baseline = {
 // Optional interface properties and trailing constructor parameters added since the baseline.
 // Each export must otherwise match its release. Clear an entry when the baseline includes it.
 const addedMembers = {
+  '@cadenway/nest-jobs#JobEnqueueOptions': ['startAfter'],
+  '@cadenway/nest-jobs/runtime#JobEnqueueOptions': ['startAfter'],
   '@cadenway/nest-common#InternalHttpClientOptions': ['allowedUnavailableProblemCodes'],
   '@cadenway/nest-common#InternalRequestInit': ['streamTimeoutMs'],
   '@cadenway/nest-common/database#DatabaseConfig': ['DATABASE_TRANSACTION_MAX_ATTEMPTS'],
@@ -66,6 +68,8 @@ test('packed Service Kit preserves the released public API and supports isolated
     join(full, 'consumer.mts'),
     `
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
+import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
+import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
 import { z } from 'zod';
 
 const schema = z.object({ ...databaseConfigShape, SERVICE_NAME: z.string() });
@@ -75,7 +79,9 @@ const parsed = schema.parse({
 });
 const config: DatabaseConfig = parsed;
 const attempts: number = parsed.DATABASE_TRANSACTION_MAX_ATTEMPTS;
-void [config, attempts];
+const enqueue: JobEnqueueOptions = { startAfter: new Date() };
+const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
+void [config, attempts, runtimeEnqueue];
 `,
   );
   const released = Object.fromEntries(

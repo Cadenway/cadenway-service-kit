@@ -315,6 +315,11 @@ are only ever added to it.
 
 `enqueue` returns `{ jobId, duplicate }`.
 
+Pass `{ startAfter: dueAt }`, where `dueAt` is a valid `Date`, to make the job eligible from
+that instant. Enqueue still uses the caller's transaction. The worker picks up the job on a poll
+after both the instant and the commit. Waiting retention starts at `dueAt`. Without `startAfter`,
+the job is eligible as soon as the transaction commits.
+
 ## Occurrence key
 
 ```ts
@@ -322,7 +327,7 @@ const result = await this.jobs.enqueue(
   tx,
   'reminder.send',
   { reminderId, occurrence },
-  { occurrenceKey: `${reminderId}:${occurrence}` },
+  { occurrenceKey: `${reminderId}:${occurrence}`, startAfter: dueAt },
 );
 // result.duplicate === true: the occurrence was already enqueued, nothing was inserted.
 ```
@@ -334,6 +339,9 @@ scope and the key: the first 122 bits of the SHA-256 of the JSON array
 triple inserts nothing and returns `duplicate: true` with the id of the existing job. Two
 concurrent transactions are serialized by the primary key: the second waits for the first and is a
 duplicate if the first commits.
+
+A duplicate preserves the first job's payload and start time. To schedule a new occurrence,
+use a new occurrence key and have the worker verify the current business row before acting.
 
 **The key is scoped to the organization.** A key that is not globally unique, such as
 `digest:2026-11-14`, identifies one occurrence per organization: one organization cannot suppress
@@ -493,8 +501,8 @@ about each such schedule. Occurrences that came due while no replica was running
 - **No DDL at run time, so no index rebuild.** pg-boss can rebuild bloated indexes, which needs
   their ownership; the runtime has `reindex` off and logs the `index_bloat` warning instead. The
   statistics history and the warning history of pg-boss, which need partitions, are off too.
-- **Not exposed yet:** delayed enqueue (`startAfter`), priorities, batches, dead-letter replay,
-  queue statistics, LISTEN/NOTIFY wake-ups. A worker sees a new job at its next poll.
+- **Not exposed yet:** priorities, batches, dead-letter replay, queue statistics, LISTEN/NOTIFY
+  wake-ups. A worker sees a new eligible job at its next poll.
 - **`retryBackoff` is a boolean.** The backoff is the one of pg-boss, doubling with jitter; no
   other curve can be chosen.
 - **The instance registry.** pg-boss records each running instance in its `instance` table: host

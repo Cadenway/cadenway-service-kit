@@ -22,10 +22,10 @@ export abstract class JobProducer {
    * @param {JobsTransaction} tx - Open use-case transaction and its organization.
    * @param {string} queue - Declared queue that receives the job.
    * @param {unknown} payload - JSON-serializable data delivered to the handler.
-   * @param {JobEnqueueOptions} [options] - Occurrence key that deduplicates jobs within this queue and organization.
+   * @param {JobEnqueueOptions} [options] - Occurrence key and earliest start, if supplied.
    * @returns {Promise<JobEnqueueResult>} Job identifier and whether its occurrence was already stored.
    * @throws {Error} When the producer capability is disabled, the runtime is unavailable, or the
-   * queue or occurrence key is invalid.
+   * queue, occurrence key or start date is invalid.
    */
   public abstract enqueue(
     tx: JobsTransaction,

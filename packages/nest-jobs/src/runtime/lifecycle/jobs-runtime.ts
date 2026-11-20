@@ -255,7 +255,7 @@ export class JobsRuntime {
    * @param {JobsTransaction} tx - Caller transaction and its organization.
    * @param {string} queue - Declared queue to enqueue in.
    * @param {unknown} payload - Job payload.
-   * @param {JobEnqueueOptions} options - Optional occurrence key.
+   * @param {JobEnqueueOptions} options - Optional occurrence key and earliest start.
    * @returns {Promise<JobEnqueueResult>} Job id and whether the occurrence already existed.
    */
   public async enqueue(

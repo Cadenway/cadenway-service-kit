@@ -161,6 +161,7 @@ interface OrganizationScope {
  */
 const queues: readonly JobQueueDeclaration[] = [
   { name: 'transactional' },
+  { name: 'delayed', retentionSeconds: 60 },
   { name: 'occurrences' },
   { name: 'occurrences-other' },
   { name: 'flaky', retryLimit: 2, retryDelaySeconds: 1 },
@@ -366,6 +367,73 @@ describe('JobsService', () => {
       },
     ]);
     expect(received.map((job: Job): string => job.id)).not.toContain(rolledBack.jobId);
+  });
+
+  it('delays a committed job and keeps its original start and retention on replay', async () => {
+    const received: Job<{ reminderId: string }>[] = [];
+    await jobs.work<{ reminderId: string }>(
+      'delayed',
+      (job: Job<{ reminderId: string }>): Promise<void> => {
+        received.push(job);
+        return Promise.resolve();
+      },
+      { pollingIntervalSeconds: 0.5 },
+    );
+    const clock = await queryAs<{ due_at: Date }>(
+      database.admin,
+      "SELECT now() + interval '4 seconds' AS due_at",
+    );
+    const startAfter = clock.rows[0]?.due_at;
+    if (startAfter === undefined) {
+      throw new Error('The test database did not return a clock value.');
+    }
+    const options = { occurrenceKey: 'r-1:1', startAfter };
+    const rolledBack = await transact('org-1', 'ROLLBACK', (tx: JobsTransaction) =>
+      jobs.enqueue(tx, 'delayed', { reminderId: 'rolled-back' }, options),
+    );
+    expect(await jobsOf('delayed')).toEqual([]);
+
+    const committed = await transact('org-1', 'COMMIT', (tx: JobsTransaction) =>
+      jobs.enqueue(tx, 'delayed', { reminderId: 'r-1' }, options),
+    );
+    expect(committed).toEqual({ jobId: rolledBack.jobId, duplicate: false });
+    const duplicate = await transact('org-1', 'COMMIT', (tx: JobsTransaction) =>
+      jobs.enqueue(
+        tx,
+        'delayed',
+        { reminderId: 'duplicate' },
+        { ...options, startAfter: new Date(startAfter.getTime() - 60_000) },
+      ),
+    );
+    expect(duplicate).toEqual({ jobId: committed.jobId, duplicate: true });
+
+    await sleep(750);
+    expect(received).toEqual([]);
+    await waitFor(
+      async (): Promise<boolean> => (await stateOf('delayed', committed.jobId)) === 'completed',
+      10_000,
+    );
+
+    expect(received).toMatchObject([
+      { id: committed.jobId, organizationId: 'org-1', payload: { reminderId: 'r-1' } },
+    ]);
+    const timing = await queryAs<{
+      start_after: Date;
+      keep_until: Date;
+      started_when_due: boolean;
+    }>(
+      database.admin,
+      `SELECT start_after, keep_until, started_on >= start_after AS started_when_due
+       FROM pgboss.job WHERE name = $1 AND id = $2`,
+      ['delayed', committed.jobId],
+    );
+    expect(timing.rows).toEqual([
+      {
+        start_after: startAfter,
+        keep_until: new Date(startAfter.getTime() + 60_000),
+        started_when_due: true,
+      },
+    ]);
   });
 
   it('makes a second enqueue with the same occurrence key a no-op', async () => {
