@@ -372,6 +372,27 @@ the configured JetStream timeout. Catch-up only samples current broker state and
 when a new message arrives. It does not confirm the effects of expired, terminated or
 dead-lettered messages.
 
+`EventConsumers.readProgress(handlerNames, signal?)` samples one to 32 locally running handlers
+on the configured ordinary event stream. It reads the stream high watermark before sampling
+the durables, then reads the stream retention floor and verifies the stream identity and gap
+count again. The response has `stream`, `createdAt`, `firstSequence`, `lastSequence`,
+`retainedGapCount`, and `consumers`. The consumer entries have the local `handler` name,
+durable `createdAt`, `deliveredSequence`, `ackFloorSequence`, `pending` and `ackPending`.
+Sequences use stream coordinates. Keep the timestamp strings at full precision when comparing
+observations across a rebuild.
+
+The probe reads the exact stream and consumer info subjects. It returns `undefined` for an
+unknown, restricted or stopped handler, cancellation, interrupted delivery availability,
+malformed metadata, an unsuccessful broker read, or a recreated stream during sampling.
+Cancellation stops waiting and requests already sent use the configured JetStream timeout.
+Only an explicit call performs these reads. The response is a bounded observation of a moving
+broker, with consumer counts that may include events above the sampled `lastSequence`. A
+filtered consumer's acknowledgement floor may stay below the stream head even when it has no
+backlog. Compare the retention bounds and `retainedGapCount` across rebuild observations. A
+positive count indicates holes in the retained range. Equal counts can describe different
+holes. Check for missing history and terminal deliveries before promotion, and coordinate
+consumer resets or stream administration with the rebuild.
+
 ### Terminal consumer advisory guard
 
 `MessagingConnection.isConsumerAdvisoryStreamClear(advisoryStream, eventStream, durables, signal?)`

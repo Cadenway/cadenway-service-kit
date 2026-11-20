@@ -19,6 +19,7 @@ import { EventDelivery } from './delivery/event-delivery.js';
 import { EVENT_DEDUPLICATOR, type EventDeduplicator } from './delivery/event-deduplicator.js';
 import { DurableSubscriptions } from './subscriptions/durable-subscriptions.js';
 import type { EventSubscription } from './subscriptions/event-subscription.js';
+import type { EventStreamProgress } from './subscriptions/event-stream-progress.js';
 
 export type { EventContext } from './delivery/event-context.js';
 export type { EventRedelivery } from './subscriptions/event-redelivery.js';
@@ -208,6 +209,27 @@ export class EventConsumers implements BeforeApplicationShutdown {
    */
   public areCaughtUp(handlerNames: readonly string[], signal?: AbortSignal): Promise<boolean> {
     return this.subscriptions.areCaughtUp(handlerNames, signal);
+  }
+
+  /**
+   * Method readProgress
+   *
+   * @description
+   * Reads the event stream before and after sampling the registered durables. The result pairs
+   * the first stream read's high watermark with the final retention floor and a consistent
+   * count of deleted positions within the retained range.
+   * Compare the stream and consumer creation timestamps with earlier observations to detect
+   * recreation. Broker positions and counts are evidence of delivery progress.
+   *
+   * @param {readonly string[]} handlerNames - Between one and 32 locally registered names on the ordinary event stream.
+   * @param {AbortSignal | undefined} signal - Optional cancellation for the check.
+   * @returns {Promise<EventStreamProgress | undefined>} The observation, or undefined when metadata, availability or identity cannot be confirmed.
+   */
+  public readProgress(
+    handlerNames: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<EventStreamProgress | undefined> {
+    return this.subscriptions.readProgress(handlerNames, signal);
   }
 
   /**
