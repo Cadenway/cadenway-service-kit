@@ -1,6 +1,8 @@
 import type { Attributes, Span } from '@opentelemetry/api';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
 
+import { mapSpanExports, spanForExport } from './span-export-view.js';
+
 /**
  * Constant REDACTED
  *
@@ -164,20 +166,8 @@ function redactSpan(paths: RegExp, span: ReadableSpan): ReadableSpan {
     ROUTE_TEMPLATE.test(route) &&
     span.name.endsWith(route) &&
     !paths.test(span.name.slice(0, -route.length));
-  return {
+  return spanForExport(span, {
     name: hasRouteName ? span.name : redactText(paths, span.name),
-    kind: span.kind,
-    spanContext: () => span.spanContext(),
-    parentSpanContext: span.parentSpanContext,
-    startTime: span.startTime,
-    endTime: span.endTime,
-    duration: span.duration,
-    ended: span.ended,
-    resource: span.resource,
-    instrumentationScope: span.instrumentationScope,
-    droppedAttributesCount: span.droppedAttributesCount,
-    droppedEventsCount: span.droppedEventsCount,
-    droppedLinksCount: span.droppedLinksCount,
     status:
       span.status.message === undefined || requestPath !== undefined
         ? { code: span.status.code }
@@ -198,7 +188,7 @@ function redactSpan(paths: RegExp, span: ReadableSpan): ReadableSpan {
           ? undefined
           : redactAttributes(paths, link.attributes, requestPath),
     })),
-  };
+  });
 }
 
 /**
@@ -216,14 +206,5 @@ export function redactSensitiveHttpPathExports(
   exporter: SpanExporter,
   paths: RegExp,
 ): SpanExporter {
-  return {
-    export: (spans, callback) => {
-      exporter.export(
-        spans.map((span) => redactSpan(paths, span)),
-        callback,
-      );
-    },
-    forceFlush: () => exporter.forceFlush?.() ?? Promise.resolve(),
-    shutdown: () => exporter.shutdown(),
-  };
+  return mapSpanExports(exporter, (span) => redactSpan(paths, span));
 }

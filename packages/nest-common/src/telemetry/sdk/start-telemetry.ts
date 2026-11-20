@@ -19,10 +19,11 @@ import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { defaultResource, resourceFromAttributes } from '@opentelemetry/resources';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { BatchSpanProcessor, NoopSpanProcessor } from '@opentelemetry/sdk-trace';
+import { BatchSpanProcessor, NoopSpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
 import { readPackageVersion } from '../../bootstrap/application/package-version.js';
+import { redactRedisErrorExports } from './redis-diagnostics.js';
 import {
   markSensitiveHttpPath,
   redactSensitiveHttpPathExports,
@@ -73,6 +74,18 @@ export interface TelemetryOptions {
    * @readonly
    */
   readonly sensitiveHttpPathPrefixes?: readonly string[];
+
+  /**
+   * Property redactRedisCommandArguments
+   *
+   * @description
+   * Exports only the Redis command name and omits free-form exception details from Redis and
+   * automatic HTTP spans. Defaults to false.
+   *
+   * @type {boolean | undefined}
+   * @readonly
+   */
+  readonly redactRedisCommandArguments?: boolean;
   // #endregion
 }
 
@@ -218,7 +231,13 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
   }
   const exporting: boolean = collectorConfigured();
   const paths = sensitiveHttpPaths(options.sensitiveHttpPathPrefixes ?? []);
-  const exporter = exporting ? new OTLPTraceExporter() : undefined;
+  let exporter: SpanExporter | undefined = exporting ? new OTLPTraceExporter() : undefined;
+  if (exporter !== undefined && paths !== undefined) {
+    exporter = redactSensitiveHttpPathExports(exporter, paths);
+  }
+  if (exporter !== undefined && options.redactRedisCommandArguments === true) {
+    exporter = redactRedisErrorExports(exporter);
+  }
   const sdk: NodeSDK = new NodeSDK({
     resource: defaultResource().merge(
       resourceFromAttributes({
@@ -253,7 +272,10 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
               },
       }),
       new PgInstrumentation(),
-      new IORedisInstrumentation(),
+      new IORedisInstrumentation({
+        dbStatementSerializer:
+          options.redactRedisCommandArguments === true ? (command) => command : undefined,
+      }),
       new UndiciInstrumentation({
         requestHook:
           paths === undefined
@@ -266,12 +288,7 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
     // Explicit on both branches: left undefined, the SDK would fall back to its own environment
     // defaults and export to a local collector nobody asked for.
     spanProcessors: [
-      exporter === undefined
-        ? new NoopSpanProcessor()
-        : new BatchSpanProcessor({
-            exporter:
-              paths === undefined ? exporter : redactSensitiveHttpPathExports(exporter, paths),
-          }),
+      exporter === undefined ? new NoopSpanProcessor() : new BatchSpanProcessor({ exporter }),
     ],
     metricReaders: exporting
       ? [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter() })]

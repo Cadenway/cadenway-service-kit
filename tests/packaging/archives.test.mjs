@@ -33,7 +33,10 @@ const addedMembers = {
   '@cadenway/nest-common/database#SystemTransactionRunner': ['maxAttempts'],
   '@cadenway/nest-common/database#TenantTransactionRunner': ['maxAttempts'],
   '@cadenway/nest-common/database#TransactionOptions': ['maxAttempts'],
-  '@cadenway/nest-common/telemetry#TelemetryOptions': ['sensitiveHttpPathPrefixes'],
+  '@cadenway/nest-common/telemetry#TelemetryOptions': [
+    'sensitiveHttpPathPrefixes',
+    'redactRedisCommandArguments',
+  ],
   '@cadenway/nest-messaging#EventSubscription': ['redelivery'],
 };
 
