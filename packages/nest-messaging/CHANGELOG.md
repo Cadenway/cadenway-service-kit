@@ -1,5 +1,11 @@
 # @cadenway/nest-messaging
 
+## 0.4.0
+
+### Minor Changes
+
+- c31cc06: Allow PostgreSQL-backed event subscriptions to opt into repeatable-read isolation for the deduplication and handler transaction.
+
 ## 0.3.5
 
 ### Patch Changes
