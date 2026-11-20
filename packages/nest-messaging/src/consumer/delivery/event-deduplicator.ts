@@ -75,6 +75,17 @@ export interface EventDelivery {
    * @readonly
    */
   readonly envelope: EventEnvelope;
+
+  /**
+   * Property transactionIsolationLevel
+   *
+   * @description
+   * Isolation requested for the transaction that records this delivery and runs its handler.
+   *
+   * @type {'repeatable read' | undefined}
+   * @readonly
+   */
+  readonly transactionIsolationLevel?: 'repeatable read';
   // #endregion
 }
 

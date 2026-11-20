@@ -125,6 +125,9 @@ export class DurableSubscriptions {
         this.tuning.retryDelaysMs,
         route,
       ),
+      ...(subscription.transactionIsolationLevel === undefined
+        ? {}
+        : { transactionIsolationLevel: subscription.transactionIsolationLevel }),
       prepare: (candidate: unknown): PreparedEvent => {
         const payload = validateEvent(subscription.schemas, subscription.event, candidate);
         return {

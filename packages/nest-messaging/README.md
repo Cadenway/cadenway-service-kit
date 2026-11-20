@@ -341,6 +341,14 @@ after the next delay, when it finds the id and skips the handler.
 the event only when the event is newer, and resolves to whether to apply it: a late redelivery of
 an older version changes nothing, and two organizations never compete for the same key.
 
+Set `transactionIsolationLevel: 'repeatable read'` on a subscription that needs one PostgreSQL
+snapshot for several reads and transactional writes. The setting applies to the entire delivery,
+including the deduplication claim and any outbox writes. It requires PostgreSQL event
+deduplication. Registration fails before creating or binding a consumer without it. Omitting
+the setting uses the database's default isolation. A nested call to the matching runner can
+join the transaction with the same isolation level. A serialization failure rolls back the
+delivery transaction and is retried through the configured JetStream redelivery schedule.
+
 `subscribe` and `onRebuild` reject once the application is shutting down.
 
 ### Redelivery schedule

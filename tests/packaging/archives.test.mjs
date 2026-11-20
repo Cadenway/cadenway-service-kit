@@ -38,7 +38,7 @@ const addedMembers = {
     'sensitiveHttpPathPrefixes',
     'redactRedisCommandArguments',
   ],
-  '@cadenway/nest-messaging#EventSubscription': ['redelivery'],
+  '@cadenway/nest-messaging#EventSubscription': ['redelivery', 'transactionIsolationLevel'],
 };
 
 test('packed Service Kit preserves the released public API and supports isolated optional peers', (context) => {
