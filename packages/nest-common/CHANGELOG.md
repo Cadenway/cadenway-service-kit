@@ -1,5 +1,13 @@
 # @cadenway/nest-common
 
+## 0.10.0
+
+### Minor Changes
+
+- 5dca71c: Add the opt-in `redactRedisCommandArguments` telemetry option. It preserves Redis operation
+  names and trace context while omitting command arguments and free-form Redis and automatic HTTP
+  trace error details.
+
 ## 0.9.0
 
 ### Minor Changes
