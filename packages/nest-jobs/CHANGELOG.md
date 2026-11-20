@@ -1,5 +1,11 @@
 # @cadenway/nest-jobs
 
+## 0.4.0
+
+### Minor Changes
+
+- 365bde1: Allow transactional enqueue to set a job's earliest start with the optional `startAfter` date. Occurrence keys also deduplicate delayed jobs.
+
 ## 0.3.1
 
 ### Patch Changes
