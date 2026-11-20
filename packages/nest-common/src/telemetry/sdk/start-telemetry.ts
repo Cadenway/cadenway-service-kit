@@ -23,6 +23,11 @@ import { BatchSpanProcessor, NoopSpanProcessor } from '@opentelemetry/sdk-trace'
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
 import { readPackageVersion } from '../../bootstrap/application/package-version.js';
+import {
+  markSensitiveHttpPath,
+  redactSensitiveHttpPathExports,
+  sensitiveHttpPaths,
+} from './sensitive-http-paths.js';
 import { registerTelemetryShutdown } from './telemetry-handle.js';
 
 /**
@@ -55,6 +60,19 @@ export interface TelemetryOptions {
    * @readonly
    */
   readonly version?: string;
+
+  /**
+   * Property sensitiveHttpPathPrefixes
+   *
+   * @description
+   * Literal absolute paths ending in a slash, matched case-insensitively. For matched HTTP
+   * requests the trace exporter removes the path tail and query, including on unmatched routes.
+   * Omit to preserve the default telemetry attributes.
+   *
+   * @type {readonly string[] | undefined}
+   * @readonly
+   */
+  readonly sensitiveHttpPathPrefixes?: readonly string[];
   // #endregion
 }
 
@@ -192,13 +210,15 @@ function observeEventLoopDelay(): IntervalHistogram {
  *
  * @param {TelemetryOptions} options - Identity of the application.
  * @returns {TelemetryHandle} The running telemetry.
- * @throws {Error} When `OTEL_EXPORTER_OTLP_ENDPOINT` is set but is not an HTTP or HTTPS URL.
+ * @throws {Error} When the collector URL or a sensitive path prefix is invalid.
  */
 export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
   if (state.handle !== undefined) {
     return state.handle;
   }
   const exporting: boolean = collectorConfigured();
+  const paths = sensitiveHttpPaths(options.sensitiveHttpPathPrefixes ?? []);
+  const exporter = exporting ? new OTLPTraceExporter() : undefined;
   const sdk: NodeSDK = new NodeSDK({
     resource: defaultResource().merge(
       resourceFromAttributes({
@@ -210,18 +230,48 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
       new HttpInstrumentation({
         ignoreIncomingRequestHook: (request: IncomingMessage) =>
           (request.url ?? '').startsWith(HEALTH_PATH_PREFIX),
+        requestHook:
+          paths === undefined
+            ? undefined
+            : (span, request) => {
+                markSensitiveHttpPath(
+                  span,
+                  paths,
+                  'path' in request ? request.path : (request.url ?? ''),
+                );
+              },
       }),
-      new ExpressInstrumentation(),
+      new ExpressInstrumentation({
+        requestHook:
+          paths === undefined
+            ? undefined
+            : (
+                span,
+                { request }: { request: IncomingMessage & { originalUrl?: string } },
+              ): void => {
+                markSensitiveHttpPath(span, paths, request.originalUrl ?? request.url ?? '');
+              },
+      }),
       new PgInstrumentation(),
       new IORedisInstrumentation(),
-      new UndiciInstrumentation(),
+      new UndiciInstrumentation({
+        requestHook:
+          paths === undefined
+            ? undefined
+            : (span, request) => {
+                markSensitiveHttpPath(span, paths, request.path);
+              },
+      }),
     ],
     // Explicit on both branches: left undefined, the SDK would fall back to its own environment
     // defaults and export to a local collector nobody asked for.
     spanProcessors: [
-      exporting
-        ? new BatchSpanProcessor({ exporter: new OTLPTraceExporter() })
-        : new NoopSpanProcessor(),
+      exporter === undefined
+        ? new NoopSpanProcessor()
+        : new BatchSpanProcessor({
+            exporter:
+              paths === undefined ? exporter : redactSensitiveHttpPathExports(exporter, paths),
+          }),
     ],
     metricReaders: exporting
       ? [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter() })]

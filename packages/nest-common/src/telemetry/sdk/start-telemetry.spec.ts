@@ -67,6 +67,18 @@ describe('startTelemetry', () => {
     );
   });
 
+  it.each(['/public/share', 'https://example.com/public/share/', '/public/:share/'])(
+    'refuses nonliteral or unterminated sensitive prefix %s',
+    (sensitiveHttpPathPrefix) => {
+      expect(() =>
+        startTelemetry({
+          service: 'sample-service',
+          sensitiveHttpPathPrefixes: [sensitiveHttpPathPrefix],
+        }),
+      ).toThrow('Sensitive HTTP path prefixes must be absolute static paths ending in a slash.');
+    },
+  );
+
   it('exports spans with the service identity to the configured collector', async () => {
     const collector: Collector = await startCollector();
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = collector.url;

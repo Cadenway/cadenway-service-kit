@@ -59,6 +59,17 @@ interface Reply {
   readonly delayMs?: number;
 
   /**
+   * Property bodyDelayMs
+   *
+   * @description
+   * Delays the body after flushing the response headers.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly bodyDelayMs?: number;
+
+  /**
    * Property contentType
    *
    * @description
@@ -138,10 +149,15 @@ describe('InternalHttpClient', () => {
     server = createServer((request: IncomingMessage, response: ServerResponse) => {
       received.push(request);
       const reply: Reply = replies.shift() ?? { status: 200, body: { ok: true } };
-      void delay(reply.delayMs ?? 0).then(() => {
-        response
-          .writeHead(reply.status, { 'content-type': reply.contentType ?? 'application/json' })
-          .end(JSON.stringify(reply.body ?? {}));
+      void delay(reply.delayMs ?? 0).then(async () => {
+        response.writeHead(reply.status, {
+          'content-type': reply.contentType ?? 'application/json',
+        });
+        if (reply.bodyDelayMs !== undefined) {
+          response.flushHeaders();
+          await delay(reply.bodyDelayMs);
+        }
+        response.end(JSON.stringify(reply.body ?? {}));
       });
     });
     await new Promise<void>((resolve) => {
@@ -246,6 +262,93 @@ describe('InternalHttpClient', () => {
     expect(exhausted).toMatchObject({ status: 503, code: 'upstream.deadline-exceeded' });
     expect(received).toHaveLength(1);
   });
+
+  it('keeps a native response body readable beyond two seconds when the stream opts in', async () => {
+    replies = [{ status: 200, bodyDelayMs: 2150, body: { complete: true } }];
+    const response: Response = await runWithOrganizationContext(context, () =>
+      client().fetch('/stream', { method: 'POST', idempotent: false, streamTimeoutMs: 5000 }),
+    );
+
+    expect(response.url).toBe(`${baseUrl}/stream`);
+    expect(received[0]?.headers.authorization).toMatch(/^Bearer /u);
+    const granted: number = Number(received[0]?.headers['x-request-timeout-ms']);
+    expect(granted).toBeGreaterThan(2000);
+    expect(granted).toBeLessThanOrEqual(5000);
+    await expect(response.json()).resolves.toEqual({ complete: true });
+  });
+
+  it('times out before response headers at the ordinary limit even for a stream', async () => {
+    replies = [{ status: 200, delayMs: 250 }];
+    const upstream: InternalHttpClient = client({ callTimeoutMs: 60 });
+
+    const problem: Problem = await problemOf(
+      runWithOrganizationContext(context, () =>
+        upstream.fetch('/slow-headers', { streamTimeoutMs: 5000 }),
+      ),
+    );
+
+    expect(problem).toMatchObject({ status: 503, code: 'upstream.timeout' });
+    expect(received).toHaveLength(1);
+  });
+
+  it('uses the request deadline to abort a stream body after headers', async () => {
+    replies = [{ status: 200, bodyDelayMs: 550 }];
+    const response: Response = await runWithDeadline(350, () =>
+      runWithOrganizationContext(context, () =>
+        client({ callTimeoutMs: 200 }).fetch('/slow-body', { streamTimeoutMs: 5000 }),
+      ),
+    );
+
+    const granted: number = Number(received[0]?.headers['x-request-timeout-ms']);
+    expect(granted).toBeGreaterThan(200);
+    expect(granted).toBeLessThanOrEqual(350);
+    await expect(response.text()).rejects.toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('preserves caller cancellation after stream headers', async () => {
+    replies = [{ status: 200, bodyDelayMs: 400 }];
+    const caller: AbortController = new AbortController();
+    const response: Response = await runWithOrganizationContext(context, () =>
+      client().fetch('/cancel-stream', { streamTimeoutMs: 5000, signal: caller.signal }),
+    );
+    const reason: Error = new Error('The consumer stopped reading.');
+    const body: Promise<string> = response.text();
+
+    caller.abort(reason);
+
+    await expect(body).rejects.toBe(reason);
+  });
+
+  it('keeps the ordinary deadline on a response body when no stream timeout is supplied', async () => {
+    replies = [{ status: 200, bodyDelayMs: 500 }];
+    const response: Response = await runWithOrganizationContext(context, () =>
+      client({ callTimeoutMs: 220 }).fetch('/ordinary-body'),
+    );
+
+    expect(received[0]?.headers['x-request-timeout-ms']).toBe('220');
+    await expect(response.text()).rejects.toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('caps the deadline granted to a streaming call at two minutes', async () => {
+    const response: Response = await runWithOrganizationContext(context, () =>
+      client().fetch('/maximum-stream-timeout', { streamTimeoutMs: 480_000 }),
+    );
+
+    const granted: number = Number(received[0]?.headers['x-request-timeout-ms']);
+    expect(granted).toBeGreaterThan(110_000);
+    expect(granted).toBeLessThanOrEqual(120_000);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects an invalid streaming deadline (%s) before network I/O',
+    async (streamTimeoutMs) => {
+      await expect(
+        runWithOrganizationContext(context, () => client().fetch('/invalid', { streamTimeoutMs })),
+      ).rejects.toThrow(RangeError);
+      expect(received).toHaveLength(0);
+    },
+  );
 
   it('retries an idempotent call once after a 503, and only then', async () => {
     replies = [{ status: 503 }, { status: 200, body: { second: true } }];
@@ -439,28 +542,33 @@ describe('InternalHttpClient', () => {
     },
   );
 
-  it('cancels a stalled problem body at the attempt deadline', async () => {
-    let cancelled: boolean = false;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller): void {
-        controller.enqueue(new TextEncoder().encode('{"code":"task.not-found"'));
-      },
-      cancel(): void {
-        cancelled = true;
-      },
-    });
-    const upstream: InternalHttpClient = client({
-      callTimeoutMs: 25,
-      fetch: (): Promise<Response> => Promise.resolve(new Response(body, { status: 404 })),
-    });
+  it.each([undefined, 5000])(
+    'cancels a stalled problem body at the ordinary deadline with streamTimeoutMs = %s',
+    async (streamTimeoutMs) => {
+      let cancelled: boolean = false;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(new TextEncoder().encode('{"code":"task.not-found"'));
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      });
+      const upstream: InternalHttpClient = client({
+        callTimeoutMs: 25,
+        fetch: (): Promise<Response> => Promise.resolve(new Response(body, { status: 404 })),
+      });
 
-    const problem: Problem = await problemOf(
-      runWithOrganizationContext(context, () => upstream.fetch('/tasks/CAD-999')),
-    );
+      const problem: Problem = await problemOf(
+        runWithOrganizationContext(context, () =>
+          upstream.fetch('/tasks/CAD-999', { streamTimeoutMs }),
+        ),
+      );
 
-    expect(problem).toMatchObject({ status: 404, code: 'upstream.error' });
-    expect(cancelled).toBe(true);
-  });
+      expect(problem).toMatchObject({ status: 404, code: 'upstream.error' });
+      expect(cancelled).toBe(true);
+    },
+  );
 
   it('refuses a path that would send the internal token to another origin', async () => {
     for (const path of [
