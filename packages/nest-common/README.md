@@ -800,7 +800,7 @@ with a string body is sent again. A timeout is not retried.
 | 400, 403, 404, 409, 412, 422, 429     | The same status, with the `code`, `title`, `detail` and `details` of the called service's problem |
 | Another client error                  | 400, with the `code` of the called service when it answered a problem, `upstream.error` otherwise |
 | 401                                   | 503 `upstream.unauthorized`: the internal token was refused, a configuration defect               |
-| 503                                   | 503 `upstream.unavailable`                                                                        |
+| 503                                   | 503 `upstream.unavailable` or the exact opt-in code                                               |
 | Another server error                  | 503 `upstream.failed`                                                                             |
 | No connection                         | 503 `upstream.unreachable`                                                                        |
 | No answer in time                     | 503 `upstream.timeout`                                                                            |
@@ -813,15 +813,21 @@ caller aborted nor a timeout shortened by the budget of the incoming request: th
 about the called service, and one caller with a tiny budget must not open the circuit for
 everyone.
 
-| Option                   | Default  | Effect                                                 |
-| ------------------------ | -------- | ------------------------------------------------------ |
-| `service`                | Required | `aud` of the tokens and name in the problems           |
-| `baseUrl`                | Required | Base URL, from the `<SERVICE>_URL` variable            |
-| `signer`                 | Required | `InternalTokenSigner` of this application              |
-| `callTimeoutMs`          | 2000     | Ordinary call or stream header timeout, capped at 2000 |
-| `breakerThreshold`       | 5        | Consecutive failures that open the circuit             |
-| `breakerHalfOpenAfterMs` | 10 000   | Time the circuit stays open before a trial call        |
-| `fetch`                  | Native   | Fetch implementation, for tests                        |
+Set `allowedUnavailableProblemCodes` on the client for a called service to preserve documented 503
+codes from its `application/problem+json` responses. The body must fit the 64 KiB limit and the
+ordinary call deadline. The emitted problem carries only a matching code and local diagnostics.
+The existing retry and circuit-breaker rules for a 503 continue to apply.
+
+| Option                           | Default  | Effect                                                 |
+| -------------------------------- | -------- | ------------------------------------------------------ |
+| `service`                        | Required | `aud` of the tokens and name in the problems           |
+| `baseUrl`                        | Required | Base URL, from the `<SERVICE>_URL` variable            |
+| `signer`                         | Required | `InternalTokenSigner` of this application              |
+| `callTimeoutMs`                  | 2000     | Ordinary call or stream header timeout, capped at 2000 |
+| `breakerThreshold`               | 5        | Consecutive failures that open the circuit             |
+| `breakerHalfOpenAfterMs`         | 10 000   | Time the circuit stays open before a trial call        |
+| `allowedUnavailableProblemCodes` | Empty    | Exact 503 codes to preserve from the called service    |
+| `fetch`                          | Native   | Fetch implementation, for tests                        |
 
 ### Request deadline
 

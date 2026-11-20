@@ -12,7 +12,7 @@ import {
   runWithOrganizationContext,
   type OrganizationContext,
 } from '../../auth/context/organization-context.js';
-import { ProblemException, type Problem } from '../../problem/problem.js';
+import { PROBLEM_CONTENT_TYPE, ProblemException, type Problem } from '../../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import { InternalHttpClient, type InternalHttpClientOptions } from './internal-http-client.js';
 import { requestDeadlineMiddleware, runWithDeadline } from '../deadline/request-deadline.js';
@@ -95,6 +95,24 @@ const context: OrganizationContext = {
   actor: { type: 'user', id: 'user-camille' },
   role: 'member',
   scopes: ['tasks:write'],
+};
+
+/**
+ * Constant UNAVAILABLE_PROBLEM
+ *
+ * @description
+ * Upstream problem with service-specific diagnostics that must stay with the upstream service.
+ *
+ * @type {Problem}
+ */
+const UNAVAILABLE_PROBLEM: Problem = {
+  type: 'https://example.com/provider-failure',
+  title: 'Provider failure',
+  status: 503,
+  code: 'dependency.unavailable',
+  detail: 'Provider diagnostics',
+  details: { destination: 'private object path', service: 'untrusted' },
+  instance: 'https://example.com/private-incident',
 };
 
 /**
@@ -365,22 +383,196 @@ describe('InternalHttpClient', () => {
     expect(received).toHaveLength(4);
   });
 
+  it('returns only an allowlisted 503 code after retrying and counts both failures', async () => {
+    const unavailable: Reply = {
+      status: 503,
+      contentType: `${PROBLEM_CONTENT_TYPE}; charset=utf-8`,
+      body: UNAVAILABLE_PROBLEM,
+    };
+    replies = [unavailable, unavailable];
+    const upstream: InternalHttpClient = client({
+      breakerThreshold: 2,
+      allowedUnavailableProblemCodes: [UNAVAILABLE_PROBLEM.code],
+    });
+
+    const failure: Problem = await problemOf(
+      runWithOrganizationContext(context, () => upstream.fetch('/tasks')),
+    );
+    const blocked: Problem = await problemOf(
+      runWithOrganizationContext(context, () => upstream.fetch('/tasks')),
+    );
+
+    expect(failure).toEqual({
+      type: 'about:blank',
+      title: 'Service Unavailable',
+      status: 503,
+      code: UNAVAILABLE_PROBLEM.code,
+      detail: 'A service this request depends on is not available.',
+      details: { service: 'task-service' },
+    });
+    expect(blocked).toMatchObject({ status: 503, code: 'upstream.circuit-open' });
+    expect(received).toHaveLength(2);
+  });
+
+  it.each([
+    { name: 'disabled allowlist', codes: undefined, body: UNAVAILABLE_PROBLEM },
+    { name: 'empty allowlist', codes: [], body: UNAVAILABLE_PROBLEM },
+    { name: 'nonmatching code', codes: ['dependency.unavailable-more'], body: UNAVAILABLE_PROBLEM },
+    {
+      name: 'non-Problem media type',
+      codes: [UNAVAILABLE_PROBLEM.code],
+      body: UNAVAILABLE_PROBLEM,
+      contentType: 'application/json',
+    },
+    {
+      name: 'malformed Problem',
+      codes: [UNAVAILABLE_PROBLEM.code],
+      body: { code: UNAVAILABLE_PROBLEM.code },
+    },
+    {
+      name: 'mismatched document status',
+      codes: [UNAVAILABLE_PROBLEM.code],
+      body: { ...UNAVAILABLE_PROBLEM, status: 500 },
+    },
+    {
+      name: 'oversized Problem',
+      codes: [UNAVAILABLE_PROBLEM.code],
+      body: { ...UNAVAILABLE_PROBLEM, detail: 'a'.repeat(65_536) },
+    },
+  ])('returns a generic 503 for $name', async ({ codes, body, contentType }) => {
+    replies = [{ status: 503, contentType: contentType ?? PROBLEM_CONTENT_TYPE, body }];
+    const upstream: InternalHttpClient = client({ allowedUnavailableProblemCodes: codes });
+
+    const failure: Problem = await problemOf(
+      runWithOrganizationContext(context, () => upstream.fetch('/tasks', { idempotent: false })),
+    );
+
+    expect(failure).toMatchObject({ status: 503, code: 'upstream.unavailable' });
+    expect(received).toHaveLength(1);
+  });
+
+  it('bounds an opted-in 503 body by the ordinary deadline on a streaming call', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const upstream: InternalHttpClient = client({
+      callTimeoutMs: 25,
+      allowedUnavailableProblemCodes: [UNAVAILABLE_PROBLEM.code],
+      fetch: () =>
+        Promise.resolve(
+          new Response(body, { status: 503, headers: { 'content-type': PROBLEM_CONTENT_TYPE } }),
+        ),
+    });
+
+    const failure: Problem = await problemOf(
+      runWithOrganizationContext(context, () =>
+        upstream.fetch('/tasks', { idempotent: false, streamTimeoutMs: 5000 }),
+      ),
+    );
+
+    expect(failure).toMatchObject({ status: 503, code: 'upstream.unavailable' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each(['headers', 'body'])(
+    'rejects an allowlisted 503 when the %s exceed the deadline',
+    async (stage) => {
+      let timeMs: number = 0;
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => timeMs);
+      const cancel = vi.fn();
+      const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>): void => {
+        timeMs = 101;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(UNAVAILABLE_PROBLEM)));
+        controller.close();
+      });
+      const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+      const upstream: InternalHttpClient = client({
+        callTimeoutMs: 100,
+        allowedUnavailableProblemCodes: [UNAVAILABLE_PROBLEM.code],
+        fetch: () => {
+          if (stage === 'headers') {
+            timeMs = 101;
+          }
+          return Promise.resolve(
+            new Response(body, { status: 503, headers: { 'content-type': PROBLEM_CONTENT_TYPE } }),
+          );
+        },
+      });
+
+      try {
+        const failure: Problem = await problemOf(
+          runWithOrganizationContext(context, () =>
+            upstream.fetch('/tasks', { idempotent: false, streamTimeoutMs: 5000 }),
+          ),
+        );
+        expect(failure).toMatchObject({ status: 503, code: 'upstream.unavailable' });
+        expect(pull).toHaveBeenCalledTimes(stage === 'body' ? 1 : 0);
+        expect(cancel).toHaveBeenCalledTimes(stage === 'headers' ? 1 : 0);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it('propagates caller cancellation while reading an opted-in 503 body', async () => {
+    const caller = new AbortController();
+    const reason = new Error('request closed');
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(): void {
+          caller.abort(reason);
+        },
+        cancel,
+      },
+      { highWaterMark: 0 },
+    );
+    const fetchUpstream = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(body, { status: 503, headers: { 'content-type': PROBLEM_CONTENT_TYPE } }),
+      )
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const upstream: InternalHttpClient = client({
+      breakerThreshold: 1,
+      allowedUnavailableProblemCodes: [UNAVAILABLE_PROBLEM.code],
+      fetch: fetchUpstream,
+    });
+
+    await expect(
+      runWithOrganizationContext(context, () =>
+        upstream.fetch('/tasks', { signal: caller.signal }),
+      ),
+    ).rejects.toBe(reason);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetchUpstream).toHaveBeenCalledOnce();
+    await expect(
+      runWithOrganizationContext(context, () => upstream.fetch('/tasks')),
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
   it.each(['fails', 'stalls'])('counts 503 failures when body cancellation %s', async (cleanup) => {
     let attempts: number = 0;
     let cancellations: number = 0;
+    const pull = vi.fn();
     const upstream: InternalHttpClient = client({
       breakerThreshold: 2,
       fetch: (): Promise<Response> => {
         attempts += 1;
-        const body = new ReadableStream<Uint8Array>({
-          cancel(): Promise<void> {
-            cancellations += 1;
-            return cleanup === 'fails'
-              ? Promise.reject(new Error('body cleanup failed'))
-              : new Promise<void>(() => undefined);
+        const body = new ReadableStream<Uint8Array>(
+          {
+            pull,
+            cancel(): Promise<void> {
+              cancellations += 1;
+              return cleanup === 'fails'
+                ? Promise.reject(new Error('body cleanup failed'))
+                : new Promise<void>(() => undefined);
+            },
           },
-        });
-        return Promise.resolve(new Response(body, { status: 503 }));
+          { highWaterMark: 0 },
+        );
+        return Promise.resolve(
+          new Response(body, { status: 503, headers: { 'content-type': PROBLEM_CONTENT_TYPE } }),
+        );
       },
     });
 
@@ -395,6 +587,7 @@ describe('InternalHttpClient', () => {
     expect(blocked).toMatchObject({ status: 503, code: 'upstream.circuit-open' });
     expect(attempts).toBe(2);
     expect(cancellations).toBe(2);
+    expect(pull).not.toHaveBeenCalled();
   });
 
   it('does not retry a call that may not be sent twice, nor another server error', async () => {

@@ -125,6 +125,18 @@ export interface InternalHttpClientOptions {
   readonly breakerHalfOpenAfterMs?: number;
 
   /**
+   * Property allowedUnavailableProblemCodes
+   *
+   * @description
+   * Contract codes that a 503 Problem response from this service may expose to callers. When
+   * omitted or empty, the response body is discarded and the code is `upstream.unavailable`.
+   *
+   * @type {readonly string[] | undefined}
+   * @readonly
+   */
+  readonly allowedUnavailableProblemCodes?: readonly string[];
+
+  /**
    * Property fetch
    *
    * @description
@@ -295,7 +307,7 @@ function claimsOf(context: OrganizationContext): InternalTokenClaims {
  * | ------------------------------------------ | -------------------------------------------------- |
  * | 400, 403, 404, 409, 412, 422, 429          | The same status, with the code and details of the called service when it answered a problem |
  * | 401                                        | 503 `upstream.unauthorized`: the internal token was refused, a configuration defect |
- * | 503                                        | 503 `upstream.unavailable`                         |
+ * | 503                                        | 503 `upstream.unavailable` or the allowlisted code |
  * | Another server error                       | 503 `upstream.failed`                              |
  * | No connection                              | 503 `upstream.unreachable`                         |
  * | No answer in time                          | 503 `upstream.timeout`                             |
@@ -503,6 +515,7 @@ export class InternalHttpClient {
    * @throws {UpstreamFailure} When the service did not answer or answered a server error.
    */
   private async attempt(url: URL, init: RequestInit, timeoutMs: number): Promise<AttemptResponse> {
+    const attemptExpiresAt: number = performance.now() + timeoutMs;
     const timeout: AbortSignal = AbortSignal.timeout(timeoutMs);
     const caller: AbortSignal | null | undefined = init.signal;
     const headerDeadline: AbortController | undefined =
@@ -541,16 +554,48 @@ export class InternalHttpClient {
     } finally {
       clearTimeout(headerTimer);
     }
-    if (response.status >= 500) {
+    const allowedCodes: readonly string[] | undefined = this.options.allowedUnavailableProblemCodes;
+    const readUnavailableProblem =
+      response.status === 503 &&
+      allowedCodes !== undefined &&
+      allowedCodes.length > 0 &&
+      response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ===
+        PROBLEM_CONTENT_TYPE;
+    if (response.status >= 500 && !readUnavailableProblem) {
       // Classify the response even if the transport cannot release its body promptly.
       void response.body?.cancel().catch(() => undefined);
       throw new UpstreamFailure(response.status === 503 ? 'unavailable' : 'failed', true);
     }
+
+    let bodySignal: AbortSignal = signal;
     if (headerDeadline !== undefined && response.status >= 400) {
       const errorBudgetMs: number = Math.max(0, Math.floor(headerExpiresAt - performance.now()));
-      return [response, AbortSignal.any([signal, AbortSignal.timeout(errorBudgetMs)])];
+      bodySignal = AbortSignal.any([signal, AbortSignal.timeout(errorBudgetMs)]);
     }
-    return [response, signal];
+    if (readUnavailableProblem) {
+      const problemExpiresAt: number = Math.min(attemptExpiresAt, headerExpiresAt);
+      if (performance.now() >= problemExpiresAt) {
+        void response.body?.cancel().catch(() => undefined);
+        caller?.throwIfAborted();
+        throw new UpstreamFailure('unavailable', true);
+      }
+      const { type, title, status, code }: Record<string, unknown> = await readUpstreamProblem(
+        response,
+        bodySignal,
+      );
+      caller?.throwIfAborted();
+      const allowedCode: string | undefined =
+        performance.now() < problemExpiresAt &&
+        typeof type === 'string' &&
+        typeof title === 'string' &&
+        status === 503 &&
+        typeof code === 'string' &&
+        allowedCodes.includes(code)
+          ? code
+          : undefined;
+      throw new UpstreamFailure('unavailable', true, undefined, allowedCode);
+    }
+    return [response, bodySignal];
   }
 
   /**
@@ -564,9 +609,11 @@ export class InternalHttpClient {
    * @returns {ProblemException} A 503 problem naming the called service.
    */
   private unavailable(reason: string, cause?: unknown): ProblemException {
+    const allowedCode: string | undefined =
+      cause instanceof UpstreamFailure ? cause.allowedProblemCode : undefined;
     return new ProblemException({
       status: 503,
-      code: `upstream.${reason}`,
+      code: allowedCode ?? `upstream.${reason}`,
       detail: 'A service this request depends on is not available.',
       details: { service: this.options.service },
       cause,
