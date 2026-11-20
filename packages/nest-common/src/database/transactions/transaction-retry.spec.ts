@@ -5,6 +5,7 @@ import type { Pool } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runWithOrganizationContext } from '../../auth/context/organization-context.js';
+import { redactedKeySet, sanitizeLogValue } from '../../logging/redaction.js';
 import { SystemTransactionRunner } from './system-transaction-runner.js';
 import { TenantTransactionRunner } from './tenant-transaction-runner.js';
 
@@ -42,7 +43,13 @@ describe('transaction retry', () => {
         await expect(new SystemTransactionRunner(pool).run(work)).resolves.toBe('ok');
         expect(connect).toHaveBeenCalledTimes(2);
         expect(work).toHaveBeenCalledTimes(2);
-        expect(warn).toHaveBeenCalledWith({ code, attempt: 1 }, 'transaction retry');
+        const fields = {
+          msg: 'transaction retry',
+          sqlState: code,
+          attempt: 1,
+        };
+        expect(warn).toHaveBeenCalledExactlyOnceWith(fields);
+        expect(sanitizeLogValue(warn.mock.calls[0]?.[0], redactedKeySet())).toEqual(fields);
       } finally {
         warn.mockRestore();
       }

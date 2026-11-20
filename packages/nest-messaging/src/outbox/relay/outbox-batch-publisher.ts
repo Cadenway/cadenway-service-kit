@@ -1,7 +1,8 @@
-import type {
-  DatabaseSchema,
-  SystemTransactionRunner,
-  TransactionScope,
+import {
+  assertNoActiveTransaction,
+  type DatabaseSchema,
+  type SystemTransactionRunner,
+  type TransactionScope,
 } from '@cadenway/nest-common/database';
 import { Logger } from '@nestjs/common';
 import { metrics, type Histogram, type Meter } from '@opentelemetry/api';
@@ -194,18 +195,23 @@ export class OutboxBatchPublisher {
    * Method run
    *
    * @description
-   * Publishes due rows and returns after commit, or propagates the transaction failure.
+   * Publishes committed rows in an independent transaction and returns after settlement.
    *
    * @returns {Promise<RelayBatch>} Pass result and scheduling hint after the publication transaction commits.
+   * @throws {Error} When called inside an active transaction or settlement fails.
    */
   public async run(): Promise<RelayBatch> {
+    assertNoActiveTransaction();
     const startedAt: number = performance.now();
     let enteredAt: number | undefined;
     try {
-      return await this.system.run((tx: TransactionScope<DatabaseSchema>) => {
-        enteredAt = performance.now();
-        return this.publishLockedRows(tx);
-      });
+      return await this.system.run(
+        (tx: TransactionScope<DatabaseSchema>) => {
+          enteredAt = performance.now();
+          return this.publishLockedRows(tx);
+        },
+        { maxAttempts: 1 },
+      );
     } finally {
       if (enteredAt !== undefined) {
         this.transactionEntryDuration.record(enteredAt - startedAt);

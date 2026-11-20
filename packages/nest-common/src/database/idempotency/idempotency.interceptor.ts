@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 
 import {
   Injectable,
@@ -88,6 +89,18 @@ export interface IdempotentOptions {
    * @readonly
    */
   readonly isolationLevel?: 'read committed' | 'repeatable read' | 'serializable';
+
+  /**
+   * Property maxAttempts
+   *
+   * @description
+   * Maximum total attempts for the transaction that runs the handler. Defaults to the owning
+   * runner's limit. Set to 1 to prevent automatic retries for this route.
+   *
+   * @type {number | undefined}
+   * @readonly
+   */
+  readonly maxAttempts?: number;
   // #endregion
 }
 
@@ -146,51 +159,24 @@ interface IdempotentRequest {
 }
 
 /**
- * Interface IdempotentResponse
+ * Type IdempotentResponse
  *
  * @description
- * Part of the Express response the interceptor uses.
+ * Staged HTTP response metadata used to store replays and reset the response between attempts.
+ * NestJS sets the status from the route before interceptors run.
+ *
+ * @type {Pick<ServerResponse, 'headersSent' | 'statusCode' | 'getHeader' | 'getHeaders' | 'getHeaderNames' | 'removeHeader' | 'setHeader'>}
  */
-interface IdempotentResponse {
-  // #region Properties
-  /**
-   * Property statusCode
-   *
-   * @description
-   * Status of the response, which NestJS sets from `@HttpCode()` or its default before the
-   * interceptors run.
-   *
-   * @type {number}
-   * @readonly
-   */
-  readonly statusCode: number;
-  // #endregion
-
-  // #region Methods
-  /**
-   * Method getHeader
-   *
-   * @description
-   * Reads a response header set so far.
-   *
-   * @param {string} name - Header name.
-   * @returns {unknown} Its value, or `undefined`.
-   */
-  getHeader(name: string): unknown;
-
-  /**
-   * Method setHeader
-   *
-   * @description
-   * Sets a response header.
-   *
-   * @param {string} name - Header name.
-   * @param {string} value - Header value.
-   * @returns {unknown} Ignored.
-   */
-  setHeader(name: string, value: string): unknown;
-  // #endregion
-}
+type IdempotentResponse = Pick<
+  ServerResponse,
+  | 'headersSent'
+  | 'statusCode'
+  | 'getHeader'
+  | 'getHeaders'
+  | 'getHeaderNames'
+  | 'removeHeader'
+  | 'setHeader'
+>;
 
 /**
  * Constant IDEMPOTENT_KEY
@@ -239,7 +225,7 @@ const REPLAYED_HEADERS: readonly string[] = ['location', 'etag'];
  * payment. The handler then runs inside the transaction that stores the key, see
  * `IdempotencyInterceptor`.
  *
- * @param {IdempotentOptions} options - Whether the header is mandatory.
+ * @param {IdempotentOptions} options - Header requirements and the owning transaction policy.
  * @returns {CustomDecorator} The method decorator.
  */
 export function Idempotent(options: IdempotentOptions = {}): CustomDecorator {
@@ -295,6 +281,29 @@ function requestFingerprint(request: IdempotentRequest, actor: string): string {
 }
 
 /**
+ * Function restoreResponseMetadata
+ *
+ * @description
+ * Discards staged status and headers from a rolled-back attempt before the response is sent.
+ *
+ * @param {IdempotentResponse} response - HTTP response of the owning request.
+ * @param {OutgoingHttpHeaders} headers - Snapshot taken before the first attempt.
+ * @param {number} statusCode - HTTP status before the first attempt.
+ */
+function restoreResponseMetadata(
+  response: IdempotentResponse,
+  headers: OutgoingHttpHeaders,
+  statusCode: number,
+): void {
+  if (response.headersSent) return;
+  response.statusCode = statusCode;
+  for (const name of response.getHeaderNames()) response.removeHeader(name);
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined) response.setHeader(name, Array.isArray(value) ? [...value] : value);
+  }
+}
+
+/**
  * Class IdempotencyInterceptor
  *
  * @description
@@ -318,10 +327,10 @@ function requestFingerprint(request: IdempotentRequest, actor: string): string {
  * How it works: the interceptor opens the transaction (tenant runner for a request with an
  * organization, system runner otherwise), takes a transaction-level advisory lock on the key,
  * and runs the handler inside. The `run` of the use case joins that transaction. Consequences
- * for a marked route: the whole handler is in the transaction, so it must not call another
- * service before the use case; its status comes from `@HttpCode()` or the NestJS default, not
- * from a manual `response.status()`; and a use case that needs a stricter isolation level states
- * it on the route (`@Idempotent({ isolationLevel })`).
+ * for a marked route: the full handler can be repeated after a rollback and must keep external
+ * effects outside its transaction. It stages headers and returns its body for NestJS to send
+ * after commit. Its status comes from `@HttpCode()` or the NestJS default. The route can override
+ * the isolation level and the attempt limit.
  *
  * A key belongs to the organization of the verified token. Requests without an organization
  * share one namespace: their keys must be unguessable, as a UUID is.
@@ -398,28 +407,51 @@ export class IdempotencyInterceptor implements NestInterceptor {
    * @param {IdempotentOptions} options - Declaration of the route.
    * @returns {Promise<unknown>} The response body, fresh or replayed.
    */
-  private execute(
+  private async execute(
     context: ExecutionContext,
     next: CallHandler,
     request: IdempotentRequest,
     key: string,
     options: IdempotentOptions,
   ): Promise<unknown> {
-    const transactionOptions: TransactionOptions =
-      options.isolationLevel === undefined ? {} : { isolationLevel: options.isolationLevel };
+    const transactionOptions: TransactionOptions = {
+      isolationLevel: options.isolationLevel,
+      maxAttempts: options.maxAttempts,
+    };
     const identity: OrganizationContext | undefined = requestOrganizationContextOf(request);
     const organizationId: string | null = identity?.organizationId ?? null;
+    const response: IdempotentResponse = context.switchToHttp().getResponse();
+    const originalStatus: number = response.statusCode;
+    let originalHeaders: OutgoingHttpHeaders | undefined;
     const work: (scope: TransactionScope<DatabaseSchema>) => Promise<unknown> = (
       scope: TransactionScope<DatabaseSchema>,
-    ) => this.runOnce(context, next, request, key, organizationId, scope);
-    if (identity === undefined || organizationId === null) {
-      return this.system.run(work, transactionOptions);
+    ) => {
+      if (originalHeaders === undefined) {
+        originalHeaders = response.getHeaders();
+        for (const [name, value] of Object.entries(originalHeaders)) {
+          if (Array.isArray(value)) originalHeaders[name] = [...value];
+        }
+      } else {
+        restoreResponseMetadata(response, originalHeaders, originalStatus);
+      }
+      return this.runOnce(context, next, request, key, organizationId, scope);
+    };
+    try {
+      if (identity === undefined || organizationId === null) {
+        return await this.system.run(work, transactionOptions);
+      }
+      // The organization context interceptor may be registered after this one: open the context
+      // from the same identity rather than depend on the order.
+      return getOrganizationContext() === undefined
+        ? await runWithOrganizationContext(identity, () =>
+            this.tenant.run(work, transactionOptions),
+          )
+        : await this.tenant.run(work, transactionOptions);
+    } catch (error) {
+      if (originalHeaders !== undefined)
+        restoreResponseMetadata(response, originalHeaders, originalStatus);
+      throw error;
     }
-    // The organization context interceptor may be registered after this one: open the context
-    // from the same identity rather than depend on the order.
-    return getOrganizationContext() === undefined
-      ? runWithOrganizationContext(identity, () => this.tenant.run(work, transactionOptions))
-      : this.tenant.run(work, transactionOptions);
   }
 
   /**

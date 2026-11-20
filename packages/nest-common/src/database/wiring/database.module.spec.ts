@@ -8,10 +8,45 @@ import { z } from 'zod';
 import { createApplication } from '../../bootstrap/application/create-application.js';
 import { baseConfigShape, type BaseConfig } from '../../config/base-config.js';
 import { CONFIG, ConfigModule } from '../../config/config.module.js';
-import { ConfigError } from '../../config/load-config.js';
+import { ConfigError, loadConfig } from '../../config/load-config.js';
 import { Idempotent } from '../idempotency/idempotency.interceptor.js';
-import { DATABASE_POOL, databaseConfigShape, DEFAULT_POOL_SIZE } from '../index.js';
+import {
+  DATABASE_POOL,
+  databaseConfigShape,
+  DEFAULT_POOL_SIZE,
+  type DatabaseConfig,
+} from '../index.js';
 import { DatabaseModule } from './database.module.js';
+
+describe('database configuration', () => {
+  it('accepts existing manual configs and defaults the schema-validated attempt limit', () => {
+    const config: DatabaseConfig = { DATABASE_URL: 'postgres://notes_app@127.0.0.1:1/notes' };
+    const schema = z.object(databaseConfigShape);
+
+    expect(loadConfig(schema, { DATABASE_URL: config.DATABASE_URL })).toEqual({
+      ...config,
+      DATABASE_TRANSACTION_MAX_ATTEMPTS: 3,
+    });
+    expect(
+      loadConfig(schema, {
+        DATABASE_URL: config.DATABASE_URL,
+        DATABASE_TRANSACTION_MAX_ATTEMPTS: '1',
+      }),
+    ).toMatchObject({ DATABASE_TRANSACTION_MAX_ATTEMPTS: 1 });
+  });
+
+  it.each(['0', '1.5', '9007199254740992'])(
+    'rejects an invalid transaction attempt limit (%s) before startup',
+    (limit) => {
+      expect(() =>
+        loadConfig(z.object(databaseConfigShape), {
+          DATABASE_URL: 'postgres://notes_app@127.0.0.1:1/notes',
+          DATABASE_TRANSACTION_MAX_ATTEMPTS: limit,
+        }),
+      ).toThrow(ConfigError);
+    },
+  );
+});
 
 /**
  * Interface AppConfig

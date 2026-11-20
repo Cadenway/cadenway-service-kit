@@ -210,7 +210,7 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
     expect(processed).toEqual([{ consumer: 'search-service__index-task', event_id: appended.id }]);
   });
 
-  it('rolls back the processed id and the writes of a handler that fails, then handles the redelivery', async () => {
+  it('rolls back a serialization failure and lets JetStream redeliver the event', async () => {
     const application: TestingModule = await startService(
       database,
       nats,
@@ -238,7 +238,9 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
         });
         attempts.push({ deliveryCount: eventContext.deliveryCount, settings: settings.rows[0] });
         if (eventContext.deliveryCount === 1) {
-          throw new Error('index unavailable');
+          await tenant.run((tx: TransactionScope) =>
+            tx.client.query("do $$ begin raise exception using errcode = '40001'; end; $$"),
+          );
         }
       },
     });
@@ -457,6 +459,41 @@ describe('PostgreSQL deduplicator on real PostgreSQL and NATS', () => {
 
     expect(claimed).toEqual([true, false]);
     expect(versions).toEqual([{ organization_id: null, version: '4' }]);
+  });
+
+  it('refuses to handle a delivery inside an existing transaction', async () => {
+    const application: TestingModule = await startService(database, nats, {
+      ...isolatedNames('transaction'),
+      service: 'notification-service',
+    });
+    try {
+      const system: SystemTransactionRunner = application.get(SystemTransactionRunner);
+      const deduplicator: PostgresEventDeduplicator = application.get(PostgresEventDeduplicator);
+      const delivery: EventDelivery = {
+        consumer: 'notification-service__welcome',
+        event: 'user.signed-up.v1',
+        envelope: {
+          id: '0193a1f0-0000-7000-8000-0000000000f4',
+          occurredAt: '2026-11-14T09:30:00.000Z',
+          organizationId: null,
+          actor: { type: 'system', id: 'identity-service' },
+          version: 1,
+        },
+      };
+      const calls: string[] = [];
+      await expect(
+        system.run(() =>
+          deduplicator.run(delivery, () => {
+            calls.push(delivery.envelope.id);
+            return Promise.resolve();
+          }),
+        ),
+      ).rejects.toThrow('outside an active transaction');
+      expect(calls).toEqual([]);
+      expect(await table('select event_id from processed_events')).toEqual([]);
+    } finally {
+      await application.close();
+    }
   });
 
   it('bounds the wait of a delivery for the processed id another delivery of the same event holds', async () => {

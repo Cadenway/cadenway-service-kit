@@ -36,18 +36,41 @@ function withoutAddedOptionalMembers(node, added) {
   );
 }
 
+function withoutAddedOptionalConstructorParameters(node, added) {
+  const lastRetained = node.parameters.findLastIndex(
+    (parameter) =>
+      !(
+        parameter.questionToken &&
+        ts.isIdentifier(parameter.name) &&
+        added.includes(parameter.name.text)
+      ),
+  );
+  return factory.updateConstructorDeclaration(
+    node,
+    node.modifiers,
+    node.parameters.slice(0, lastRetained + 1),
+    node.body,
+  );
+}
+
 function publicDeclaration(node, added = []) {
   if (ts.isInterfaceDeclaration(node) && added.length > 0) {
     return withoutAddedOptionalMembers(node, added);
   }
   if (!ts.isClassDeclaration(node)) return node;
   // Private fields are emitted for nominal typing. Moving private implementation details is allowed.
-  const members = node.members.filter(
-    (member) =>
-      ts.isConstructorDeclaration(member) ||
-      (!member.modifiers?.some(({ kind }) => kind === ts.SyntaxKind.PrivateKeyword) &&
-        !(member.name && ts.isPrivateIdentifier(member.name))),
-  );
+  const members = node.members
+    .filter(
+      (member) =>
+        ts.isConstructorDeclaration(member) ||
+        (!member.modifiers?.some(({ kind }) => kind === ts.SyntaxKind.PrivateKeyword) &&
+          !(member.name && ts.isPrivateIdentifier(member.name))),
+    )
+    .map((member) =>
+      ts.isConstructorDeclaration(member) && added.length > 0
+        ? withoutAddedOptionalConstructorParameters(member, added)
+        : member,
+    );
   return factory.updateClassDeclaration(
     node,
     node.modifiers,
@@ -94,8 +117,8 @@ function signature(node, added) {
 
 /**
  * Reads public declarations through an installed package's export map. `addedMembers` maps an
- * export (`<entry point>#<name>`) to the optional interface properties a reviewed minor added
- * since the baseline release; they are left out of that export's printed declaration.
+ * export (`<entry point>#<name>`) to optional interface properties or trailing constructor
+ * parameters added since the baseline. Only those additions are omitted from the declaration.
  */
 export function readPublicApi(directory, entryPoints, addedMembers = {}) {
   const importer = join(directory, 'consumer.mts');

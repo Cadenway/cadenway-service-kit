@@ -824,14 +824,15 @@ DatabaseModule.forRoot({
 });
 ```
 
-| Option                | Default  | Effect                                                                            |
-| --------------------- | -------- | --------------------------------------------------------------------------------- |
-| `connectionString`    | Required | Connection string of the application role (`databaseConfigShape`: `DATABASE_URL`) |
-| `schema`              | None     | Drizzle schema of the service, for its relational queries                         |
-| `poolSize`            | 5        | Maximum number of connections                                                     |
-| `connectionTimeoutMs` | 5000     | How long a transaction waits for a free connection                                |
-| `applicationName`     | Unset    | Name shown in `pg_stat_activity`                                                  |
-| `idempotency`         | `false`  | Registers the `Idempotency-Key` interceptor                                       |
+| Option                   | Default  | Effect                                                                            |
+| ------------------------ | -------- | --------------------------------------------------------------------------------- |
+| `connectionString`       | Required | Connection string of the application role (`databaseConfigShape`: `DATABASE_URL`) |
+| `schema`                 | None     | Drizzle schema of the service, for its relational queries                         |
+| `poolSize`               | 5        | Maximum number of connections                                                     |
+| `connectionTimeoutMs`    | 5000     | How long a transaction waits for a free connection                                |
+| `applicationName`        | Unset    | Name shown in `pg_stat_activity`                                                  |
+| `idempotency`            | `false`  | Registers the `Idempotency-Key` interceptor                                       |
+| `transactionMaxAttempts` | 3        | Default total attempts for an owning transaction. Set to 1 to disable retries.    |
 
 The module is global. It provides `TenantTransactionRunner`, `SystemTransactionRunner` and the
 pool (`DATABASE_POOL`), and closes the pool when the application shuts down.
@@ -847,6 +848,7 @@ DatabaseModule.forRootAsync({
     schema,
     applicationName: 'task-service',
     idempotency: true,
+    transactionMaxAttempts: config.DATABASE_TRANSACTION_MAX_ATTEMPTS,
   }),
 });
 ```
@@ -865,10 +867,11 @@ Its providers are those of `forRoot`, the interceptor included when the resolved
 
 `databaseConfigShape` also validates `DATABASE_TRANSACTION_MAX_ATTEMPTS`, a positive integer
 with default `3`. Pass it to `DatabaseModule` as `transactionMaxAttempts: config.DATABASE_TRANSACTION_MAX_ATTEMPTS`;
-the module option also defaults to 3 when omitted. Set it to 1 to disable retries globally.
+the module option also defaults to 3 when omitted. Set it to 1 to disable retries for calls that
+inherit the module default.
 
 An outermost runner retries the whole transaction after PostgreSQL SQLSTATE `40P01` or `40001`,
-up to the configured total attempts. It waits with jitter between attempts and logs `code` and the
+up to the configured total attempts. It waits with jitter between attempts and logs `sqlState` and the
 failed `attempt`, without SQL or parameters. The final error is propagated with its cause intact.
 Use `run(work, { maxAttempts: 1 })` to disable retry for one call, or supply another positive
 attempt limit. Nested calls join the outer transaction and use its retry policy.
@@ -876,6 +879,9 @@ attempt limit. Nested calls join the outer transaction and use its retry policy.
 A unit of work can run more than once. It must not perform side effects outside the database:
 write an outbox row within the transaction instead of publishing directly. A rolled-back attempt
 leaves no committed outbox row; delivery still follows the outbox's delivery guarantees.
+Before updating a consumer, check the outer transaction at each entry point for external effects,
+including handlers of keyed HTTP requests. Defer those effects until after commit or set the
+owning transaction's attempt limit to 1.
 
 Nothing else opens a transaction. A unit of work is one call to `run`:
 
@@ -1000,7 +1006,10 @@ Up to 0.6.x a malformed key answered `400 idempotency.key-invalid` and a request
 What a marked route must respect:
 
 - The interceptor opens the transaction and runs the handler inside it; the `run` of the use case
-  joins it. The handler must therefore not call another service before the use case.
+  joins it. A PostgreSQL retry can repeat the full handler, so defer external effects until after
+  commit. The handler stages headers and returns the body for NestJS to send once it commits.
+  The interceptor restores the original status and staged headers before each retry and after a
+  final rollback, while the response is still unsent.
 - The replayed status is the one NestJS applies from `@HttpCode()` or its default (201 for `POST`),
   not a manual `response.status()`.
 - Two response headers are stored and replayed: `Location` and `ETag`. An `ETag` the handler sets
@@ -1012,6 +1021,8 @@ What a marked route must respect:
   response, so its `ETag` is the version at creation, not the current one.
 - `@Idempotent({ isolationLevel })` opens the transaction at that level, for a use case that
   needs more than `read committed`.
+- `@Idempotent({ maxAttempts: 1 })` disables automatic retries for the keyed route. An attempt
+  limit on a nested use case does not change the policy of the interceptor's transaction.
 - A key belongs to the organization of the verified token, and a stored response to the actor
   that obtained it: the same key sent by another member answers 422. Requests without an organization share
   one namespace and are served in a system transaction: their keys must be unguessable, as a UUID

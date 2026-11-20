@@ -11,15 +11,15 @@ import { Logger } from '@nestjs/common';
 const logger: Logger = new Logger('TransactionRetry');
 
 /**
- * Function retryCode
+ * Function retrySqlState
  *
  * @description
  * Finds a retryable SQLSTATE in an error or its cause chain, including Drizzle wrappers.
  *
  * @param {unknown} error - Error raised by the transaction.
- * @returns {string | undefined} Retryable SQLSTATE, if present.
+ * @returns {'40P01' | '40001' | undefined} Retryable SQLSTATE, if present.
  */
-function retryCode(error: unknown): string | undefined {
+function retrySqlState(error: unknown): '40P01' | '40001' | undefined {
   const seen: Set<object> = new Set<object>();
   let current: unknown = error;
   while (typeof current === 'object' && current !== null && !seen.has(current)) {
@@ -54,11 +54,11 @@ export async function retryTransaction<TResult>(
     try {
       return await execute();
     } catch (error) {
-      const code: string | undefined = retryCode(error);
-      if (code === undefined || attempt >= maxAttempts) {
+      const sqlState = retrySqlState(error);
+      if (sqlState === undefined || attempt >= maxAttempts) {
         throw error;
       }
-      logger.warn({ code, attempt }, 'transaction retry');
+      logger.warn({ msg: 'transaction retry', sqlState, attempt });
       const multiplier: number = Math.min(2 ** (attempt - 1), 100);
       await new Promise<void>((resolve) =>
         setTimeout(resolve, (10 + Math.random() * 40) * multiplier),

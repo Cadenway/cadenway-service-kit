@@ -326,12 +326,13 @@ included, and `claimVersion` always resolves to `true`: fine for the realtime ga
 relays. Import `PostgresEventDeduplicationModule` from `@cadenway/nest-messaging/consumer/postgres`
 alongside `MessagingModule` and `DatabaseModule` to register durable deduplication. The service
 migrations provide the `processed_events` and `event_versions` tables. The legacy `OutboxModule`
-registers the same deduplicator. With it, each delivery runs in
-one transaction (tenant runner for the organization of the event, system runner for an event
+registers the same deduplicator. It opens a transaction per delivery and must be called outside
+any active transaction (tenant runner for the organization of the event, system runner for an event
 without one) that records `(consumer, event id)` in `processed_events`, skips the handler when
 the id is already there, and otherwise runs the handler in the same transaction: a `run` of the
 same runner inside the handler joins it. The message is acknowledged after the commit. A handler
-that fails or is abandoned before commit rolls back the processed id and its writes. When
+that fails or is abandoned before commit rolls back the processed id and its writes. The database
+transaction runs once per delivery so the consumer's JetStream policy controls handler retries. When
 shutdown leaves a committed delivery unacknowledged, a redelivery skips the handler. No statement of that transaction may
 run longer than `handlerTimeoutMs`, and the claim of the processed id waits at most five seconds
 (`lock_timeout`) for another delivery of the same event: past it the delivery fails and is retried
@@ -599,7 +600,10 @@ statement, [redact the restricted ones](#restricted-events). A row locked by one
 skipped by the others. The relay stops starting sends five seconds after receiving the rows.
 It awaits the last send within the configured `publishTimeoutMs`, then settles the attempted rows
 and commits. The unattempted rows stay pending. A full selection or a cut-short pass is followed
-by another pass at once, subject to the backoff below. The relay records the time to enter the
+by another pass at once, subject to the backoff below. The legacy relay opts out of automatic
+database transaction retries because a broker acknowledgement can precede a failed settlement.
+A failed pass leaves redelivery to the relay's existing retry loop with the same event ID.
+The relay records the time to enter the
 transaction callback and the time from entry to commit or rollback in the millisecond histograms
 `cadenway.outbox.relay.transaction.entry.duration` and `cadenway.outbox.relay.transaction.duration`.
 
@@ -612,7 +616,8 @@ logged at most once a minute per class of error. A failure that concerns every r
 stream unreachable, a timeout, a closed connection, a missing permission, the server out of
 resources) stops the pass without counting against the row, and the relay backs off, doubling the
 poll interval up to 30 seconds; so does a database failure. `relay.publishPending()` runs one
-pass by hand and returns `{ published, failed, interrupted }`. At shutdown the relay stops
+pass by hand outside an active transaction and returns `{ published, failed, interrupted }`.
+At shutdown the relay stops
 admitting manual and scheduled passes and waits for any passes already started to settle.
 
 Automatic maintenance starts alongside the relay and runs independently of publication. It

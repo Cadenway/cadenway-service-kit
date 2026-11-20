@@ -120,23 +120,38 @@ describe('PostgreSQL transactions', () => {
     const run = (index: number, first: string, second: string): Promise<void> =>
       system.run(async (scope) => {
         attempts[index] = (attempts[index] ?? 0) + 1;
-        await scope.client.query('update tasks set title = title where title = $1', [first]);
+        const locked = await scope.client.query(
+          'update tasks set title = title where title = $1 returning title',
+          [first],
+        );
+        expect(titles(locked)).toEqual([first]);
+        await scope.client.query('insert into tasks (organization_id, title) values ($1, $2)', [
+          ATELIER_NORD,
+          `committed-${String(index)}`,
+        ]);
         if (attempts[index] === 1) {
           ready += 1;
           if (ready === 2) release();
           await barrier;
         }
         await scope.client.query('update tasks set title = title where title = $1', [second]);
-        await scope.client.query('insert into tasks (organization_id, title) values ($1, $2)', [
-          ATELIER_NORD,
-          `committed-${String(index)}`,
-        ]);
       });
-    await Promise.all([run(0, 'CAD-482', 'CAD-483'), run(1, 'CAD-483', 'CAD-482')]);
+    const outcomes = await Promise.allSettled([
+      run(0, 'CAD-482', 'CAD-483').finally(release),
+      run(1, 'CAD-483', 'CAD-482').finally(release),
+    ]);
+    expect(outcomes).toEqual([
+      { status: 'fulfilled', value: undefined },
+      { status: 'fulfilled', value: undefined },
+    ]);
     expect(attempts.sort()).toEqual([1, 2]);
-    expect(scopeTitles(await database.admin.query('select title from tasks'))).toEqual(
-      expect.arrayContaining(['committed-0', 'committed-1']),
-    );
+    expect(titles(await database.admin.query('select title from tasks'))).toEqual([
+      'CAD-482',
+      'CAD-483',
+      'OPS-1',
+      'committed-0',
+      'committed-1',
+    ]);
   });
 
   it('runs as a role that neither owns the table nor bypasses row-level security', async () => {
