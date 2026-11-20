@@ -1,5 +1,12 @@
 # @cadenway/nest-common
 
+## 0.9.0
+
+### Minor Changes
+
+- f8444ac: Add an optional total streaming deadline to the internal HTTP client. Streaming calls keep the ordinary header timeout, forward their bounded remaining deadline and preserve caller cancellation while reading the body. All existing calls keep their current timeout.
+- f8444ac: Add optional sensitive HTTP path prefixes to telemetry startup so backends can redact private URL tails and queries before trace export.
+
 ## 0.8.1
 
 ### Patch Changes
