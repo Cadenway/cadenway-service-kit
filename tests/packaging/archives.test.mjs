@@ -26,6 +26,7 @@ const baseline = {
 // Optional interface properties and trailing constructor parameters added since the baseline.
 // Each export must otherwise match its release. Clear an entry when the baseline includes it.
 const addedMembers = {
+  '@cadenway/nest-common#InternalHttpClientOptions': ['allowedUnavailableProblemCodes'],
   '@cadenway/nest-common#InternalRequestInit': ['streamTimeoutMs'],
   '@cadenway/nest-common/database#DatabaseConfig': ['DATABASE_TRANSACTION_MAX_ATTEMPTS'],
   '@cadenway/nest-common/database#DatabaseModuleOptions': ['transactionMaxAttempts'],
