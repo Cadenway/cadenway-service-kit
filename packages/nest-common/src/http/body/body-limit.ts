@@ -186,6 +186,53 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
 }
 
 /**
+ * Function rawJsonPostBodyParser
+ *
+ * @description
+ * Reads the bytes of an application/json POST on an explicitly selected route. It runs ahead of
+ * the JSON parser so the receiver can authenticate a signed delivery before decoding it. The
+ * raw parser refuses compression, which would replace the transmitted bytes with inflated ones.
+ *
+ * @param {readonly string[]} paths - Literal paths. A final slash and ASCII case are ignored.
+ * @param {number} limitBytes - Largest accepted body, in bytes.
+ * @returns {JsonBodyMiddleware} Middleware that exposes the unmodified bytes in the request body.
+ * @throws {Error} If a configured path is not an absolute literal route.
+ */
+export function rawJsonPostBodyParser(
+  paths: readonly string[],
+  limitBytes: number,
+): JsonBodyMiddleware {
+  const literalPath = /^\/(?:[A-Za-z\d._~-]+(?:\/[A-Za-z\d._~-]+)*\/?)?$/u;
+  const selected = new Set(
+    paths.map((path) => {
+      if (!literalPath.test(path)) {
+        throw new Error('createApplication: rawJsonPostPaths requires absolute literal paths.');
+      }
+      return path.replace(/\/$/u, '').toLowerCase();
+    }),
+  );
+  const parse: JsonBodyMiddleware = bodyParser.raw({
+    type: 'application/json',
+    limit: limitBytes,
+    inflate: false,
+  });
+
+  return (request, response, next): void => {
+    const path = request.url?.split('?', 1)[0];
+    if (
+      request.method === 'POST' &&
+      path !== undefined &&
+      literalPath.test(path) &&
+      selected.has(path.replace(/\/$/u, '').toLowerCase())
+    ) {
+      parse(request, response, next);
+      return;
+    }
+    next();
+  };
+}
+
+/**
  * Function applyJsonBodyLimit
  *
  * @description
