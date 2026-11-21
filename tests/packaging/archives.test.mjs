@@ -28,6 +28,7 @@ const baseline = {
 const addedMembers = {
   '@cadenway/nest-jobs#JobEnqueueOptions': ['startAfter'],
   '@cadenway/nest-jobs/runtime#JobEnqueueOptions': ['startAfter'],
+  '@cadenway/nest-common#CreateApplicationOptions': ['rawJsonPostPaths'],
   '@cadenway/nest-common#InternalHttpClientOptions': ['allowedUnavailableProblemCodes'],
   '@cadenway/nest-common#InternalRequestInit': ['streamTimeoutMs'],
   '@cadenway/nest-common/database#DatabaseConfig': ['DATABASE_TRANSACTION_MAX_ATTEMPTS'],
@@ -76,6 +77,7 @@ test('packed Service Kit preserves the released public API and supports isolated
   appendFileSync(
     join(full, 'consumer.mts'),
     `
+import type { CreateApplicationOptions } from '@cadenway/nest-common';
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
@@ -89,6 +91,10 @@ const parsed = schema.parse({
 });
 const config: DatabaseConfig = parsed;
 const attempts: number = parsed.DATABASE_TRANSACTION_MAX_ATTEMPTS;
+const webhookOptions: CreateApplicationOptions = {
+  service: 'webhook-test',
+  rawJsonPostPaths: ['/v1/webhooks/sample'],
+};
 const enqueue: JobEnqueueOptions = { startAfter: new Date() };
 const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
 declare const messagingConnection: MessagingConnection;
@@ -111,7 +117,7 @@ const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisorySt
   ['test__relay'],
   AbortSignal.timeout(1000),
 );
-void [config, attempts, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
+void [config, attempts, webhookOptions, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
 `,
   );
   const released = Object.fromEntries(
