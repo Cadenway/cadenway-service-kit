@@ -84,30 +84,44 @@ export function formatEtag(version: number): string {
  * Function parseIfMatch
  *
  * @description
- * Parses an `If-Match` header into the versions the caller accepts. A weak tag never matches
- * under the strong comparison `If-Match` requires, so it is dropped.
+ * Parses an `If-Match` header into the versions the caller accepts. The list grammar
+ * allows commas inside an opaque tag. A tag contributes a version only when it is strong
+ * and exactly matches the decimal representation the kit emits.
  *
  * @param {string | undefined} header - Value of the `If-Match` header.
  * @returns {IfMatchCondition} The accepted versions, `'*'`, or `undefined` when the header is absent.
  * @throws {ProblemException} 400 `request.invalid`, with one issue `{ in: 'header', path: 'If-Match', code: 'invalid_format' }`, when the header is not a list of entity tags.
  */
 export function parseIfMatch(header: string | undefined): IfMatchCondition {
-  if (header === undefined || header.trim() === '') {
+  if (header === undefined || /^[ \t]*$/u.test(header)) {
     return undefined;
   }
-  if (header.trim() === '*') {
+  if (/^[ \t]*\*[ \t]*$/u.test(header)) {
     return '*';
   }
+  const separators = /[ \t,]*/uy;
+  const entityTag = /(W\/)?"([\x21\x23-\x7e\x80-\xff]*)"[ \t]*(?:,|$)/uy;
   const versions: number[] = [];
-  for (const part of header.split(',')) {
-    const tag: string = part.trim();
-    const match: RegExpExecArray | null = /^(W\/)?"([^"]*)"$/u.exec(tag);
+  let offset = 0;
+  while (offset < header.length) {
+    separators.lastIndex = offset;
+    separators.exec(header);
+    offset = separators.lastIndex;
+    if (offset === header.length) {
+      break;
+    }
+    entityTag.lastIndex = offset;
+    const match: RegExpExecArray | null = entityTag.exec(header);
     if (match === null) {
       throw invalidIfMatch('invalid_format', 'Expected "*" or a list of quoted entity tags.');
     }
+    offset = entityTag.lastIndex;
     const value: string = match[2] ?? '';
-    if (match[1] === undefined && /^\d{1,15}$/u.test(value)) {
-      versions.push(Number(value));
+    if (match[1] === undefined && /^(?:0|[1-9]\d*)$/u.test(value)) {
+      const version = Number(value);
+      if (Number.isSafeInteger(version)) {
+        versions.push(version);
+      }
     }
   }
   return versions;
