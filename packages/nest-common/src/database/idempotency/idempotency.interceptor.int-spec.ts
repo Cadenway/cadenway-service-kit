@@ -13,6 +13,7 @@ import request, { type Response } from 'supertest';
 import type { App } from 'supertest/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { runWithOrganizationContext } from '../../auth/context/organization-context.js';
 import { InternalAccess } from '../../auth/internal-token/internal-token.guard.js';
 import { InternalTokenSigner } from '../../auth/internal-token/internal-token-signer.js';
 import type { Ed25519PrivateJwk } from '../../auth/internal-token/internal-token.js';
@@ -22,6 +23,7 @@ import { ProblemFilter } from '../../problem/problem.filter.js';
 import { ProblemException } from '../../problem/problem.js';
 import { generateSigningJwk, publicJwkOf } from '../../testing/internal-token-keys.js';
 import { kitMigration, startTestDatabase, type TestDatabase } from '../../testing/postgres.js';
+import { purgeExpiredIdempotencyKeyBatch } from '../index.js';
 import { SystemTransactionRunner } from '../transactions/system-transaction-runner.js';
 import { TenantTransactionRunner } from '../transactions/tenant-transaction-runner.js';
 import type { TransactionScope } from '../transactions/transaction-contracts.js';
@@ -628,6 +630,101 @@ describe('IdempotencyInterceptor', () => {
     expect(probe.runs).toBe(2);
     expect(purged).toBe(1);
     expect(await count('idempotency_keys')).toBe(0);
+  });
+
+  it('purges expired keys in oldest-first batches and preserves a live receipt', async () => {
+    await send('/internal/v1/tasks', { title: 'CAD-482' }, 'oldest-key');
+    await send('/internal/v1/tasks', { title: 'CAD-483' }, 'newer-key', OTHER_ORGANIZATION);
+    await send('/internal/v1/tasks', { title: 'CAD-484' }, 'live-key');
+    await database.admin.query(`
+      update idempotency_keys
+      set expires_at = now() - case key
+        when 'oldest-key' then interval '2 seconds'
+        else interval '1 second'
+      end
+      where key in ('oldest-key', 'newer-key')
+    `);
+
+    const system: SystemTransactionRunner = app.get(SystemTransactionRunner);
+    await expect(system.run((scope) => purgeExpiredIdempotencyKeyBatch(scope, 1))).resolves.toBe(1);
+    const remaining: { rows: unknown[] } = await database.admin.query(
+      'select key from idempotency_keys order by key',
+    );
+    expect(remaining.rows).toEqual([{ key: 'live-key' }, { key: 'newer-key' }]);
+    await expect(system.run((scope) => purgeExpiredIdempotencyKeyBatch(scope, 1))).resolves.toBe(1);
+    await expect(system.run((scope) => purgeExpiredIdempotencyKeyBatch(scope, 1))).resolves.toBe(0);
+    expect(await count('idempotency_keys')).toBe(1);
+    const replay: Response = await send('/internal/v1/tasks', { title: 'CAD-484' }, 'live-key');
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+  });
+
+  it('skips a locked receipt during a concurrent refresh and keeps the refreshed receipt', async () => {
+    await send('/internal/v1/tasks', { title: 'CAD-482' }, 'locked-key');
+    await send('/internal/v1/tasks', { title: 'CAD-483' }, 'other-key');
+    await database.admin.query(`
+      update idempotency_keys
+      set expires_at = now() - case key
+        when 'locked-key' then interval '2 seconds'
+        else interval '1 second'
+      end
+    `);
+
+    const system: SystemTransactionRunner = app.get(SystemTransactionRunner);
+    let signalLocked: () => void = (): void => undefined;
+    const locked: Promise<void> = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseRefresh: () => void = (): void => undefined;
+    const released: Promise<void> = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refresh: Promise<void> = system.run(async (scope) => {
+      await scope.client.query(
+        "update idempotency_keys set expires_at = now() + interval '1 day' where key = 'locked-key'",
+      );
+      signalLocked();
+      await released;
+    });
+
+    try {
+      await Promise.race([locked, refresh]);
+      await expect(
+        system.run(async (scope) => {
+          await scope.client.query("set local statement_timeout = '2s'");
+          return purgeExpiredIdempotencyKeyBatch(scope, 2);
+        }),
+      ).resolves.toBe(1);
+    } finally {
+      releaseRefresh();
+      await refresh;
+    }
+
+    await expect(system.run((scope) => purgeExpiredIdempotencyKeyBatch(scope, 2))).resolves.toBe(0);
+    const replay: Response = await send('/internal/v1/tasks', { title: 'CAD-482' }, 'locked-key');
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(await count('idempotency_keys')).toBe(1);
+  });
+
+  it('rejects a tenant scope and invalid batch limits', async () => {
+    const tenant: TenantTransactionRunner = app.get(TenantTransactionRunner);
+    await expect(
+      runWithOrganizationContext(
+        {
+          organizationId: ATELIER_NORD,
+          actor: { type: 'user', id: 'user-camille' },
+          role: 'member',
+          scopes: [],
+        },
+        () => tenant.run((scope) => purgeExpiredIdempotencyKeyBatch(scope, 1)),
+      ),
+    ).rejects.toThrow('requires a system transaction');
+
+    const system: SystemTransactionRunner = app.get(SystemTransactionRunner);
+    await system.run(async (scope) => {
+      for (const limit of [0, 1.5, 1_001]) {
+        await expect(purgeExpiredIdempotencyKeyBatch(scope, limit)).rejects.toThrow(RangeError);
+      }
+    });
   });
 
   it('serves a request without an organization in a system transaction', async () => {
