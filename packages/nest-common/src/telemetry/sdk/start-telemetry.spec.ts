@@ -2,7 +2,7 @@ import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import { context, ROOT_CONTEXT, trace, type Span } from '@opentelemetry/api';
 import { RPCType, setRPCMetadata, type RPCMetadata } from '@opentelemetry/core';
 import { of } from 'rxjs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startCollector, type Collector } from '../../testing/otlp-collector.js';
 import { RouteNameInterceptor } from '../http/route-name.interceptor.js';
@@ -82,20 +82,26 @@ describe('startTelemetry', () => {
   it('exports spans with the service identity to the configured collector', async () => {
     const collector: Collector = await startCollector();
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = collector.url;
+    vi.stubEnv('CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS', undefined);
     try {
       const handle: TelemetryHandle = startTelemetry({
         service: 'sample-service',
         version: '1.2.3',
       });
       expect(handle.exporting).toBe(true);
-      trace.getTracer('test').startSpan('exported-work').end();
+      trace
+        .getTracer('test')
+        .startSpan('exported-work', { attributes: { 'url.query': 'cursor=fixture-default' } })
+        .end();
       await handle.shutdown();
 
       const traces: string = (collector.received.get('/v1/traces') ?? []).join('');
       expect(traces).toContain('exported-work');
       expect(traces).toContain('sample-service');
       expect(traces).toContain('1.2.3');
+      expect(traces).toContain('cursor=fixture-default');
     } finally {
+      vi.unstubAllEnvs();
       await collector.close();
     }
   });

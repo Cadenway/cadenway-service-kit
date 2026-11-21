@@ -23,6 +23,7 @@ import { BatchSpanProcessor, NoopSpanProcessor, type SpanExporter } from '@opent
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
 import { readPackageVersion } from '../../bootstrap/application/package-version.js';
+import { redactHttpQueryExports } from './http-query-redaction.js';
 import { redactRedisErrorExports } from './redis-diagnostics.js';
 import {
   markSensitiveHttpPath,
@@ -219,7 +220,8 @@ function observeEventLoopDelay(): IntervalHistogram {
  * It instruments HTTP, Express, pg, ioredis and undici, propagates `traceparent` (W3C), and
  * exports traces and metrics as OTLP over HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`. When that
  * variable is unset nothing leaves the process. Probe routes under `/health/` are not traced. A
- * second call returns the handle of the first.
+ * second call returns the handle of the first. Set `CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS=true`
+ * to remove query strings from exported HTTP URL attributes.
  *
  * @param {TelemetryOptions} options - Identity of the application.
  * @returns {TelemetryHandle} The running telemetry.
@@ -232,6 +234,9 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
   const exporting: boolean = collectorConfigured();
   const paths = sensitiveHttpPaths(options.sensitiveHttpPathPrefixes ?? []);
   let exporter: SpanExporter | undefined = exporting ? new OTLPTraceExporter() : undefined;
+  if (exporter !== undefined && process.env.CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS === 'true') {
+    exporter = redactHttpQueryExports(exporter);
+  }
   if (exporter !== undefined && paths !== undefined) {
     exporter = redactSensitiveHttpPathExports(exporter, paths);
   }
