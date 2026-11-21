@@ -16,7 +16,11 @@ import {
   DEFAULT_REQUEST_BUDGET_MS,
   requestDeadlineMiddleware,
 } from '../../http/deadline/request-deadline.js';
-import { applyJsonBodyLimit, JSON_BODY_LIMIT_BYTES } from '../../http/body/body-limit.js';
+import {
+  applyJsonBodyLimit,
+  JSON_BODY_LIMIT_BYTES,
+  rawJsonPostBodyParser,
+} from '../../http/body/body-limit.js';
 import { LoggingModule } from '../../logging/logging.module.js';
 import { ProblemFilter } from '../../problem/problem.filter.js';
 import { RouteNameInterceptor } from '../../telemetry/http/route-name.interceptor.js';
@@ -128,6 +132,18 @@ export interface CreateApplicationOptions {
   readonly jsonBodyLimitBytes?: number;
 
   /**
+   * Property rawJsonPostPaths
+   *
+   * @description
+   * Absolute literal POST paths where application/json is read as a Buffer before parsing.
+   * Defaults to no paths. The same byte limit applies as for the JSON parser.
+   *
+   * @type {readonly string[] | undefined}
+   * @readonly
+   */
+  readonly rawJsonPostPaths?: readonly string[];
+
+  /**
    * Property acceptIncomingRequestId
    *
    * @description
@@ -214,7 +230,7 @@ function silenceNestLogger(): void {
  * - `OrganizationContextInterceptor` in every case: it opens the context of the verified
  *   internal token, or the one attached with `setRequestOrganizationContext` by an application
  *   that verifies its callers itself, and does nothing for a request with neither;
- * - the JSON body limit and the request deadline;
+ * - the JSON body limit, optional raw webhook bodies and the request deadline;
  * - no `X-Powered-By` header;
  * - shutdown hooks, with telemetry flushed after the application closed its own resources.
  *
@@ -228,7 +244,7 @@ function silenceNestLogger(): void {
  * @param {Type<unknown> | DynamicModule} applicationModule - Root module of the application, as a class or a dynamic module.
  * @param {CreateApplicationOptions} options - Identity of the application and optional settings.
  * @returns {Promise<NestExpressApplication>} The application, ready to listen.
- * @throws {Error} When no internal token verifier is configured and verification was not turned off, when `provideConfig` is set without `config`, or when a provider fails while the application is created.
+ * @throws {Error} When bootstrap configuration is invalid or a provider fails during creation.
  */
 export async function createApplication(
   applicationModule: Type<unknown> | DynamicModule,
@@ -242,6 +258,10 @@ export async function createApplication(
       'createApplication: internalToken.verifier is required. Set internalTokenVerification to "off" only for an application that authenticates its callers itself.',
     );
   }
+  const jsonBodyLimit = options.jsonBodyLimitBytes ?? JSON_BODY_LIMIT_BYTES;
+  const rawPaths = options.rawJsonPostPaths ?? [];
+  const rawJsonParser =
+    rawPaths.length === 0 ? undefined : rawJsonPostBodyParser(rawPaths, jsonBodyLimit);
   const root: DynamicModule = {
     module: ApplicationRootModule,
     imports: [
@@ -292,7 +312,10 @@ export async function createApplication(
   app.flushLogs();
   // Express announces itself by default; the header tells a scanner what to try.
   app.disable('x-powered-by');
-  applyJsonBodyLimit(app, options.jsonBodyLimitBytes ?? JSON_BODY_LIMIT_BYTES);
+  if (rawJsonParser !== undefined) {
+    app.use(rawJsonParser);
+  }
+  applyJsonBodyLimit(app, jsonBodyLimit);
   app.use(
     requestDeadlineMiddleware({
       budgetMs: options.requestBudgetMs ?? DEFAULT_REQUEST_BUDGET_MS,

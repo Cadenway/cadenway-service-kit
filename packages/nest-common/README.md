@@ -585,10 +585,21 @@ In an application that does not call `applyJsonBodyLimit`, the JSON parser NestJ
 itself refuses the body: `ProblemFilter` answers it with the same problem, but the span of that
 parser still records the parser text. Use `createApplication`, or call `applyJsonBodyLimit`.
 
-The parser of this package does not keep the raw body: an application created with
-`{ rawBody: true }` that calls `applyJsonBodyLimit` gets no `req.rawBody` on JSON requests.
-`createApplication` never enables `rawBody`. A host without `use` still gets the parser of NestJS
-through `useBodyParser`, with the trace caveat above.
+The standard JSON parser leaves `req.rawBody` unset, including when NestJS's `rawBody` option is
+enabled. A host without `use` still gets the parser of NestJS through `useBodyParser`, with the
+trace caveat above.
+
+Pass `rawJsonPostPaths: ['/v1/webhooks/provider']` to `createApplication` when a webhook
+signature covers the original request bytes. The option defaults to an empty list. Each path
+is absolute and uses literal segments made of ASCII letters, digits, `.`, `_`, `~`, or `-`.
+Matching uses the path that Express routes. It ignores ASCII case, one final slash, and the
+query string. Every other method and path keeps the standard parser.
+
+On a matching POST, `application/json` reaches `@Body()` as a `Buffer`, including whitespace
+and malformed JSON. Check `Buffer.isBuffer(body)` on the unknown body, then authenticate the
+original bytes before decoding or validating JSON. The caller still controls authorization and
+the response to a missing body or mismatched media type. The same `jsonBodyLimitBytes` applies
+to raw requests. Compressed bodies get a 400 `http.bad-request` problem.
 
 ## Internal token
 

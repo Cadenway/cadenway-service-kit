@@ -1,6 +1,10 @@
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 import {
+  All,
   Body,
   Controller,
   Get,
@@ -90,6 +94,20 @@ class SampleController {
   public create(@Body() body: { padding?: string }): { version: number; size: number } {
     return { version: 3, size: body.padding?.length ?? 0 };
   }
+
+  /**
+   * Method inspectWebhookBody
+   *
+   * @description
+   * Reports which parser handled the fixture request and whether it preserved the bytes.
+   *
+   * @param {unknown} body - Body received by the Nest handler.
+   * @returns {{ hex: string } | { body: unknown }} Raw bytes as hex or the decoded body.
+   */
+  @All(['webhook', 'webhook/nested'])
+  public inspectWebhookBody(@Body() body: unknown): { hex: string } | { body: unknown } {
+    return Buffer.isBuffer(body) ? { hex: body.toString('hex') } : { body };
+  }
   // #endregion
 }
 
@@ -114,6 +132,7 @@ describe('createApplication', () => {
     app = await createApplication(SampleModule, {
       service: 'sample-service',
       version: '1.2.3',
+      rawJsonPostPaths: ['/internal/v1/samples/webhook'],
       internalToken: {
         verifier: {
           audience: 'sample-service',
@@ -126,7 +145,7 @@ describe('createApplication', () => {
         },
       },
     });
-    await app.init();
+    await app.listen(0, '127.0.0.1');
   });
 
   beforeEach(async () => {
@@ -195,6 +214,133 @@ describe('createApplication', () => {
     expect(created.headers['x-request-id']).toBe('gateway-req-0001');
     expect(created.body).toEqual({ version: 3, size: 200_000 });
     expect(tooLarge.body).toMatchObject({ code: 'request.body-too-large' });
+  });
+
+  it('preserves the signed bytes across query strings and Express default path variants', async () => {
+    const signed = '\r\n{ "label" : "équipe 👋", "enabled" : true }\n';
+    const raw: Response = await request(app.getHttpServer())
+      .post('/internal/v1/samples/WEBHOOK/?delivery=sample')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Content-Type', 'application/json; charset=utf-8')
+      .send(signed)
+      .expect(200);
+
+    expect(raw.body).toEqual({ hex: Buffer.from(signed, 'utf8').toString('hex') });
+  });
+
+  it('preserves signed bytes when the HTTP request target includes an origin', async () => {
+    const origin = await app.getUrl();
+    const signed = '\n{ "event" : true }\n';
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      httpRequest(
+        origin,
+        {
+          method: 'POST',
+          path: `${origin}/internal/v1/samples/webhook?delivery=sample`,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(signed),
+          },
+        },
+        resolve,
+      )
+        .on('error', reject)
+        .end(signed);
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(await text(response))).toEqual({ hex: Buffer.from(signed).toString('hex') });
+  });
+
+  it('leaves decoded JSON and fixed malformed-body errors on other paths and methods', async () => {
+    const malformed = '{ "unsigned": }';
+    const raw: Response = await request(app.getHttpServer())
+      .post('/internal/v1/samples/webhook')
+      .set('Authorization', `Bearer ${token}`)
+      .type('json')
+      .send(malformed)
+      .expect(200);
+    const nested: Response = await request(app.getHttpServer())
+      .post('/internal/v1/samples/webhook/nested')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nested: true })
+      .expect(200);
+    const put: Response = await request(app.getHttpServer())
+      .put('/internal/v1/samples/webhook')
+      .set('Authorization', `Bearer ${token}`)
+      .type('json')
+      .send(malformed)
+      .expect(400);
+
+    expect(raw.body).toEqual({ hex: Buffer.from(malformed, 'utf8').toString('hex') });
+    expect(nested.body).toEqual({ body: { nested: true } });
+    expect(put.body).toMatchObject({ code: 'request.invalid' });
+  });
+
+  it('applies the configured JSON byte limit and refuses compressed webhook bodies', async () => {
+    const limited = await createApplication(SampleModule, {
+      service: 'sample-service',
+      config: { LOG_LEVEL: 'silent' },
+      internalTokenVerification: 'off',
+      jsonBodyLimitBytes: 32,
+      rawJsonPostPaths: ['/internal/v1/samples/webhook'],
+    });
+    await limited.listen(0, '127.0.0.1');
+    try {
+      const client = request(limited.getHttpServer());
+      const overLimit: Response = await client
+        .post('/internal/v1/samples/webhook')
+        .type('json')
+        .send('é'.repeat(17))
+        .expect(400);
+      const origin = await limited.getUrl();
+      const compressedRequest = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+        body: Uint8Array.from(gzipSync('{}')),
+      };
+      const [compressed, decoded] = await Promise.all([
+        fetch(new URL('/internal/v1/samples/webhook', origin), compressedRequest),
+        fetch(new URL('/internal/v1/samples/webhook/nested', origin), compressedRequest),
+      ]);
+      expect(overLimit.body).toMatchObject({ code: 'request.body-too-large' });
+      expect(compressed.status).toBe(400);
+      expect(compressed.headers.get('content-type')).toMatch(/^application\/problem\+json/u);
+      expect(await compressed.json()).toMatchObject({ code: 'http.bad-request' });
+      expect(decoded.status).toBe(200);
+      expect(await decoded.json()).toEqual({ body: {} });
+    } finally {
+      await limited.close();
+    }
+  });
+
+  it('leaves webhook JSON decoding enabled by default', async () => {
+    const standard = await createApplication(SampleModule, {
+      service: 'sample-service',
+      config: { LOG_LEVEL: 'silent' },
+      internalTokenVerification: 'off',
+    });
+    await standard.init();
+    try {
+      const received: Response = await request(standard.getHttpServer())
+        .post('/internal/v1/samples/webhook')
+        .send({ event: true })
+        .expect(200);
+      expect(received.body).toEqual({ body: { event: true } });
+    } finally {
+      await standard.close();
+    }
+  });
+
+  it('rejects a route pattern in the raw-body configuration', async () => {
+    await expect(
+      createApplication(SampleModule, {
+        service: 'sample-service',
+        internalTokenVerification: 'off',
+        rawJsonPostPaths: ['/internal/v1/samples/:webhook'],
+      }),
+    ).rejects.toThrow('rawJsonPostPaths requires absolute literal paths');
   });
 
   it('writes structured lines with the identity of the application and of the caller', async () => {
