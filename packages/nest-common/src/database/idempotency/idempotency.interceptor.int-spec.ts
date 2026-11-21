@@ -157,6 +157,26 @@ class TaskController {
   }
 
   /**
+   * Method createForActor
+   *
+   * @description
+   * Creates a task with the idempotency key scoped to the verified actor.
+   *
+   * @param {{ title: string }} body - Title of the task.
+   * @param {{ setHeader(name: string, value: string): unknown }} response - Response, to set `Location`.
+   * @returns {Promise<{ id: string; title: string; version: number }>} The created task.
+   */
+  @Post('actor-tasks')
+  @InternalAccess({ actors: ['user', 'system'], organization: 'optional' })
+  @Idempotent({ scope: 'actor' })
+  public createForActor(
+    @Body() body: { title: string },
+    @Res({ passthrough: true }) response: { setHeader(name: string, value: string): unknown },
+  ): Promise<{ id: string; title: string; version: number }> {
+    return this.create(body, response);
+  }
+
+  /**
    * Method createSpace
    *
    * @description
@@ -278,6 +298,7 @@ describe('IdempotencyInterceptor', () => {
    * @param {object} body - JSON body.
    * @param {string | undefined} key - `Idempotency-Key` to send, if any.
    * @param {string | null} organizationId - Organization of the token; `null` for an anonymous call.
+   * @param {string} actorId - Verified user ID when the call has an organization.
    * @returns {Promise<Response>} The response.
    */
   async function send(
@@ -285,12 +306,13 @@ describe('IdempotencyInterceptor', () => {
     body: object,
     key: string | undefined,
     organizationId: string | null = ATELIER_NORD,
+    actorId: string = 'user-camille',
   ): Promise<Response> {
     const token: string = await gateway.sign(
       'task-service',
       organizationId === null
         ? { actor: { type: 'anonymous', id: null }, organizationId: null }
-        : { actor: { type: 'user', id: 'user-camille' }, organizationId },
+        : { actor: { type: 'user', id: actorId }, organizationId },
     );
     const call: request.Test = request(app.getHttpServer())
       .post(path)
@@ -539,6 +561,49 @@ describe('IdempotencyInterceptor', () => {
     expect(other.headers['idempotent-replayed']).toBeUndefined();
     expect((other.body as { id: string }).id).not.toBe((first.body as { id: string }).id);
     expect(probe.runs).toBe(2);
+  });
+
+  it('gives verified actors independent receipts, including in separate organizations', async () => {
+    const path: string = '/internal/v1/actor-tasks';
+    const key: string = 'shared-actor-key';
+    const body: { title: string } = { title: 'CAD-482' };
+    const first: Response = await send(path, body, key);
+    const otherMember: Response = await send(path, body, key, ATELIER_NORD, 'user-other-member');
+    const otherOrganization: Response = await send(path, body, key, OTHER_ORGANIZATION);
+    const firstReplay: Response = await send(path, body, key);
+    const otherReplay: Response = await send(path, body, key, ATELIER_NORD, 'user-other-member');
+    const reused: Response = await send(path, { title: 'CAD-483' }, key);
+
+    expect([first.status, otherMember.status, otherOrganization.status]).toEqual([201, 201, 201]);
+    expect(otherMember.headers['idempotent-replayed']).toBeUndefined();
+    expect(otherOrganization.headers['idempotent-replayed']).toBeUndefined();
+    expect(otherMember.body).not.toEqual(first.body);
+    expect(otherOrganization.body).not.toEqual(first.body);
+    expect(firstReplay.headers['idempotent-replayed']).toBe('true');
+    expect(firstReplay.body).toEqual(first.body);
+    expect(otherReplay.headers['idempotent-replayed']).toBe('true');
+    expect(otherReplay.body).toEqual(otherMember.body);
+    expect(reused.status).toBe(422);
+    expect(reused.body).toMatchObject({ code: 'idempotency.key-reused' });
+    expect(probe.runs).toBe(3);
+    expect(await count('idempotency_keys')).toBe(3);
+  });
+
+  it('refuses an actor-scoped key when the signed system actor has no ID', async () => {
+    const token: string = await gateway.sign('task-service', {
+      actor: { type: 'system', id: null },
+      organizationId: ATELIER_NORD,
+    });
+    const response: Response = await request(app.getHttpServer())
+      .post('/internal/v1/actor-tasks')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'system-without-id')
+      .send({ title: 'CAD-482' });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: 'auth.actor-not-allowed' });
+    expect(probe.runs).toBe(0);
+    expect(await count('idempotency_keys')).toBe(0);
   });
 
   it('runs again once the stored response has expired, and purges expired keys', async () => {
