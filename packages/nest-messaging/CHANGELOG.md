@@ -1,5 +1,12 @@
 # @cadenway/nest-messaging
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [add8a8a]
+  - @cadenway/nest-common@0.12.0
+
 ## 0.7.0
 
 ### Minor Changes
