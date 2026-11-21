@@ -1,6 +1,8 @@
 import {
+  AckPolicy,
   jetstream,
   jetstreamManager,
+  RetentionPolicy,
   type JetStreamManager,
   type PubAck,
   type StoredMsg,
@@ -10,6 +12,10 @@ import { headers, type MsgHdrs, type NatsConnection } from '@nats-io/transport-n
 import type { TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  MessagingConnection,
+  messagingHealthIndicator,
+} from '../connection/messaging-connection.js';
 import { EventConsumers } from '../consumer/event-consumers.js';
 import { MessagingModule } from '../wiring/messaging.module.js';
 import {
@@ -66,6 +72,18 @@ describe('dead-letter worker on a real NATS server', () => {
     return message;
   }
 
+  /** Reads the problem reported by the public readiness indicator. */
+  async function readinessProblem(
+    health: ReturnType<typeof messagingHealthIndicator>,
+  ): Promise<string | undefined> {
+    try {
+      await health.check();
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Unknown readiness error';
+    }
+  }
+
   beforeAll(async () => {
     nats = await startTestNats();
     client = await nats.connect();
@@ -75,6 +93,239 @@ describe('dead-letter worker on a real NATS server', () => {
   afterAll(async () => {
     await client.close();
     await nats.stop();
+  });
+
+  it('replays two broker advisories captured during shutdown and retries a copy until its PubAck', async () => {
+    const names = isolatedNames('inbox');
+    const stream = 'EVENTS_ADVISORIES_inbox';
+    const durable = 'inbox-reader';
+    const taskSubject = 'evt-inbox.task.updated.v1';
+    const advisorySubject = `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.${names.eventsStream}.>`;
+    const options = messagingOptions(nats, names);
+    const publisher = await startApplication([MessagingModule.forRoot(options)]);
+    let worker: TestingModule | undefined;
+    try {
+      await manager.streams.add({
+        name: stream,
+        subjects: [advisorySubject],
+        retention: RetentionPolicy.Workqueue,
+      });
+      await manager.consumers.add(stream, {
+        durable_name: durable,
+        ack_policy: AckPolicy.Explicit,
+        max_deliver: -1,
+      });
+      const workerOptions = {
+        ...options,
+        deadLetterWorker: true,
+        deadLetterAdvisories: {
+          stream,
+          durable,
+          servers: nats.url,
+          user: nats.user,
+          password: nats.password,
+        },
+      };
+      worker = await startApplication([MessagingModule.forRoot(workerOptions)]);
+      await worker.close();
+      worker = undefined;
+      await publisher.get(EventConsumers).subscribe({
+        handler: 'inbox-test',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.resolve(),
+      });
+      const failedEventHeaders = headers();
+      failedEventHeaders.set(EVENT_NAME_HEADER, 'task.updated.v1');
+      failedEventHeaders.set(ORGANIZATION_ID_HEADER, ATELIER_NORD);
+      const origin = jetstream(client);
+      const first = await origin.publish(taskSubject, 'first invalid JSON', {
+        headers: failedEventHeaders,
+      });
+      const second = await origin.publish(taskSubject, 'second invalid JSON', {
+        headers: failedEventHeaders,
+      });
+      await waitFor(async () => (await deadLetters(stream)) === 2);
+      expect(await deadLetters(names.deadLetterStream)).toBe(0);
+      const captured = await lastDeadLetter(
+        stream,
+        `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.${names.eventsStream}.task-service__inbox-test`,
+      );
+
+      worker = await startApplication([MessagingModule.forRoot(workerOptions)]);
+      await waitFor(async () => (await deadLetters(names.deadLetterStream)) === 2);
+      await waitFor(async () => (await deadLetters(stream)) === 0);
+      const copied = await lastDeadLetter(
+        names.deadLetterStream,
+        'dlq-inbox.task-service__inbox-test.evt-inbox.task.updated.v1',
+      );
+      expect(copied.string()).toBe('second invalid JSON');
+      expect(copied.header.get(DEAD_LETTER_SEQUENCE_HEADER)).toBe(String(second.seq));
+      expect(second.seq).toBe(first.seq + 1);
+
+      await manager.streams.deleteMessage(names.eventsStream, second.seq);
+      await origin.publish(captured.subject, captured.data);
+      await waitFor(async () => (await deadLetters(stream)) === 0);
+      expect(await deadLetters(names.deadLetterStream)).toBe(2);
+
+      const connection = worker.get(MessagingConnection);
+      const health = messagingHealthIndicator(connection);
+      const destination = (await manager.streams.info(names.deadLetterStream)).config;
+      await manager.streams.delete(names.deadLetterStream);
+      await origin.publish(taskSubject, 'retry invalid JSON', { headers: failedEventHeaders });
+      await waitFor(
+        async () => (await manager.consumers.info(stream, durable)).delivered.consumer_seq > 3,
+      );
+      expect(await deadLetters(stream)).toBe(1);
+      await waitFor(
+        async () => (await readinessProblem(health))?.includes('dead-letter copy failed') === true,
+      );
+      await expect(health.check()).rejects.toThrow('dead-letter copy failed');
+      await manager.streams.add(destination);
+      await waitFor(async () => (await deadLetters(names.deadLetterStream)) === 1);
+      await waitFor(async () => (await deadLetters(stream)) === 0);
+      await waitFor(async () => (await readinessProblem(health)) === undefined);
+      await expect(health.check()).resolves.toBeUndefined();
+      const retried = await lastDeadLetter(
+        names.deadLetterStream,
+        'dlq-inbox.task-service__inbox-test.evt-inbox.task.updated.v1',
+      );
+      expect(retried.string()).toBe('retry invalid JSON');
+    } finally {
+      await worker?.close();
+      await publisher.close();
+    }
+  });
+
+  it('reports a separate advisory broker restart until it can bind and pull again', async () => {
+    const names = isolatedNames('separate-broker');
+    const stream = 'EVENTS_ADVISORIES';
+    const durable = 'readiness-reader';
+    const observer = await startTestNats();
+    const observerClient = await observer.connect();
+    let worker: TestingModule | undefined;
+    let restart: Promise<void> | undefined;
+    try {
+      const observerManager = await jetstreamManager(observerClient);
+      await observerManager.streams.add({
+        name: stream,
+        subjects: [`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.${names.eventsStream}.>`],
+        retention: RetentionPolicy.Workqueue,
+      });
+      await observerManager.consumers.add(stream, {
+        durable_name: durable,
+        ack_policy: AckPolicy.Explicit,
+        max_deliver: -1,
+      });
+      worker = await startApplication([
+        MessagingModule.forRoot(
+          messagingOptions(nats, {
+            ...names,
+            deadLetterWorker: true,
+            deadLetterAdvisories: {
+              stream,
+              durable,
+              servers: observer.url,
+              user: observer.user,
+              password: observer.password,
+            },
+          }),
+        ),
+      ]);
+      const connection = worker.get(MessagingConnection);
+      const health = messagingHealthIndicator(connection);
+      await waitFor(
+        async () => (await observerManager.consumers.info(stream, durable)).num_waiting > 0,
+      );
+      await expect(health.check()).resolves.toBeUndefined();
+
+      restart = observer.restart();
+      await waitFor(
+        async () =>
+          (await readinessProblem(health))?.includes('advisory broker disconnected') === true,
+      );
+      await expect(health.check()).rejects.toThrow('advisory broker disconnected');
+      await expect(connection.flush()).resolves.toBeUndefined();
+      await restart;
+
+      await waitFor(async () => (await readinessProblem(health)) === undefined);
+      await waitFor(
+        async () => (await observerManager.consumers.info(stream, durable)).num_waiting > 0,
+      );
+      await expect(health.check()).resolves.toBeUndefined();
+    } finally {
+      await worker?.close();
+      await restart?.catch(() => undefined);
+      await observerClient.close();
+      await observer.stop();
+    }
+  });
+
+  it('records a metadata-only marker when a recreated stream reuses a captured sequence', async () => {
+    const names = isolatedNames('recreated');
+    const stream = 'EVENTS_ADVISORIES_recreated';
+    const durable = 'recreated-inbox-reader';
+    const eventSubject = 'evt-recreated.task.updated.v1';
+    let publisher: TestingModule | undefined = await startApplication([
+      MessagingModule.forRoot(messagingOptions(nats, names)),
+    ]);
+    let worker: TestingModule | undefined;
+    try {
+      await manager.streams.add({
+        name: stream,
+        subjects: [`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.${names.eventsStream}.>`],
+        retention: RetentionPolicy.Workqueue,
+      });
+      await manager.consumers.add(stream, {
+        durable_name: durable,
+        ack_policy: AckPolicy.Explicit,
+        max_deliver: -1,
+      });
+      await publisher.get(EventConsumers).subscribe({
+        handler: 'recreated-test',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: (): Promise<void> => Promise.resolve(),
+      });
+      const origin = jetstream(client);
+      const original = await origin.publish(eventSubject, 'invalid JSON');
+      await waitFor(async () => (await deadLetters(stream)) === 1);
+      await publisher.close();
+      publisher = undefined;
+      const previous = (await manager.streams.info(names.eventsStream)).config;
+      await manager.streams.delete(names.eventsStream);
+      await manager.streams.add(previous);
+      const replacement = await origin.publish(eventSubject, 'different source payload');
+      expect(replacement.seq).toBe(original.seq);
+
+      worker = await startApplication([
+        MessagingModule.forRoot(
+          messagingOptions(nats, {
+            ...names,
+            deadLetterWorker: true,
+            deadLetterAdvisories: {
+              stream,
+              durable,
+              servers: nats.url,
+              user: nats.user,
+              password: nats.password,
+            },
+          }),
+        ),
+      ]);
+      await waitFor(async () => (await deadLetters(names.deadLetterStream)) >= 1);
+      const marker = await lastDeadLetter(
+        names.deadLetterStream,
+        'dlq-recreated.task-service__recreated-test.advisory-source-unavailable',
+      );
+      expect(marker.data.byteLength).toBe(0);
+      expect(marker.header.get(DEAD_LETTER_SEQUENCE_HEADER)).toBe(String(original.seq));
+      expect(marker.header.get(DEAD_LETTER_PAYLOAD_HEADER)).toBe('dropped');
+      expect(marker.header.get(EVENT_NAME_HEADER)).toBe('');
+    } finally {
+      await worker?.close();
+      await publisher?.close();
+    }
   });
 
   it('terminates a message that does not match its contract and copies it with the dead-letter headers', async () => {

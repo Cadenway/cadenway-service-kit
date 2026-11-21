@@ -101,6 +101,7 @@ and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
 | `manageStreams`               | `false`                | Creates or updates the three streams at start-up, for local tests. Off because cadenway-ops owns the streams and no service user may create them; the module then checks the streams it uses  |
 | `manageConsumers`             | `true`                 | `subscribe` creates the durable consumer of a handler, or aligns its `AckWait` and delivery limit. With `false` it binds to a consumer created elsewhere and fails clearly when it is missing |
 | `deadLetterWorker`            | `false`                | Runs the [dead-letter worker](#dead-letters). notification-service alone turns it on                                                                                                          |
+| `deadLetterAdvisories`        | unset                  | Optional [persistent advisory inbox](#persistent-advisory-inbox) served by a separately authorized broker. The default uses live advisories                                                   |
 | `restrictedEvents`            | None                   | Names of the [restricted events](#restricted-events), published and consumed in the restricted stream. Only identity-service and notification-service list any                                |
 | `eventsStream`                | `EVENTS`               | Stream of the events                                                                                                                                                                          |
 | `restrictedStream`            | `EVENTS_RESTRICTED`    | Stream of the restricted events                                                                                                                                                               |
@@ -516,8 +517,8 @@ without `redelivery` binds as before, whatever the limit.
 JetStream has no dead-letter queue. When a consumer of `EVENTS` or `EVENTS_RESTRICTED` reaches its
 delivery limit or terminates a message, the server publishes an advisory on
 `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>` or
-`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.<stream>.<consumer>`. The worker subscribes to the four
-advisory subjects with a queue group (two replicas do not copy twice), reads the original message
+`$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.<stream>.<consumer>`. In live mode, a queue group
+routes each advisory to one replica. The worker reads the original message
 by its sequence with `$JS.API.STREAM.MSG.GET.<stream>` (never the direct get API, which the
 streams do not enable) and publishes it on `dlq.<consumer>.<original subject>` (`EVENTS_DLQ`) with
 its original headers plus:
@@ -533,10 +534,10 @@ its original headers plus:
 The copy of a restricted event keeps its headers and has an empty body, because the body may
 hold a single-use code that would otherwise sit 30 days in `EVENTS_DLQ`; set
 `restrictedDeadLetterPayload: 'copy'` to keep it. Its `Nats-Msg-Id` is
-`<stream>.<consumer>.<sequence>`, so a repeated advisory stores it once, and the publish requires
-`EVENTS_DLQ` to store it. A copy that fails (the dead-letter stream briefly missing, a timeout) is
-tried five times over about two minutes, then logged as an error naming the consumer, the stream
-and the sequence. Each dead letter is logged as an error, without the payload; a termination
+`<stream>.<consumer>.<sequence>` in live mode, which deduplicates copies within the destination
+stream's deduplication window. The publish requires `EVENTS_DLQ` to store it. In live mode, a
+failed copy is tried five times over about two minutes, then logged as an error naming the
+consumer, stream and sequence. Each dead letter is logged as an error, without the payload; a termination
 reason other than the kit's own is logged as `external-termination`. No backend consumes
 `EVENTS_DLQ`; operators read it. Each advisory subscription copies one message at a time and
 queues up to 1,000 advisories or 16 MiB in arrival order, whichever limit is reached first.
@@ -546,8 +547,38 @@ The connection then drains in its own shutdown phase.
 
 **Who runs it:** the worker is off by default (`deadLetterWorker: false`) and runs in
 notification-service only: reading a message by sequence includes the restricted ones, which no
-other backend may see. Advisories are plain NATS messages: one published while no worker is
+other backend may see. In the default mode, advisories are plain NATS messages: one published while no worker is
 connected is lost, and its message stays in its stream until it expires.
+
+### Persistent advisory inbox
+
+With `deadLetterWorker: true`, pass `deadLetterAdvisories: { servers, user, password, stream, durable }`
+to pull from an operator-provisioned inbox. The inbox broker retains the original terminal
+advisory subjects in a file-backed stream. Configure an unfiltered durable pull consumer
+with explicit acknowledgements and unlimited deliveries. The advisory reader needs only the
+durable's INFO, NEXT and ACK subjects and its own `_INBOX.<user>.>` replies. The primary
+connection still reads the original and publishes the dead letter. Both connections are needed
+at startup and a missing inbox or durable fails startup.
+
+The worker pulls one advisory at a time and acknowledges it after the dead-letter publication
+receives its PubAck. A failed copy is retried by the broker with a delayed NAK. A malformed
+record is terminated and logged without its body.
+
+Readiness reports an advisory broker outage until the worker can bind the durable again. A
+failed copy also affects readiness until a valid publication receives its PubAck.
+
+Before copying from an event stream, the worker checks that the stream and the message predate
+the captured advisory and verifies that the stream was not replaced during the read. If the
+original has expired or its sequence now belongs to another stream incarnation, the worker
+publishes an empty `dlq.<consumer>.advisory-source-unavailable` marker with only the advisory
+metadata. Durable copies and markers use the same native advisory id in their message id, even
+if the original expires after the dead letter was stored.
+On switching modes, pause the live worker before starting a fresh capture and then enable the
+durable reader on its replicas together. The two modes use different message ids.
+
+The inbox covers worker downtime while the advisory capture is available and its retention
+limits are sufficient. Operations monitors the capture path, broker clocks, and retention.
+The message id deduplicates retries within the destination stream's deduplication window.
 
 ## Rebuild
 
@@ -773,7 +804,7 @@ a server configured like cadenway-ops.
 - A handler is abandoned at `handlerTimeoutMs`, not stopped: work that ignores `signal` goes on
   in the background, though its writes through the runners are rolled back with the transaction
   of the deduplicator. The kit does not extend `AckWait` with progress acknowledgements.
-- Dead letters rely on advisories, which are not stored: none is copied while no worker runs.
+- In live mode, the broker delivers terminal advisories only while a worker is connected.
 - A new consumer with the default `deliverPolicy: 'all'` receives what its stream still holds, up
   to seven days of events; a handler with outside effects (notifications) registers with `new`.
 - A handler still running after `shutdownTimeoutMs` is abandoned and its message redelivered.

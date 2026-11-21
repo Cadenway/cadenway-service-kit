@@ -42,6 +42,7 @@ const addedMembers = {
     'redactRedisCommandArguments',
   ],
   '@cadenway/nest-messaging#EventSubscription': ['redelivery', 'transactionIsolationLevel'],
+  '@cadenway/nest-messaging#MessagingModuleOptions': ['deadLetterAdvisories'],
 };
 
 // The standalone consumer below checks the reviewed additive class methods directly.
@@ -81,7 +82,13 @@ import type { CreateApplicationOptions } from '@cadenway/nest-common';
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
-import type { EventConsumers, EventStreamProgress, MessagingConnection } from '@cadenway/nest-messaging';
+import type {
+  DeadLetterAdvisoriesOptions,
+  EventConsumers,
+  EventStreamProgress,
+  MessagingConnection,
+  MessagingModuleOptions,
+} from '@cadenway/nest-messaging';
 import { z } from 'zod';
 
 const schema = z.object({ ...databaseConfigShape, SERVICE_NAME: z.string() });
@@ -97,6 +104,15 @@ const webhookOptions: CreateApplicationOptions = {
 };
 const enqueue: JobEnqueueOptions = { startAfter: new Date() };
 const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
+const durableAdvisories: DeadLetterAdvisoriesOptions = {
+  stream: 'EVENTS_ADVISORIES',
+  durable: 'notification-dead-letter-advisories-v1',
+  servers: 'nats://localhost:4222',
+};
+const durableOptions: Pick<MessagingModuleOptions, 'deadLetterWorker' | 'deadLetterAdvisories'> = {
+  deadLetterWorker: true,
+  deadLetterAdvisories: durableAdvisories,
+};
 declare const messagingConnection: MessagingConnection;
 declare const eventConsumers: EventConsumers;
 const stopWatching: () => void = messagingConnection.watchAvailability((available: boolean) => {
@@ -117,7 +133,7 @@ const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisorySt
   ['test__relay'],
   AbortSignal.timeout(1000),
 );
-void [config, attempts, webhookOptions, runtimeEnqueue, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
+void [config, attempts, webhookOptions, runtimeEnqueue, durableOptions, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
 `,
   );
   const released = Object.fromEntries(

@@ -144,6 +144,19 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
   for (const name of restrictedEvents) {
     eventSubject(restrictedSubjectPrefix, name);
   }
+  const advisoryInbox = options.deadLetterAdvisories;
+  if (
+    advisoryInbox !== undefined &&
+    (!options.deadLetterWorker ||
+      !NAME_PATTERN.test(advisoryInbox.stream) ||
+      !NAME_PATTERN.test(advisoryInbox.durable) ||
+      (advisoryInbox.user !== undefined && !NAME_PATTERN.test(advisoryInbox.user)) ||
+      (advisoryInbox.user === undefined && advisoryInbox.password !== undefined))
+  ) {
+    throw new Error(
+      'The dead-letter advisory inbox needs an enabled worker and valid broker options.',
+    );
+  }
   return {
     service: options.service,
     servers: parseServers(options.servers),
@@ -153,6 +166,11 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     manageStreams: options.manageStreams ?? false,
     manageConsumers: options.manageConsumers ?? true,
     deadLetterWorker: options.deadLetterWorker ?? false,
+    ...(advisoryInbox === undefined
+      ? {}
+      : {
+          deadLetterAdvisories: { ...advisoryInbox, servers: parseServers(advisoryInbox.servers) },
+        }),
     restrictedEvents,
     eventsStream: options.eventsStream ?? DEFAULT_EVENTS_STREAM,
     restrictedStream: options.restrictedStream ?? DEFAULT_RESTRICTED_STREAM,
