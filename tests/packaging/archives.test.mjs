@@ -33,7 +33,7 @@ const addedMembers = {
   '@cadenway/nest-common#InternalRequestInit': ['streamTimeoutMs'],
   '@cadenway/nest-common/database#DatabaseConfig': ['DATABASE_TRANSACTION_MAX_ATTEMPTS'],
   '@cadenway/nest-common/database#DatabaseModuleOptions': ['transactionMaxAttempts'],
-  '@cadenway/nest-common/database#IdempotentOptions': ['maxAttempts'],
+  '@cadenway/nest-common/database#IdempotentOptions': ['maxAttempts', 'scope'],
   '@cadenway/nest-common/database#SystemTransactionRunner': ['maxAttempts'],
   '@cadenway/nest-common/database#TenantTransactionRunner': ['maxAttempts'],
   '@cadenway/nest-common/database#TransactionOptions': ['maxAttempts'],
@@ -78,7 +78,7 @@ test('packed Service Kit preserves the released public API and supports isolated
     join(full, 'consumer.mts'),
     `
 import type { CreateApplicationOptions } from '@cadenway/nest-common';
-import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
+import { databaseConfigShape, Idempotent, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
 import type { EventConsumers, EventStreamProgress, MessagingConnection } from '@cadenway/nest-messaging';
@@ -95,6 +95,7 @@ const webhookOptions: CreateApplicationOptions = {
   service: 'webhook-test',
   rawJsonPostPaths: ['/v1/webhooks/sample'],
 };
+Idempotent({ scope: 'actor', maxAttempts: 1 });
 const enqueue: JobEnqueueOptions = { startAfter: new Date() };
 const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
 declare const messagingConnection: MessagingConnection;

@@ -5,6 +5,8 @@ import type { Reflector } from '@nestjs/core';
 import { defer, lastValueFrom, of, type Observable } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 
+import type { OrganizationContext } from '../../auth/context/organization-context.js';
+import { setRequestOrganizationContext } from '../../auth/context/request-organization-context.js';
 import { ProblemException, type Problem } from '../../problem/problem.js';
 import type { SystemTransactionRunner } from '../transactions/system-transaction-runner.js';
 import type { TenantTransactionRunner } from '../transactions/tenant-transaction-runner.js';
@@ -261,15 +263,21 @@ function interceptorOf(
  *
  * @param {string | undefined} key - `Idempotency-Key` header, if any.
  * @param {FakeResponse} response - Response the handler and the interceptor write to.
+ * @param {OrganizationContext | undefined} identity - Context established by the request guard.
  * @returns {ExecutionContext} The context.
  */
-function contextOf(key: string | undefined, response: FakeResponse): ExecutionContext {
+function contextOf(
+  key: string | undefined,
+  response: FakeResponse,
+  identity?: OrganizationContext,
+): ExecutionContext {
   const request: object = {
     method: 'POST',
     originalUrl: '/internal/v1/spaces',
     headers: key === undefined ? {} : { 'idempotency-key': key },
     body: { name: 'Produit' },
   };
+  if (identity !== undefined) setRequestOrganizationContext(request, identity);
   const context: object = {
     getType: (): string => 'http',
     getHandler: (): (() => void) => (): void => undefined,
@@ -474,6 +482,60 @@ describe('IdempotencyInterceptor', () => {
     );
 
     expect(table.transactionOptions).toEqual({ isolationLevel: 'serializable', maxAttempts: 1 });
+  });
+
+  it('uses a bounded storage namespace distinct from organization-scoped client keys', async () => {
+    const table: FakeTable = freshTable();
+    const key: string = 'x'.repeat(255);
+    const identity: OrganizationContext = {
+      actor: { type: 'user', id: 'user-camille' },
+      organizationId: '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e01',
+      role: null,
+      scopes: [],
+    };
+    const response: FakeResponse = new FakeResponse();
+    await lastValueFrom(
+      interceptorOf(table, { scope: 'organization' }).intercept(
+        contextOf(key, response, identity),
+        { handle: () => of(undefined) },
+      ),
+    );
+    expect(table.row?.key).toBe(key);
+
+    const actorTable: FakeTable = freshTable();
+    await lastValueFrom(
+      interceptorOf(actorTable, { scope: 'actor' }).intercept(
+        contextOf(key, new FakeResponse(), identity),
+        { handle: () => of(undefined) },
+      ),
+    );
+    const storageKey: unknown = actorTable.row?.key;
+    expect(storageKey).toMatch(/^actor:v1 [A-Za-z0-9_-]{43}$/u);
+    if (typeof storageKey !== 'string') throw new Error('Expected a stored actor key.');
+    expect(
+      problemOf(() =>
+        interceptorOf(table).intercept(contextOf(storageKey, new FakeResponse(), identity), {
+          handle: () => of(undefined),
+        }),
+      ),
+    ).toMatchObject({ status: 400, code: 'request.invalid' });
+  });
+
+  it('refuses actor scoping without a verified identity before starting a transaction', async () => {
+    const table: FakeTable = freshTable();
+    const counter: { runs: number } = { runs: 0 };
+    const response: FakeResponse = new FakeResponse();
+
+    await expect(
+      lastValueFrom(
+        interceptorOf(table, { scope: 'actor' }).intercept(
+          contextOf('actor-required', response),
+          creation(response, counter),
+        ),
+      ),
+    ).rejects.toMatchObject({ problem: { status: 403, code: 'auth.actor-not-allowed' } });
+    expect(table.transactions).toBe(0);
+    expect(counter.runs).toBe(0);
   });
 
   it('discards the staged status and headers from an aborted attempt before running the handler again', async () => {
