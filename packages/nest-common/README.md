@@ -591,8 +591,9 @@ trace caveat above.
 
 Pass `rawJsonPostPaths: ['/v1/webhooks/provider']` to `createApplication` when a webhook
 signature covers the original request bytes. The option defaults to an empty list. Each path
-is literal and absolute. Matching uses the default Express behavior for ASCII case and one
-final slash and ignores the query string. Every other method and path keeps the standard parser.
+is absolute and uses literal segments made of ASCII letters, digits, `.`, `_`, `~`, or `-`.
+Matching uses the path that Express routes. It ignores ASCII case, one final slash, and the
+query string. Every other method and path keeps the standard parser.
 
 On a matching POST, `application/json` reaches `@Body()` as a `Buffer`, including whitespace
 and malformed JSON. Check `Buffer.isBuffer(body)` on the unknown body, then authenticate the

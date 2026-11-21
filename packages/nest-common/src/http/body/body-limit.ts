@@ -58,10 +58,10 @@ const MALFORMED_JSON_ISSUE: ValidationIssue = Object.freeze({
  * @description
  * Express middleware that reads the JSON body of a request.
  *
- * @type {(request: IncomingMessage, response: ServerResponse, next: (error?: unknown) => void) => void}
+ * @template BodyRequest - The request shape required by the middleware.
  */
-type JsonBodyMiddleware = (
-  request: IncomingMessage,
+type JsonBodyMiddleware<BodyRequest extends IncomingMessage = IncomingMessage> = (
+  request: BodyRequest,
   response: ServerResponse,
   next: (error?: unknown) => void,
 ) => void;
@@ -195,13 +195,13 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
  *
  * @param {readonly string[]} paths - Literal paths. A final slash and ASCII case are ignored.
  * @param {number} limitBytes - Largest accepted body, in bytes.
- * @returns {JsonBodyMiddleware} Middleware that exposes the unmodified bytes in the request body.
+ * @returns {JsonBodyMiddleware<IncomingMessage & { readonly path: string }>} Express middleware that exposes the unmodified bytes in the request body.
  * @throws {Error} If a configured path is not an absolute literal route.
  */
 export function rawJsonPostBodyParser(
   paths: readonly string[],
   limitBytes: number,
-): JsonBodyMiddleware {
+): JsonBodyMiddleware<IncomingMessage & { readonly path: string }> {
   const literalPath = /^\/(?:[A-Za-z\d._~-]+(?:\/[A-Za-z\d._~-]+)*\/?)?$/u;
   const selected = new Set(
     paths.map((path) => {
@@ -218,10 +218,9 @@ export function rawJsonPostBodyParser(
   });
 
   return (request, response, next): void => {
-    const path = request.url?.split('?', 1)[0];
+    const path = request.path;
     if (
       request.method === 'POST' &&
-      path !== undefined &&
       literalPath.test(path) &&
       selected.has(path.replace(/\/$/u, '').toLowerCase())
     ) {

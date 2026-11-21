@@ -1,3 +1,5 @@
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
@@ -143,7 +145,7 @@ describe('createApplication', () => {
         },
       },
     });
-    await app.init();
+    await app.listen(0, '127.0.0.1');
   });
 
   beforeEach(async () => {
@@ -224,6 +226,31 @@ describe('createApplication', () => {
       .expect(200);
 
     expect(raw.body).toEqual({ hex: Buffer.from(signed, 'utf8').toString('hex') });
+  });
+
+  it('preserves signed bytes when the HTTP request target includes an origin', async () => {
+    const origin = await app.getUrl();
+    const signed = '\n{ "event" : true }\n';
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      httpRequest(
+        origin,
+        {
+          method: 'POST',
+          path: `${origin}/internal/v1/samples/webhook?delivery=sample`,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(signed),
+          },
+        },
+        resolve,
+      )
+        .on('error', reject)
+        .end(signed);
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(await text(response))).toEqual({ hex: Buffer.from(signed).toString('hex') });
   });
 
   it('leaves decoded JSON and fixed malformed-body errors on other paths and methods', async () => {
