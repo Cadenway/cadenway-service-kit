@@ -1,5 +1,11 @@
 # @cadenway/nest-common
 
+## 0.12.0
+
+### Minor Changes
+
+- add8a8a: Add opt-in raw JSON bodies for explicitly configured POST paths so webhook handlers can verify the transmitted bytes before parsing.
+
 ## 0.11.0
 
 ### Minor Changes
