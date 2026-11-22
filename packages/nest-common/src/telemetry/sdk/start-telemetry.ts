@@ -26,7 +26,7 @@ import { readPackageVersion } from '../../bootstrap/application/package-version.
 import { redactRedisErrorExports } from './redis-diagnostics.js';
 import {
   markSensitiveHttpPath,
-  redactSensitiveHttpPathExports,
+  redactHttpSpanExports,
   sensitiveHttpPaths,
 } from './sensitive-http-paths.js';
 import { registerTelemetryShutdown } from './telemetry-handle.js';
@@ -231,10 +231,9 @@ export function startTelemetry(options: TelemetryOptions): TelemetryHandle {
   }
   const exporting: boolean = collectorConfigured();
   const paths = sensitiveHttpPaths(options.sensitiveHttpPathPrefixes ?? []);
-  let exporter: SpanExporter | undefined = exporting ? new OTLPTraceExporter() : undefined;
-  if (exporter !== undefined && paths !== undefined) {
-    exporter = redactSensitiveHttpPathExports(exporter, paths);
-  }
+  let exporter: SpanExporter | undefined = exporting
+    ? redactHttpSpanExports(new OTLPTraceExporter(), paths)
+    : undefined;
   if (exporter !== undefined && options.redactRedisCommandArguments === true) {
     exporter = redactRedisErrorExports(exporter);
   }
