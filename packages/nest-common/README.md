@@ -342,13 +342,6 @@ and fetch client spans, including requests that reach a fallback or a response e
 templates and trace propagation are preserved. If omitted or empty, the attributes exported
 by OpenTelemetry keep their existing defaults.
 
-Set `CADENWAY_OTEL_REDACT_HTTP_QUERY_STRINGS=true` in the process environment before enabling a
-local collector for services using this release. This removes query strings from exported URL
-attributes for incoming Node HTTP requests and for Node HTTP and fetch clients, including legacy
-URL attributes. Automatic HTTP and Express diagnostics omit exception messages, stack traces
-and status descriptions, which can copy the request URL. Trace context, route templates, path
-attributes and error codes remain available. The option is off when unset.
-
 Set `redactRedisCommandArguments: true` when Redis command arguments carry private keys or
 values. Exported ioredis spans retain the command name, timing, error status and trace context.
 The exporter omits free-form error messages and exception details from ioredis and automatic HTTP,
