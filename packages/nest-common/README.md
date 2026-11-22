@@ -1077,8 +1077,12 @@ What a marked route must respect:
   The default is `scope: 'organization'`. Enable actor scope when introducing a route. When
   changing the scope of an existing route, its earlier receipts are in the previous namespace and
   cannot be replayed in the new one.
-- Expired keys are overwritten when used again, never deleted by the interceptor. Schedule
-  `purgeExpiredIdempotencyKeys(tx)` in a system transaction.
+- Expired keys are overwritten when used again, never deleted by the interceptor. For scheduled
+  cleanup, use `purgeExpiredIdempotencyKeyBatch(tx, limit)` in a separate system transaction per
+  batch. The limit must be an integer from 1 to 1,000. Each call selects expired rows in expiry
+  order up to that limit and returns the number deleted. A short batch can leave expired rows
+  locked by another transaction for the next scheduled run. The existing
+  `purgeExpiredIdempotencyKeys(tx)` helper continues to delete all expired rows in one call.
 
 ### Getting the kit tables into the migrations of a service
 

@@ -24,6 +24,7 @@ export {
   purgeExpiredIdempotencyKeys,
   type IdempotentOptions,
 } from './idempotency/idempotency.interceptor.js';
+export { purgeExpiredIdempotencyKeyBatch } from './idempotency/idempotency-maintenance.js';
 export { default as idempotencyKeys } from './idempotency/idempotency.schema.js';
 export {
   ORGANIZATION_SETTING,
