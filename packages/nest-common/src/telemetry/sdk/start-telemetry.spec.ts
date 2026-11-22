@@ -1,5 +1,5 @@
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
-import { context, ROOT_CONTEXT, SpanStatusCode, trace, type Span } from '@opentelemetry/api';
+import { context, ROOT_CONTEXT, trace, type Span } from '@opentelemetry/api';
 import { RPCType, setRPCMetadata, type RPCMetadata } from '@opentelemetry/core';
 import { of } from 'rxjs';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -88,41 +88,13 @@ describe('startTelemetry', () => {
         version: '1.2.3',
       });
       expect(handle.exporting).toBe(true);
-      const span = trace.getTracer('test').startSpan('exported-work');
-      span.setAttributes({
-        'url.full':
-          'https://example.test/absolute?terms=fixture-private-query#fixture-private-hash',
-        'url.query': 'terms=fixture-private-query',
-        'url.fragment': 'fixture-private-hash',
-        'url.path': '/path%3Fencoded',
-        'http.target': '/relative?filter=fixture-private-target',
-        'http.route': '/catalog/:id',
-        'http.response.header.location': ['/redirect?filter=fixture-private-location'],
-      });
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: 'Cannot read https://example.test/diagnostic?terms=fixture-private-status',
-      });
-      span.recordException(new Error('Cannot read /diagnostic?terms=fixture-private-exception'));
-      span.addEvent('url event', {
-        'http.url': 'https://example.test/event?fixture-private-event',
-      });
-      span.end();
+      trace.getTracer('test').startSpan('exported-work').end();
       await handle.shutdown();
 
       const traces: string = (collector.received.get('/v1/traces') ?? []).join('');
       expect(traces).toContain('exported-work');
       expect(traces).toContain('sample-service');
       expect(traces).toContain('1.2.3');
-      expect(traces).toContain('https://example.test/absolute');
-      expect(traces).toContain('/relative');
-      expect(traces).toContain('/redirect');
-      expect(traces).toContain('/path%3Fencoded');
-      expect(traces).toContain('/catalog/:id');
-      expect(traces).toContain('Cannot read https://example.test/diagnostic');
-      expect(traces).toContain('Cannot read /diagnostic');
-      expect(traces).toContain('https://example.test/event');
-      expect(traces).not.toMatch(/fixture-private-|url\.query|url\.fragment/u);
     } finally {
       await collector.close();
     }

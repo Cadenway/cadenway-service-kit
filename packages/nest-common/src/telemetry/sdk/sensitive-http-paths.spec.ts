@@ -103,7 +103,6 @@ it('redacts both HTTP directions and fetch in OTLP while preserving trace propag
       '/internal/share/fixture-fetch-only/submissions?message=fixture-contact-fetch';
     const expressPath = '/public/share/fixture-express-only';
     const unrelatedPath = '/public/shared/ordinary-route?message=ordinary-query';
-    const unrelatedFetchPath = '/internal/ordinary-route?filter=ordinary-fetch-query';
     await expect(requestNodeHttp(httpClient, origin, nodePath)).resolves.toBe(200);
     await expect(requestNodeHttp(httpClient, origin, fallbackPath)).resolves.toBe(404);
     const fetched = await fetch(origin + fetchPath, {
@@ -114,16 +113,12 @@ it('redacts both HTTP directions and fetch in OTLP while preserving trace propag
     await fetched.text();
     await expect(requestNodeHttp(httpClient, origin, expressPath)).resolves.toBe(422);
     await expect(requestNodeHttp(httpClient, origin, unrelatedPath)).resolves.toBe(200);
-    const ordinaryFetch = await fetch(origin + unrelatedFetchPath);
-    expect(ordinaryFetch.status).toBe(200);
-    await ordinaryFetch.text();
     expect([...seen.keys()]).toEqual([
       nodePath,
       fallbackPath,
       fetchPath,
       expressPath,
       unrelatedPath,
-      unrelatedFetchPath,
     ]);
     await handle.shutdown();
 
@@ -158,8 +153,7 @@ it('redacts both HTTP directions and fetch in OTLP while preserving trace propag
     expect(spans).toContain('/PUBLIC/SHARE/REDACTED');
     expect(spans).toContain('/internal/share/REDACTED');
     expect(spans).toContain('/public/shared/ordinary-route');
-    expect(spans).toContain('/internal/ordinary-route');
-    expect(spans).not.toMatch(/ordinary-(?:fetch-)?query/u);
+    expect(spans).toContain('ordinary-query');
     expect(spans).not.toMatch(
       /fixture-(?:node-only|fallback-only|fetch-only|express-only|contact-)/u,
     );
@@ -167,7 +161,6 @@ it('redacts both HTTP directions and fetch in OTLP while preserving trace propag
 
     const metrics = (collector.received.get('/v1/metrics') ?? []).join('');
     expect(metrics).toContain('http.server.request.duration');
-    expect(metrics).not.toMatch(/ordinary-(?:fetch-)?query/u);
     expect(metrics).not.toMatch(
       /fixture-(?:node-only|fallback-only|fetch-only|express-only|contact-)/u,
     );

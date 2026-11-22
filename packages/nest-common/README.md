@@ -334,16 +334,13 @@ exported, as with the loader; without either, only the HTTP span is.
 | Second call      | Returns the handle of the first                                                                                                                     |
 | Shutdown         | `shutdownTelemetry()`, from either entry point, flushes and stops; it resolves at once when telemetry was never started                             |
 
-The trace exporter drops query strings and fragments from current and legacy HTTP URL attributes,
-including spans from fetch. It also removes these parts from URLs in exported diagnostic
-messages. Literal encoded path segments, route templates and trace propagation remain available.
-
 Use `sensitiveHttpPathPrefixes` for routes with credentials or other private values in the
 URL path. Each entry is a literal absolute path of static segments, ending in a slash. For
 example, `['/public/share/']` protects the remainder of each matching path, including its query.
 Matching is case-insensitive and applies to Node HTTP and Express server spans and to Node HTTP
 and fetch client spans, including requests that reach a fallback or a response error. Matched route
-templates and trace propagation are preserved.
+templates and trace propagation are preserved. If omitted or empty, the attributes exported
+by OpenTelemetry keep their existing defaults.
 
 Set `redactRedisCommandArguments: true` when Redis command arguments carry private keys or
 values. Exported ioredis spans retain the command name, timing, error status and trace context.

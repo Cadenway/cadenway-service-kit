@@ -39,21 +39,6 @@ const PATH_ATTRIBUTES: ReadonlySet<string> = new Set([
   'url.path',
 ]);
 
-/** URL fields can include a query even on requests outside configured sensitive prefixes. */
-const URL_ATTRIBUTES = new Set([
-  ...PATH_ATTRIBUTES,
-  'http.route',
-  'url.template',
-  'http.request.header.referer',
-  'http.response.header.location',
-]);
-
-/** These fields contain only the confidential suffix and are omitted entirely. */
-const URL_SUFFIX_ATTRIBUTES = new Set(['url.query', 'url.fragment']);
-
-/** Recognizes HTTP URLs and relative targets in diagnostics without parsing free-form text. */
-const URL_IN_TEXT = /(?:https?:\/\/|(?<![\w/])\/)[^\s"'<>]+/giu;
-
 /**
  * Constant ROUTE_TEMPLATE
  *
@@ -112,22 +97,9 @@ export function markSensitiveHttpPath(span: Span, paths: RegExp, target: string)
  * @param {string} value - Trace text to inspect.
  * @returns {string} Text without the matched path tail, when present.
  */
-function redactText(paths: RegExp | undefined, value: string): string {
-  const match = paths?.exec(value);
-  return match === undefined || match === null
-    ? value
-    : value.slice(0, match.index) + match[0] + REDACTED;
-}
-
-/** Removes raw URL components that can carry user values, retaining the original path bytes. */
-function stripUrlSuffix(value: string): string {
-  const suffix = value.search(/[?#]/u);
-  return suffix < 0 ? value : value.slice(0, suffix);
-}
-
-/** Removes URL suffixes from exported names and diagnostics, preserving other text. */
-function redactDiagnostic(paths: RegExp | undefined, value: string): string {
-  return redactText(paths, value.replace(URL_IN_TEXT, stripUrlSuffix));
+function redactText(paths: RegExp, value: string): string {
+  const match = paths.exec(value);
+  return match === null ? value : value.slice(0, match.index) + match[0] + REDACTED;
 }
 
 /**
@@ -137,37 +109,38 @@ function redactDiagnostic(paths: RegExp | undefined, value: string): string {
  * Scrubs URLs and any incidental copy with the configured prefix. On a matched request, the
  * original path marker also replaces any normalized path and query fields.
  *
- * @param {RegExp | undefined} paths - Optional matcher for sensitive route values.
+ * @param {RegExp} paths - Configured path matcher.
  * @param {Attributes} attributes - Attributes of the span, event or link.
  * @param {string | undefined} requestPath - Sanitized path of the matched request, when known.
  * @returns {Attributes} Attributes safe to send to the exporter.
  */
 function redactAttributes(
-  paths: RegExp | undefined,
+  paths: RegExp,
   attributes: Attributes,
   requestPath: string | undefined,
 ): Attributes {
   return Object.fromEntries(
     Object.entries(attributes).flatMap(([key, value]) => {
-      if (key === REQUEST_PATH || URL_SUFFIX_ATTRIBUTES.has(key)) return [];
-      const isDiagnostic = key === 'exception.message' || key === 'exception.stacktrace';
-      const sanitize = (text: string): string => {
-        if (isDiagnostic) return redactDiagnostic(paths, text);
-        const target = URL_ATTRIBUTES.has(key) ? stripUrlSuffix(text) : text;
-        if (key === 'http.route' && ROUTE_TEMPLATE.test(target)) return target;
-        if (requestPath !== undefined && PATH_ATTRIBUTES.has(key)) {
-          return (URL.parse(target)?.origin ?? '') + requestPath;
-        }
-        return redactText(paths, target);
-      };
-      if (requestPath !== undefined && isDiagnostic) return [[key, REDACTED]];
+      if (key === REQUEST_PATH) return [];
       if (typeof value !== 'string') {
         const sanitized = Array.isArray(value)
-          ? value.map((item: unknown) => (typeof item === 'string' ? sanitize(item) : item))
+          ? value.map((item: unknown) =>
+              typeof item === 'string' ? redactText(paths, item) : item,
+            )
           : value;
         return [[key, sanitized]];
       }
-      return [[key, sanitize(value)]];
+      if (key === 'http.route' && ROUTE_TEMPLATE.test(value)) return [[key, value]];
+      if (requestPath !== undefined) {
+        if (key === 'url.query' || key === 'exception.message' || key === 'exception.stacktrace') {
+          return [[key, REDACTED]];
+        }
+        if (PATH_ATTRIBUTES.has(key)) {
+          const url = URL.parse(value);
+          return [[key, (url?.origin ?? '') + requestPath]];
+        }
+      }
+      return [[key, redactText(paths, value)]];
     }),
   );
 }
@@ -180,31 +153,29 @@ function redactAttributes(
  * propagated trace context. The export view copies only the public ReadableSpan fields, which
  * include getters and the span context method.
  *
- * @param {RegExp | undefined} paths - Optional matcher for sensitive route values.
+ * @param {RegExp} paths - Configured path matcher.
  * @param {ReadableSpan} span - Ended SDK span.
  * @returns {ReadableSpan} Span with confidential path values removed.
  */
-function redactSpan(paths: RegExp | undefined, span: ReadableSpan): ReadableSpan {
+function redactSpan(paths: RegExp, span: ReadableSpan): ReadableSpan {
   const marker = span.attributes[REQUEST_PATH];
   const requestPath = typeof marker === 'string' ? marker : undefined;
-  const name = span.name.replace(URL_IN_TEXT, stripUrlSuffix);
-  const rawRoute = span.attributes['http.route'];
-  const route = typeof rawRoute === 'string' ? stripUrlSuffix(rawRoute) : undefined;
+  const route = span.attributes['http.route'];
   const hasRouteName =
-    route !== undefined &&
+    typeof route === 'string' &&
     ROUTE_TEMPLATE.test(route) &&
-    name.endsWith(route) &&
-    paths?.test(name.slice(0, -route.length)) !== true;
+    span.name.endsWith(route) &&
+    !paths.test(span.name.slice(0, -route.length));
   return spanForExport(span, {
-    name: hasRouteName ? name : redactText(paths, name),
+    name: hasRouteName ? span.name : redactText(paths, span.name),
     status:
       span.status.message === undefined || requestPath !== undefined
         ? { code: span.status.code }
-        : { ...span.status, message: redactDiagnostic(paths, span.status.message) },
+        : { ...span.status, message: redactText(paths, span.status.message) },
     attributes: redactAttributes(paths, span.attributes, requestPath),
     events: span.events.map((event) => ({
       ...event,
-      name: redactDiagnostic(paths, event.name),
+      name: redactText(paths, event.name),
       attributes:
         event.attributes === undefined
           ? undefined
@@ -221,19 +192,19 @@ function redactSpan(paths: RegExp | undefined, span: ReadableSpan): ReadableSpan
 }
 
 /**
- * Function redactHttpSpanExports
+ * Function redactSensitiveHttpPathExports
  *
  * @description
- * Removes query data and scrubs configured HTTP path prefixes just before OTLP encoding.
- * The wrapped exporter retains its queue flush and shutdown behavior.
+ * Scrubs ended spans just before OTLP encoding, after all instrumentation has set its final
+ * attributes. The wrapped exporter retains its queue flush and shutdown behavior.
  *
  * @param {SpanExporter} exporter - Transport used for these spans.
- * @param {RegExp | undefined} paths - Optional matcher for sensitive route values.
+ * @param {RegExp} paths - Configured path matcher.
  * @returns {SpanExporter} Exporter that sends a sanitized view of each span.
  */
-export function redactHttpSpanExports(
+export function redactSensitiveHttpPathExports(
   exporter: SpanExporter,
-  paths: RegExp | undefined,
+  paths: RegExp,
 ): SpanExporter {
   return mapSpanExports(exporter, (span) => redactSpan(paths, span));
 }
