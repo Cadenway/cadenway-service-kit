@@ -7,6 +7,34 @@ import type { Job } from '../../jobs/execution/job.js';
 import { JobWorkers } from './job-workers.js';
 
 describe('JobWorkers', () => {
+  it('reserves two worker slots by default only when the queue enables organization limits', async () => {
+    const connection = { host: 'database.internal', user: 'app', database: 'test' };
+    const options = resolveJobsModuleOptions({
+      connection,
+      queues: [{ name: 'ordinary' }, { name: 'grouped', organizationConcurrency: 1 }],
+    });
+    const boss = new PgBoss(connection);
+    const work = vi.spyOn(boss, 'work').mockResolvedValue('worker');
+    const workers = new JobWorkers(options, new Logger('JobsService'));
+    for (const queue of options.queues) {
+      await workers.register(boss, queue, () => Promise.resolve());
+    }
+
+    expect(work).toHaveBeenNthCalledWith(
+      1,
+      'ordinary',
+      expect.objectContaining({ localConcurrency: 1 }),
+      expect.any(Function),
+    );
+    expect(work.mock.calls[0]?.[1]).not.toHaveProperty('groupConcurrency');
+    expect(work).toHaveBeenNthCalledWith(
+      2,
+      'grouped',
+      expect.objectContaining({ localConcurrency: 2, groupConcurrency: 1 }),
+      expect.any(Function),
+    );
+  });
+
   it('still reports a running retry at shutdown after the original handler returns', async () => {
     const connection = { host: 'database.internal', user: 'app', database: 'test' };
     const options = resolveJobsModuleOptions({ connection, queues: [{ name: 'reminders' }] });

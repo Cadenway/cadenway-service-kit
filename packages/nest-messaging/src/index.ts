@@ -63,6 +63,7 @@ export {
 } from './configuration/messaging-defaults.js';
 export { messagingConfigShape, type MessagingConfig } from './configuration/messaging-config.js';
 export type {
+  DeadLetterAdvisoriesOptions,
   MessagingModuleOptions,
   RebuildAcknowledgement,
   RestrictedDeadLetterPayload,

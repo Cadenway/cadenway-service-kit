@@ -550,8 +550,10 @@ the header value is never quoted.
 `If-Match` is optional by default. With `{ required: true }`, for routes that edit long texts, a
 request without the header answers 400 `request.invalid` with one issue
 `{ "in": "header", "path": "If-Match", "code": "invalid_type", "message": "This route requires an If-Match header." }`
-(428 is not a status of the contract set). A weak tag (`W/"7"`) never matches, as `If-Match`
-requires a strong comparison.
+(428 is not a status of the contract set). A version matches only its exact strong tag, such as
+`"7"` for version 7. Weak tags (`W/"7"`) and other opaque tags (`"07"`) contribute no accepted
+versions. Commas inside quoted tags are part of the tag, so a list such as `"a,b", "7"` still
+accepts version 7. [RFC 9110 §8.8.3 and §13.1.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-8.8.3)
 
 ## Body limit
 

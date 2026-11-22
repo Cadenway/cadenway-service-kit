@@ -394,15 +394,23 @@ refused, raise `concurrency` instead. The handler receives one job:
 | `attempt`        | 1 for the first run, up to `retryLimit + 1`.                                                          |
 | `signal`         | `AbortSignal` aborted when the attempt expires or is abandoned at shutdown: it can no longer succeed. |
 
+A queue can declare `organizationConcurrency` to limit the number of running jobs for each
+organization across workers. Its producer derives the group from the tenant transaction,
+normalizing the identifier to lowercase. The work payload cannot choose the group. Scheduled and
+system jobs remain ungrouped. A queue with an organization limit gets two worker slots per
+process by default. Override `concurrency` to adjust the total slots, keeping it above the
+organization limit when one process should handle different organizations concurrently.
+Jobs accepted before the option was enabled are ungrouped until they finish or expire.
+
 Each call is wrapped in `runInOrganization`. Resolving completes the job; rejecting fails the
 attempt. Pass `signal` to the calls that accept one and stop when it aborts: a handler that never
 settles keeps its worker slot busy, even though its attempt was failed and the job runs again
 elsewhere.
 
-| Option                   | Default | Meaning                                                     |
-| ------------------------ | ------- | ----------------------------------------------------------- |
-| `concurrency`            | `1`     | Jobs of the queue this process handles at the same time.    |
-| `pollingIntervalSeconds` | `2`     | Seconds between two fetches of an idle queue, at least 0.5. |
+| Option                   | Default                                | Meaning                                                     |
+| ------------------------ | -------------------------------------- | ----------------------------------------------------------- |
+| `concurrency`            | `1`, or `2` with an organization limit | Jobs of the queue this process handles at the same time.    |
+| `pollingIntervalSeconds` | `2`                                    | Seconds between two fetches of an idle queue, at least 0.5. |
 
 The module is global, so it is started before the `onModuleInit` and `onApplicationBootstrap` hooks
 of the modules that register workers.

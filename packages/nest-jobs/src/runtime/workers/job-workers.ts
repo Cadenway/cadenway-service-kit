@@ -254,7 +254,8 @@ export class JobWorkers {
     handler: JobHandler<TPayload>,
     options: JobWorkOptions = {},
   ): Promise<void> {
-    const concurrency: number = options.concurrency ?? 1;
+    const concurrency: number =
+      options.concurrency ?? (declared.organizationConcurrency === undefined ? 1 : 2);
     if (!Number.isInteger(concurrency) || concurrency < 1) {
       throw new Error('concurrency must be an integer of at least 1.');
     }
@@ -279,6 +280,9 @@ export class JobWorkers {
           includeMetadata: true,
           batchSize: 1,
           localConcurrency: concurrency,
+          ...(declared.organizationConcurrency === undefined
+            ? {}
+            : { groupConcurrency: declared.organizationConcurrency }),
           pollingIntervalSeconds,
         },
         async (jobs: JobWithMetadata<unknown>[]): Promise<void> => {

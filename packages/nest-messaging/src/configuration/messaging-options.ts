@@ -31,6 +31,72 @@ export type RestrictedDeadLetterPayload = 'drop' | 'copy';
 export type RebuildAcknowledgement = 'none' | 'reply';
 
 /**
+ * Interface DeadLetterAdvisoriesOptions
+ *
+ * @description
+ * A separately authorized JetStream inbox for consumer advisories. Operations provisions both
+ * the stream and the durable pull consumer before enabling this option.
+ */
+export interface DeadLetterAdvisoriesOptions {
+  // #region Properties
+  /**
+   * Property stream
+   *
+   * @description
+   * Stream containing the original terminal advisory subjects from the event broker.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly stream: string;
+
+  /**
+   * Property durable
+   *
+   * @description
+   * Unfiltered durable pull consumer with explicit acknowledgements and unlimited deliveries.
+   *
+   * @type {string}
+   * @readonly
+   */
+  readonly durable: string;
+
+  /**
+   * Property servers
+   *
+   * @description
+   * Server or server list of the advisory broker.
+   *
+   * @type {string | readonly string[]}
+   * @readonly
+   */
+  readonly servers: string | readonly string[];
+
+  /**
+   * Property user
+   *
+   * @description
+   * Credential allowed to pull and acknowledge this durable only.
+   *
+   * @type {string | undefined}
+   * @readonly
+   */
+  readonly user?: string;
+
+  /**
+   * Property password
+   *
+   * @description
+   * Password of the advisory reader. Unset for anonymous test brokers.
+   *
+   * @type {string | undefined}
+   * @readonly
+   */
+  readonly password?: string;
+  // #endregion
+}
+
+/**
  * Interface MessagingModuleOptions
  *
  * @description
@@ -140,6 +206,18 @@ export interface MessagingModuleOptions {
    * @readonly
    */
   readonly deadLetterWorker?: boolean;
+
+  /**
+   * Property deadLetterAdvisories
+   *
+   * @description
+   * Uses a persistent advisory inbox when the dead-letter worker is enabled. Unset by default:
+   * the worker keeps its existing live NATS subscriptions.
+   *
+   * @type {DeadLetterAdvisoriesOptions | undefined}
+   * @readonly
+   */
+  readonly deadLetterAdvisories?: DeadLetterAdvisoriesOptions;
 
   /**
    * Property restrictedEvents
@@ -381,6 +459,12 @@ export interface MessagingModuleOptions {
   readonly restrictedDeadLetterPayload?: RestrictedDeadLetterPayload;
 
   /**
+   * Exact names of regular events whose dead letters keep only broker and event diagnostics.
+   * Applies when writing the dead-letter copy and defaults to an empty list.
+   */
+  readonly deadLetterPayloadDropEvents?: readonly string[];
+
+  /**
    * Property rebuildMaxPending
    *
    * @description
@@ -401,9 +485,19 @@ export interface MessagingModuleOptions {
  * Options of `MessagingModule` with every default applied and the servers as a list, as the
  * providers of the package receive them under `MESSAGING_OPTIONS`.
  *
- * @type {Readonly< Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password'>> > & Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[] }}
+ * @type {Readonly<Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password' | 'deadLetterAdvisories'>>> & Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[]; readonly deadLetterAdvisories?: Omit<DeadLetterAdvisoriesOptions, 'servers'> & { readonly servers: readonly string[] } }}
  */
 export type ResolvedMessagingOptions = Readonly<
-  Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password'>>
+  Required<
+    Omit<
+      MessagingModuleOptions,
+      'servers' | 'user' | 'password' | 'deadLetterAdvisories' | 'deadLetterPayloadDropEvents'
+    >
+  >
 > &
-  Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[] };
+  Pick<MessagingModuleOptions, 'user' | 'password' | 'deadLetterPayloadDropEvents'> & {
+    readonly servers: readonly string[];
+    readonly deadLetterAdvisories?: Omit<DeadLetterAdvisoriesOptions, 'servers'> & {
+      readonly servers: readonly string[];
+    };
+  };

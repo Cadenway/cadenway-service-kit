@@ -40,6 +40,9 @@ export const MAX_RETRY_LIMIT: number = 20;
  */
 export const MAX_EXPIRE_IN_SECONDS: number = 86_400;
 
+/** Largest integer accepted by the broker's group-limit query. */
+const maxOrganizationConcurrency = 2_147_483_647;
+
 /**
  * Constant DEFAULT_RETRY_LIMIT
  *
@@ -242,6 +245,9 @@ export interface JobQueueDeclaration {
    * @readonly
    */
   readonly deleteAfterSeconds?: number;
+
+  /** Maximum concurrent jobs from one organization across replicas. Omit for no group limit. */
+  readonly organizationConcurrency?: number;
   // #endregion
 }
 
@@ -362,6 +368,9 @@ export interface ResolvedJobQueue {
    * @readonly
    */
   readonly deleteAfterSeconds: number;
+
+  /** Validated optional organization-level concurrency for this queue. */
+  readonly organizationConcurrency?: number;
   // #endregion
 }
 
@@ -480,6 +489,18 @@ export function resolveJobQueue(declaration: JobQueueDeclaration): ResolvedJobQu
   const unbounded: number = Number.MAX_SAFE_INTEGER;
   return {
     name,
+    ...(declaration.organizationConcurrency === undefined
+      ? {}
+      : {
+          organizationConcurrency: integerOption(
+            name,
+            'organizationConcurrency',
+            declaration.organizationConcurrency,
+            1,
+            1,
+            maxOrganizationConcurrency,
+          ),
+        }),
     retryLimit: integerOption(
       name,
       'retryLimit',

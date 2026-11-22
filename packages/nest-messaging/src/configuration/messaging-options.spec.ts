@@ -4,7 +4,48 @@ import type { ResolvedMessagingOptions } from './messaging-options.js';
 import { DEFAULT_MESSAGING_TUNING } from './messaging-tuning.js';
 import { parseServers, resolveMessagingOptions } from './resolve-messaging-options.js';
 
+describe('dead-letter advisory inbox options', () => {
+  it('requires an enabled worker and normalizes the advisory servers independently', () => {
+    const options = {
+      service: 'test-service',
+      servers: 'nats://events:4222',
+      deadLetterAdvisories: {
+        stream: 'EVENTS_ADVISORIES',
+        durable: 'advisory-reader',
+        servers: ' nats://inbox-a:4222, nats://inbox-b:4222 ',
+      },
+    };
+    expect(() => resolveMessagingOptions(options)).toThrow(/advisory inbox/u);
+    const resolved = resolveMessagingOptions({ ...options, deadLetterWorker: true });
+    expect(resolved.servers).toEqual(['nats://events:4222']);
+    expect(resolved.deadLetterAdvisories?.servers).toEqual([
+      'nats://inbox-a:4222',
+      'nats://inbox-b:4222',
+    ]);
+    expect(() =>
+      resolveMessagingOptions({
+        ...options,
+        deadLetterWorker: true,
+        deadLetterAdvisories: { ...options.deadLetterAdvisories, durable: 'wrong.*' },
+      }),
+    ).toThrow(/advisory inbox/u);
+  });
+});
+
 describe('messaging options', () => {
+  it('accepts exact regular event names for dead-letter redaction', () => {
+    const options = { service: 'notification-service', servers: 'nats://nats:4222' };
+    expect(
+      resolveMessagingOptions({
+        ...options,
+        deadLetterPayloadDropEvents: ['task.updated.v1', 'task.updated.v1'],
+      }).deadLetterPayloadDropEvents,
+    ).toEqual(['task.updated.v1']);
+    expect(() =>
+      resolveMessagingOptions({ ...options, deadLetterPayloadDropEvents: ['task.*'] }),
+    ).toThrow();
+  });
+
   it('applies the documented default of every option left unset', () => {
     const resolved: ResolvedMessagingOptions = resolveMessagingOptions({
       service: 'task-service',

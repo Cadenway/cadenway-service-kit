@@ -121,19 +121,21 @@ export function messagingOptions(
  * reach the consumers of another spec.
  *
  * @param {string} suffix - Short name of the spec, made of letters and digits.
- * @returns {Pick<MessagingModuleOptions, 'eventsStream' | 'restrictedStream' | 'deadLetterStream' | 'eventSubjectPrefix' | 'restrictedSubjectPrefix' | 'deadLetterSubjectPrefix' | 'rebuildSubjectPrefix'>} Stream names and prefixes.
+ * @returns {Required<Pick<MessagingModuleOptions, 'eventsStream' | 'restrictedStream' | 'deadLetterStream' | 'eventSubjectPrefix' | 'restrictedSubjectPrefix' | 'deadLetterSubjectPrefix' | 'rebuildSubjectPrefix'>>} Stream names and prefixes.
  */
 export function isolatedNames(
   suffix: string,
-): Pick<
-  MessagingModuleOptions,
-  | 'eventsStream'
-  | 'restrictedStream'
-  | 'deadLetterStream'
-  | 'eventSubjectPrefix'
-  | 'restrictedSubjectPrefix'
-  | 'deadLetterSubjectPrefix'
-  | 'rebuildSubjectPrefix'
+): Required<
+  Pick<
+    MessagingModuleOptions,
+    | 'eventsStream'
+    | 'restrictedStream'
+    | 'deadLetterStream'
+    | 'eventSubjectPrefix'
+    | 'restrictedSubjectPrefix'
+    | 'deadLetterSubjectPrefix'
+    | 'rebuildSubjectPrefix'
+  >
 > {
   return {
     eventsStream: `EVENTS_${suffix}`,

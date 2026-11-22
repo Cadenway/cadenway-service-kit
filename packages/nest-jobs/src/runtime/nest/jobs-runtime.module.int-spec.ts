@@ -79,6 +79,80 @@ describe('JobsRuntimeModule', () => {
     await server.stop();
   });
 
+  it('lets a second worker process another organization while the first group is busy', async () => {
+    const database = await server.createDatabase();
+    const grouped = { name: 'organization-work', organizationConcurrency: 1 } as const;
+    const groupedQueues = [grouped];
+    await provisionJobs({
+      connection: database.migrator,
+      appRole: APP_ROLE,
+      queues: groupedQueues,
+    });
+    const groupedOptions = { connection: database.app, queues: groupedQueues, poolSize: 1 };
+    const producerApp = await start({
+      ...groupedOptions,
+      capabilities: ['producer'],
+    });
+    const firstWorker = await start({
+      ...groupedOptions,
+      capabilities: ['worker'],
+    });
+    const secondWorker = await start({
+      ...groupedOptions,
+      capabilities: ['worker'],
+    });
+    const client = new Client(database.app);
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tenantA = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e01';
+    const tenantB = '019a700b-1a2b-7c3d-8e4f-5a6b7c8d9e02';
+    const seen: string[] = [];
+    let activeA = 0;
+    let peakA = 0;
+    const work = async (job: Job) => {
+      if (job.organizationId === null) throw new Error('Expected a tenant job.');
+      seen.push(job.organizationId.toLowerCase());
+      if (job.organizationId.toLowerCase() === tenantA) {
+        activeA += 1;
+        peakA = Math.max(peakA, activeA);
+        await hold;
+        activeA -= 1;
+      }
+    };
+    try {
+      const producer = producerApp.get(JobProducer);
+      await client.connect();
+      for (const worker of [firstWorker, secondWorker]) {
+        await worker.get(JobWorkerRegistry).work(grouped.name, work, {
+          concurrency: 1,
+          pollingIntervalSeconds: 0.5,
+        });
+      }
+      await client.query('BEGIN');
+      await producer.enqueue({ client, organizationId: tenantA }, grouped.name, null);
+      await client.query('COMMIT');
+      await waitFor(() => activeA === 1, 10_000);
+      await client.query('BEGIN');
+      await producer.enqueue({ client, organizationId: tenantA.toUpperCase() }, grouped.name, null);
+      await producer.enqueue({ client, organizationId: tenantB }, grouped.name, null);
+      await client.query('COMMIT');
+      await waitFor(() => seen.includes(tenantB), 10_000);
+      expect(seen).toEqual([tenantA, tenantB]);
+      expect(peakA).toBe(1);
+
+      release();
+      await waitFor(() => seen.length === 3, 10_000);
+      expect(seen).toEqual([tenantA, tenantB, tenantA]);
+      expect(peakA).toBe(1);
+    } finally {
+      release();
+      await client.end();
+      await Promise.all([producerApp.close(), firstWorker.close(), secondWorker.close()]);
+    }
+  });
+
   it('submits without starting pg-boss or owning a pool and keeps occurrence claims transactional', async () => {
     const database: JobsTestDatabase = await server.createDatabase();
     await provisionJobs({ connection: database.migrator, appRole: APP_ROLE, queues });
