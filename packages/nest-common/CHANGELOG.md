@@ -1,5 +1,21 @@
 # @cadenway/nest-common
 
+## 0.14.0
+
+### Minor Changes
+
+- cafd20c: Add `purgeExpiredIdempotencyKeyBatch` for scheduled idempotency cleanup in bounded system
+  transactions. It skips locked receipts and works with the existing table and expiry index.
+  The unbounded purge remains available through its original API.
+
+### Patch Changes
+
+- bf212c3: Remove HTTP query strings and URL fragments from exported traces by default, including Node HTTP
+  and fetch spans. Retain route templates, trace propagation and the configured private path
+  redaction.
+- 68ef180: Compare `If-Match` tags against the exact strong version tag and parse comma-delimited lists
+  without splitting quoted opaque tags.
+
 ## 0.13.0
 
 ### Minor Changes
