@@ -1064,10 +1064,16 @@ What a marked route must respect:
   needs more than `read committed`.
 - `@Idempotent({ maxAttempts: 1 })` disables automatic retries for the keyed route. An attempt
   limit on a nested use case does not change the policy of the interceptor's transaction.
-- A key belongs to the organization of the verified token, and a stored response to the actor
-  that obtained it: the same key sent by another member answers 422. Requests without an organization share
-  one namespace and are served in a system transaction: their keys must be unguessable, as a UUID
-  is.
+- By default a key belongs to the organization of the verified token, and a stored response to the
+  actor that obtained it. The same key sent by another member answers 422. Requests without an
+  organization share one namespace and run in a system transaction. Use an unguessable key such
+  as a UUID for these requests.
+- `@Idempotent({ scope: 'actor' })` gives each verified actor type and ID a separate key namespace
+  within the organization. The same actor still gets a replay for the same request and a 422 for a
+  changed request. A keyed request without an identified actor receives `403 auth.actor-not-allowed`.
+  The default is `scope: 'organization'`. Enable actor scope when introducing a route. When
+  changing the scope of an existing route, its earlier receipts are in the previous namespace and
+  cannot be replayed in the new one.
 - Expired keys are overwritten when used again, never deleted by the interceptor. Schedule
   `purgeExpiredIdempotencyKeys(tx)` in a system transaction.
 

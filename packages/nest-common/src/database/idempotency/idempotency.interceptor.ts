@@ -78,6 +78,18 @@ export interface IdempotentOptions {
   readonly required?: boolean;
 
   /**
+   * Property scope
+   *
+   * @description
+   * Defaults to one key namespace per organization. `actor` gives every identified actor
+   * its own namespace within the organization, using the verified request identity.
+   *
+   * @type {'organization' | 'actor' | undefined}
+   * @readonly
+   */
+  readonly scope?: 'organization' | 'actor';
+
+  /**
    * Property isolationLevel
    *
    * @description
@@ -281,6 +293,32 @@ function requestFingerprint(request: IdempotentRequest, actor: string): string {
 }
 
 /**
+ * Function actorStorageKey
+ *
+ * @description
+ * Derives a bounded storage key in a namespace disjoint from printable request keys.
+ *
+ * @param {InternalActor | undefined} actor - Actor from the verified request identity.
+ * @param {string} key - Validated idempotency key.
+ * @returns {string} The actor's storage key within the organization.
+ * @throws {ProblemException} 403 when the request has no identified actor.
+ */
+function actorStorageKey(actor: InternalActor | undefined, key: string): string {
+  if (actor === undefined || actor.id === null) {
+    throw new ProblemException({
+      status: 403,
+      code: 'auth.actor-not-allowed',
+      detail: 'This route requires an identified actor to use Idempotency-Key.',
+    });
+  }
+  // The space makes this prefix impossible to reach with a client-supplied key.
+  const digest: string = createHash('sha256')
+    .update(JSON.stringify([actor.type, actor.id, key]))
+    .digest('base64url');
+  return `actor:v1 ${digest}`;
+}
+
+/**
  * Function restoreResponseMetadata
  *
  * @description
@@ -332,8 +370,9 @@ function restoreResponseMetadata(
  * after commit. Its status comes from `@HttpCode()` or the NestJS default. The route can override
  * the isolation level and the attempt limit.
  *
- * A key belongs to the organization of the verified token. Requests without an organization
- * share one namespace: their keys must be unguessable, as a UUID is.
+ * By default a key belongs to the organization of the verified token. The actor scope gives
+ * each identified actor a distinct key namespace within that organization. Requests without
+ * an organization still run in a system transaction.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -419,7 +458,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
       maxAttempts: options.maxAttempts,
     };
     const identity: OrganizationContext | undefined = requestOrganizationContextOf(request);
-    const organizationId: string | null = identity?.organizationId ?? null;
+    const scopedToActor: boolean = options.scope === 'actor';
+    const organizationId: string | null =
+      (scopedToActor ? identity?.organizationId?.toLowerCase() : identity?.organizationId) ?? null;
+    const storageKey: string = scopedToActor ? actorStorageKey(identity?.actor, key) : key;
     const response: IdempotentResponse = context.switchToHttp().getResponse();
     const originalStatus: number = response.statusCode;
     let originalHeaders: OutgoingHttpHeaders | undefined;
@@ -434,7 +476,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       } else {
         restoreResponseMetadata(response, originalHeaders, originalStatus);
       }
-      return this.runOnce(context, next, request, key, organizationId, scope);
+      return this.runOnce(context, next, request, storageKey, organizationId, scope);
     };
     try {
       if (identity === undefined || organizationId === null) {
