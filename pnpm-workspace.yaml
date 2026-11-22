@@ -38,6 +38,11 @@ autoInstallPeers: false
 
 # A version that loses the provenance or the trusted publisher of an earlier one is refused.
 trustPolicy: no-downgrade
+overrides:
+  # Override the affected versions while upstream tools still request them.
+  '@esbuild-kit/core-utils@3.3.2>esbuild': 0.28.2
+  'archiver-utils@5.0.2>glob': 14.0.6
+  'minimatch@>=9.0.0 <11.0.1': 11.0.9
 
 # Install scripts are reviewed one by one: pnpm refuses an install that would skip an unlisted one.
 # When pnpm reports a new one, add it here with `false` unless the script is really needed.
