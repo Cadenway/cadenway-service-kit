@@ -7,6 +7,7 @@ import type {
 } from '../../jobs/enqueue/job-enqueue-options.js';
 import { assertOccurrenceKey, deriveOccurrenceJobId } from '../../jobs/enqueue/occurrence-id.js';
 import { toJobEnvelope, type JobEnvelope } from '../../jobs/execution/job-envelope.js';
+import type { ResolvedJobQueue } from '../../jobs/queues/job-queue.js';
 
 /**
  * Function enqueueJob
@@ -16,7 +17,7 @@ import { toJobEnvelope, type JobEnvelope } from '../../jobs/execution/job-envelo
  *
  * @param {Pick<PgBoss, 'send'>} boss - Sender bound to the running pg-boss instance.
  * @param {JobsTransaction} tx - Caller transaction and its organization.
- * @param {string} queue - Validated queue name.
+ * @param {Pick<ResolvedJobQueue, 'name' | 'organizationConcurrency'>} queue - Validated queue configuration.
  * @param {unknown} payload - Job payload.
  * @param {JobEnqueueOptions} options - Optional occurrence key and earliest start.
  * @returns {Promise<JobEnqueueResult>} Job id and whether the occurrence already existed.
@@ -25,7 +26,7 @@ import { toJobEnvelope, type JobEnvelope } from '../../jobs/execution/job-envelo
 export async function enqueueJob(
   boss: Pick<PgBoss, 'send'>,
   tx: JobsTransaction,
-  queue: string,
+  queue: Pick<ResolvedJobQueue, 'name' | 'organizationConcurrency'>,
   payload: unknown,
   options: JobEnqueueOptions,
 ): Promise<JobEnqueueResult> {
@@ -44,9 +45,14 @@ export async function enqueueJob(
   const id: string | undefined =
     occurrenceKey === undefined
       ? undefined
-      : deriveOccurrenceJobId(queue, envelope.organizationId, occurrenceKey);
-  const created: string | null = await boss.send(queue, envelope, {
+      : deriveOccurrenceJobId(queue.name, envelope.organizationId, occurrenceKey);
+  const groupId =
+    queue.organizationConcurrency === undefined
+      ? null
+      : (envelope.organizationId?.toLowerCase() ?? null);
+  const created: string | null = await boss.send(queue.name, envelope, {
     ...(id === undefined ? {} : { id }),
+    ...(groupId === null ? {} : { group: { id: groupId } }),
     ...(startAfter === undefined ? {} : { startAfter }),
     db: {
       executeSql: (text: string, values?: unknown[]): Promise<JobsQueryResult> =>
@@ -57,7 +63,7 @@ export async function enqueueJob(
     return { jobId: created, duplicate: false };
   }
   if (id === undefined) {
-    throw new Error(`The job could not be created in queue "${queue}".`);
+    throw new Error(`The job could not be created in queue "${queue.name}".`);
   }
   return { jobId: id, duplicate: true };
 }

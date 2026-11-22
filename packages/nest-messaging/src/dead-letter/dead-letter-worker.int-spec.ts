@@ -447,6 +447,50 @@ describe('dead-letter worker on a real NATS server', () => {
     expect(deadLetter.header.get(EVENT_NAME_HEADER)).toBe('task.updated.v1');
   });
 
+  it('stores only diagnostics for an opted-in event on the regular stream', async () => {
+    const names = isolatedNames('ordinaryprivate');
+    const application = await startApplication(
+      [
+        MessagingModule.forRoot(
+          messagingOptions(nats, {
+            ...names,
+            service: 'notification-service',
+            deadLetterWorker: true,
+            deadLetterPayloadDropEvents: ['task.updated.v1'],
+          }),
+        ),
+      ],
+      { tuning: { retryDelaysMs: [50] } },
+    );
+    try {
+      await application.get(EventConsumers).subscribe({
+        handler: 'private-diagnostics',
+        schemas: eventSchemas,
+        event: 'task.updated.v1',
+        handle: () => Promise.reject(new Error('Fixture delivery unavailable')),
+      });
+      const published = await application
+        .get(EventPublisher)
+        .publish(eventSchemas, 'task.updated.v1', taskUpdated());
+      await waitFor(async () => (await deadLetters(names.deadLetterStream)) === 1);
+      const deadLetter = await lastDeadLetter(
+        names.deadLetterStream,
+        `${names.deadLetterSubjectPrefix}.notification-service__private-diagnostics.${names.eventSubjectPrefix}.task.updated.v1`,
+      );
+
+      expect(published.stream).toBe(names.eventsStream);
+      expect(deadLetter.data).toHaveLength(0);
+      expect(deadLetter.header.has(ORGANIZATION_ID_HEADER)).toBe(false);
+      expect(deadLetter.header.get(EVENT_NAME_HEADER)).toBe('task.updated.v1');
+      expect(deadLetter.header.get(DEAD_LETTER_PAYLOAD_HEADER)).toBe('dropped');
+      expect(deadLetter.header.get(DEAD_LETTER_SEQUENCE_HEADER)).toBe(
+        String(published.streamSequence),
+      );
+    } finally {
+      await application.close();
+    }
+  });
+
   it.each([
     ['drop', undefined, 'restr'],
     ['copy', 'copy', 'restrcopy'],

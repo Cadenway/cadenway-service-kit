@@ -107,6 +107,7 @@ and with `deliverPolicy: 'all'` up to seven days of events are delivered again.
 | `restrictedStream`            | `EVENTS_RESTRICTED`    | Stream of the restricted events                                                                                                                                                               |
 | `deadLetterStream`            | `EVENTS_DLQ`           | Stream of the dead letters                                                                                                                                                                    |
 | `restrictedDeadLetterPayload` | `drop`                 | Body of the dead-letter copy of a restricted event: `drop` keeps the headers only, as the body may hold a single-use code; `copy` keeps it                                                    |
+| `deadLetterPayloadDropEvents` | Empty list             | Exact regular event names whose dead letters contain only broker diagnostics and the event name                                                                                               |
 | `eventSubjectPrefix`          | `evt`                  | First token of an event subject. The four prefixes are single tokens and pairwise distinct                                                                                                    |
 | `restrictedSubjectPrefix`     | `restricted`           | First token of a restricted event subject                                                                                                                                                     |
 | `deadLetterSubjectPrefix`     | `dlq`                  | First token of a dead-letter subject                                                                                                                                                          |
@@ -541,6 +542,10 @@ consumer, stream and sequence. Each dead letter is logged as an error, without t
 reason other than the kit's own is logged as `external-termination`. No backend consumes
 `EVENTS_DLQ`; operators read it. Each advisory subscription copies one message at a time and
 queues up to 1,000 advisories or 16 MiB in arrival order, whichever limit is reached first.
+
+An exact name in `deadLetterPayloadDropEvents` strips the regular event body and original
+headers. The dead letter retains the event name derived from the broker subject and the
+normal dead-letter diagnostic headers. The worker applies the policy when it writes the copy.
 Once full it drops new arrivals and periodically reports the number dropped. At shutdown the worker unsubscribes, stops retries, and gives
 in-flight copies up to `shutdownTimeoutMs` to finish. Advisories still waiting are dropped.
 The connection then drains in its own shutdown phase.

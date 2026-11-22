@@ -11,6 +11,7 @@ import type {
   JobEnqueueOptions,
   JobEnqueueResult,
 } from '../../jobs/enqueue/job-enqueue-options.js';
+import type { ResolvedJobQueue } from '../../jobs/queues/job-queue.js';
 import { enqueueJob } from './enqueue-job.js';
 
 /**
@@ -79,14 +80,14 @@ export class TransactionalJobSender {
    * Inserts a job in the caller's transaction, including queue metadata lookups on cache misses.
    *
    * @param {JobsTransaction} tx - Open transaction used for metadata queries and the job insert.
-   * @param {string} queue - Declared queue that receives the job.
+   * @param {ResolvedJobQueue} queue - Declared queue that receives the job.
    * @param {unknown} payload - JSON-serializable job data.
    * @param {JobEnqueueOptions} options - Optional occurrence key and earliest start.
    * @returns {Promise<JobEnqueueResult>} Job identifier and whether another enqueue already recorded the occurrence.
    */
   public async enqueue(
     tx: JobsTransaction,
-    queue: string,
+    queue: ResolvedJobQueue,
     payload: unknown,
     options: JobEnqueueOptions,
   ): Promise<JobEnqueueResult> {

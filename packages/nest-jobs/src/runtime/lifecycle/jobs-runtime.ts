@@ -266,11 +266,11 @@ export class JobsRuntime {
   ): Promise<JobEnqueueResult> {
     this.requireCapability('producer');
     this.assertRunning();
-    const name: string = this.requireQueue(queue).name;
+    const declared = this.requireQueue(queue);
     if (this.transactionalSender !== null) {
-      return this.transactionalSender.enqueue(tx, name, payload, options);
+      return this.transactionalSender.enqueue(tx, declared, payload, options);
     }
-    return enqueueJob(this.requireBoss(), tx, name, payload, options);
+    return enqueueJob(this.requireBoss(), tx, declared, payload, options);
   }
 
   /**

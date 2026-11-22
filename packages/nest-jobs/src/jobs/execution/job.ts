@@ -106,7 +106,8 @@ export interface JobWorkOptions {
    * Property concurrency
    *
    * @description
-   * Jobs of the queue this process handles at the same time, at least 1. Defaults to 1.
+   * Jobs of the queue this process handles at the same time, at least 1. Defaults to 1 for an
+   * ordinary queue and 2 for a queue with an organization limit.
    *
    * @type {number}
    * @readonly

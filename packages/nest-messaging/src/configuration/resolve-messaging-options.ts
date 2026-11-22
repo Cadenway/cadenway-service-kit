@@ -144,6 +144,10 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
   for (const name of restrictedEvents) {
     eventSubject(restrictedSubjectPrefix, name);
   }
+  const deadLetterPayloadDropEvents = [...new Set(options.deadLetterPayloadDropEvents)];
+  for (const name of deadLetterPayloadDropEvents) {
+    eventSubject(eventSubjectPrefix, name);
+  }
   const advisoryInbox = options.deadLetterAdvisories;
   if (
     advisoryInbox !== undefined &&
@@ -185,6 +189,7 @@ export function resolveMessagingOptions(options: MessagingModuleOptions): Resolv
     rebuildMaxPending,
     handlerTimeoutMs,
     restrictedDeadLetterPayload: options.restrictedDeadLetterPayload ?? 'drop',
+    ...(deadLetterPayloadDropEvents.length === 0 ? {} : { deadLetterPayloadDropEvents }),
     eventsMaxBytes: options.eventsMaxBytes ?? DEFAULT_EVENTS_MAX_BYTES,
     restrictedMaxBytes: options.restrictedMaxBytes ?? DEFAULT_RESTRICTED_MAX_BYTES,
     deadLetterMaxBytes: options.deadLetterMaxBytes ?? DEFAULT_DEAD_LETTER_MAX_BYTES,

@@ -818,11 +818,23 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
       );
       return;
     }
+    const subject = original?.subject ?? 'advisory-source-unavailable';
+    const regularPrefix = `${this.options.eventSubjectPrefix}.`;
+    const regularEvent = subject.startsWith(regularPrefix)
+      ? subject.slice(regularPrefix.length)
+      : undefined;
+    const dropOrdinaryPayload =
+      regularEvent !== undefined &&
+      this.options.deadLetterPayloadDropEvents?.includes(regularEvent) === true;
     const deadLetterHeaders: MsgHdrs = headers();
-    for (const [key, values] of original?.header ?? []) {
-      if (!NOT_COPIED_HEADER.test(key)) {
-        for (const value of values) {
-          deadLetterHeaders.append(key, value);
+    if (dropOrdinaryPayload) {
+      deadLetterHeaders.set(EVENT_NAME_HEADER, regularEvent);
+    } else {
+      for (const [key, values] of original?.header ?? []) {
+        if (!NOT_COPIED_HEADER.test(key)) {
+          for (const value of values) {
+            deadLetterHeaders.append(key, value);
+          }
         }
       }
     }
@@ -833,13 +845,13 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
       deadLetterHeaders.set(DEAD_LETTER_DELIVERIES_HEADER, String(advisory.deliveries));
     }
     const dropPayload: boolean =
-      stream === this.options.restrictedStream &&
-      this.options.restrictedDeadLetterPayload === 'drop';
+      dropOrdinaryPayload ||
+      (stream === this.options.restrictedStream &&
+        this.options.restrictedDeadLetterPayload === 'drop');
     if (dropPayload || original === null) {
       deadLetterHeaders.set(DEAD_LETTER_PAYLOAD_HEADER, 'dropped');
     }
     const messageId = deadLetterMessageId(stream, consumer, streamSequence);
-    const subject = original?.subject ?? 'advisory-source-unavailable';
     const acknowledgement = await this.connection.jetstream.publish(
       deadLetterSubject(this.options.deadLetterSubjectPrefix, consumer, subject),
       dropPayload || original === null ? new Uint8Array() : original.data,
@@ -851,7 +863,9 @@ export class DeadLetterWorker implements OnApplicationBootstrap, BeforeApplicati
       },
     );
     if (historical !== undefined && acknowledgement.duplicate) return;
-    const eventName = original?.header.get(EVENT_NAME_HEADER).slice(0, 200);
+    const eventName = dropOrdinaryPayload
+      ? regularEvent
+      : original?.header.get(EVENT_NAME_HEADER).slice(0, 200);
     this.logger.error(
       {
         event: eventName === '' ? undefined : eventName,

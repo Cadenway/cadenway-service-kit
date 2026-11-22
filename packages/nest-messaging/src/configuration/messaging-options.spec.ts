@@ -33,6 +33,19 @@ describe('dead-letter advisory inbox options', () => {
 });
 
 describe('messaging options', () => {
+  it('accepts exact regular event names for dead-letter redaction', () => {
+    const options = { service: 'notification-service', servers: 'nats://nats:4222' };
+    expect(
+      resolveMessagingOptions({
+        ...options,
+        deadLetterPayloadDropEvents: ['task.updated.v1', 'task.updated.v1'],
+      }).deadLetterPayloadDropEvents,
+    ).toEqual(['task.updated.v1']);
+    expect(() =>
+      resolveMessagingOptions({ ...options, deadLetterPayloadDropEvents: ['task.*'] }),
+    ).toThrow();
+  });
+
   it('applies the documented default of every option left unset', () => {
     const resolved: ResolvedMessagingOptions = resolveMessagingOptions({
       service: 'task-service',

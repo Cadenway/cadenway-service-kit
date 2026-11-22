@@ -26,6 +26,9 @@ const baseline = {
 // Optional interface properties and trailing constructor parameters added since the baseline.
 // Each export must otherwise match its release. Clear an entry when the baseline includes it.
 const addedMembers = {
+  '@cadenway/nest-jobs#JobQueueDeclaration': ['organizationConcurrency'],
+  '@cadenway/nest-jobs/provisioning#JobQueueDeclaration': ['organizationConcurrency'],
+  '@cadenway/nest-jobs/runtime#JobQueueDeclaration': ['organizationConcurrency'],
   '@cadenway/nest-jobs#JobEnqueueOptions': ['startAfter'],
   '@cadenway/nest-jobs/runtime#JobEnqueueOptions': ['startAfter'],
   '@cadenway/nest-common#CreateApplicationOptions': ['rawJsonPostPaths'],
@@ -42,7 +45,10 @@ const addedMembers = {
     'redactRedisCommandArguments',
   ],
   '@cadenway/nest-messaging#EventSubscription': ['redelivery', 'transactionIsolationLevel'],
-  '@cadenway/nest-messaging#MessagingModuleOptions': ['deadLetterAdvisories'],
+  '@cadenway/nest-messaging#MessagingModuleOptions': [
+    'deadLetterAdvisories',
+    'deadLetterPayloadDropEvents',
+  ],
 };
 
 // The standalone consumer below checks the reviewed additive class methods directly.
@@ -82,6 +88,7 @@ import type { CreateApplicationOptions } from '@cadenway/nest-common';
 import { databaseConfigShape, type DatabaseConfig } from '@cadenway/nest-common/database';
 import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
+import type { JobQueueDeclaration } from '@cadenway/nest-jobs/provisioning';
 import type {
   DeadLetterAdvisoriesOptions,
   EventConsumers,
@@ -104,6 +111,7 @@ const webhookOptions: CreateApplicationOptions = {
 };
 const enqueue: JobEnqueueOptions = { startAfter: new Date() };
 const runtimeEnqueue: RuntimeJobEnqueueOptions = enqueue;
+const groupedQueue: JobQueueDeclaration = { name: 'notifications', organizationConcurrency: 1 };
 const durableAdvisories: DeadLetterAdvisoriesOptions = {
   stream: 'EVENTS_ADVISORIES',
   durable: 'notification-dead-letter-advisories-v1',
@@ -112,6 +120,9 @@ const durableAdvisories: DeadLetterAdvisoriesOptions = {
 const durableOptions: Pick<MessagingModuleOptions, 'deadLetterWorker' | 'deadLetterAdvisories'> = {
   deadLetterWorker: true,
   deadLetterAdvisories: durableAdvisories,
+};
+const privacyOptions: Pick<MessagingModuleOptions, 'deadLetterPayloadDropEvents'> = {
+  deadLetterPayloadDropEvents: ['task.updated.v1'],
 };
 declare const messagingConnection: MessagingConnection;
 declare const eventConsumers: EventConsumers;
@@ -133,7 +144,7 @@ const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisorySt
   ['test__relay'],
   AbortSignal.timeout(1000),
 );
-void [config, attempts, webhookOptions, runtimeEnqueue, durableOptions, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
+void [config, attempts, webhookOptions, runtimeEnqueue, groupedQueue, durableOptions, privacyOptions, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
 `,
   );
   const released = Object.fromEntries(

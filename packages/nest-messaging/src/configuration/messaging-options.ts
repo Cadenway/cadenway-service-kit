@@ -459,6 +459,12 @@ export interface MessagingModuleOptions {
   readonly restrictedDeadLetterPayload?: RestrictedDeadLetterPayload;
 
   /**
+   * Exact names of regular events whose dead letters keep only broker and event diagnostics.
+   * Applies when writing the dead-letter copy and defaults to an empty list.
+   */
+  readonly deadLetterPayloadDropEvents?: readonly string[];
+
+  /**
    * Property rebuildMaxPending
    *
    * @description
@@ -482,9 +488,14 @@ export interface MessagingModuleOptions {
  * @type {Readonly<Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password' | 'deadLetterAdvisories'>>> & Pick<MessagingModuleOptions, 'user' | 'password'> & { readonly servers: readonly string[]; readonly deadLetterAdvisories?: Omit<DeadLetterAdvisoriesOptions, 'servers'> & { readonly servers: readonly string[] } }}
  */
 export type ResolvedMessagingOptions = Readonly<
-  Required<Omit<MessagingModuleOptions, 'servers' | 'user' | 'password' | 'deadLetterAdvisories'>>
+  Required<
+    Omit<
+      MessagingModuleOptions,
+      'servers' | 'user' | 'password' | 'deadLetterAdvisories' | 'deadLetterPayloadDropEvents'
+    >
+  >
 > &
-  Pick<MessagingModuleOptions, 'user' | 'password'> & {
+  Pick<MessagingModuleOptions, 'user' | 'password' | 'deadLetterPayloadDropEvents'> & {
     readonly servers: readonly string[];
     readonly deadLetterAdvisories?: Omit<DeadLetterAdvisoriesOptions, 'servers'> & {
       readonly servers: readonly string[];

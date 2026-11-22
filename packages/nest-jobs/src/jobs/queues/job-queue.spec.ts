@@ -36,6 +36,7 @@ describe('resolveJobQueue', () => {
       expireInSeconds: 86_400,
       retentionSeconds: 1,
       deleteAfterSeconds: 0,
+      organizationConcurrency: 2,
     };
 
     expect(resolveJobQueue(declaration)).toEqual(declaration);
@@ -66,6 +67,21 @@ describe('resolveJobQueue', () => {
     ['an expiration over 24 hours', { name: 'q', expireInSeconds: 86_401 }, /expireInSeconds/],
     ['a zero expiration', { name: 'q', expireInSeconds: 0 }, /expireInSeconds/],
     ['a zero retention', { name: 'q', retentionSeconds: 0 }, /retentionSeconds/],
+    [
+      'a zero organization limit',
+      { name: 'q', organizationConcurrency: 0 },
+      /organizationConcurrency/,
+    ],
+    [
+      'a fractional organization limit',
+      { name: 'q', organizationConcurrency: 1.5 },
+      /organizationConcurrency/,
+    ],
+    [
+      'an organization limit outside the database integer range',
+      { name: 'q', organizationConcurrency: 2_147_483_648 },
+      /organizationConcurrency/,
+    ],
     ['a negative deletion delay', { name: 'q', deleteAfterSeconds: -1 }, /deleteAfterSeconds/],
     ['itself as dead-letter queue', { name: 'q', deadLetter: 'q' }, /cannot be the queue itself/],
     ['an invalid dead-letter name', { name: 'q', deadLetter: 'dead letter' }, /deadLetter must/],
