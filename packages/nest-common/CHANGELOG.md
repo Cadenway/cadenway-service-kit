@@ -1,5 +1,17 @@
 # @cadenway/nest-common
 
+## 0.13.0
+
+### Minor Changes
+
+- a4a5ba2: Add an opt-in actor scope to `@Idempotent()` so verified actors can use the same request key independently within an organization.
+
+## 0.12.0
+
+### Minor Changes
+
+- add8a8a: Add opt-in raw JSON bodies for explicitly configured POST paths so webhook handlers can verify the transmitted bytes before parsing.
+
 ## 0.11.0
 
 ### Minor Changes

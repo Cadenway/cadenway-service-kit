@@ -58,10 +58,10 @@ const MALFORMED_JSON_ISSUE: ValidationIssue = Object.freeze({
  * @description
  * Express middleware that reads the JSON body of a request.
  *
- * @type {(request: IncomingMessage, response: ServerResponse, next: (error?: unknown) => void) => void}
+ * @template BodyRequest - The request shape required by the middleware.
  */
-type JsonBodyMiddleware = (
-  request: IncomingMessage,
+type JsonBodyMiddleware<BodyRequest extends IncomingMessage = IncomingMessage> = (
+  request: BodyRequest,
   response: ServerResponse,
   next: (error?: unknown) => void,
 ) => void;
@@ -182,6 +182,52 @@ function jsonBodyParser(limitBytes: number): JsonBodyMiddleware {
       }
       next(isJsonParseFailure(error) ? malformedJsonBody() : error);
     });
+  };
+}
+
+/**
+ * Function rawJsonPostBodyParser
+ *
+ * @description
+ * Reads the bytes of an application/json POST on an explicitly selected route. It runs ahead of
+ * the JSON parser so the receiver can authenticate a signed delivery before decoding it. The
+ * raw parser refuses compression, which would replace the transmitted bytes with inflated ones.
+ *
+ * @param {readonly string[]} paths - Literal paths. A final slash and ASCII case are ignored.
+ * @param {number} limitBytes - Largest accepted body, in bytes.
+ * @returns {JsonBodyMiddleware<IncomingMessage & { readonly path: string }>} Express middleware that exposes the unmodified bytes in the request body.
+ * @throws {Error} If a configured path is not an absolute literal route.
+ */
+export function rawJsonPostBodyParser(
+  paths: readonly string[],
+  limitBytes: number,
+): JsonBodyMiddleware<IncomingMessage & { readonly path: string }> {
+  const literalPath = /^\/(?:[A-Za-z\d._~-]+(?:\/[A-Za-z\d._~-]+)*\/?)?$/u;
+  const selected = new Set(
+    paths.map((path) => {
+      if (!literalPath.test(path)) {
+        throw new Error('createApplication: rawJsonPostPaths requires absolute literal paths.');
+      }
+      return path.replace(/\/$/u, '').toLowerCase();
+    }),
+  );
+  const parse: JsonBodyMiddleware = bodyParser.raw({
+    type: 'application/json',
+    limit: limitBytes,
+    inflate: false,
+  });
+
+  return (request, response, next): void => {
+    const path = request.path;
+    if (
+      request.method === 'POST' &&
+      literalPath.test(path) &&
+      selected.has(path.replace(/\/$/u, '').toLowerCase())
+    ) {
+      parse(request, response, next);
+      return;
+    }
+    next();
   };
 }
 

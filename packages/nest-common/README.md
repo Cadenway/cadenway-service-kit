@@ -585,10 +585,21 @@ In an application that does not call `applyJsonBodyLimit`, the JSON parser NestJ
 itself refuses the body: `ProblemFilter` answers it with the same problem, but the span of that
 parser still records the parser text. Use `createApplication`, or call `applyJsonBodyLimit`.
 
-The parser of this package does not keep the raw body: an application created with
-`{ rawBody: true }` that calls `applyJsonBodyLimit` gets no `req.rawBody` on JSON requests.
-`createApplication` never enables `rawBody`. A host without `use` still gets the parser of NestJS
-through `useBodyParser`, with the trace caveat above.
+The standard JSON parser leaves `req.rawBody` unset, including when NestJS's `rawBody` option is
+enabled. A host without `use` still gets the parser of NestJS through `useBodyParser`, with the
+trace caveat above.
+
+Pass `rawJsonPostPaths: ['/v1/webhooks/provider']` to `createApplication` when a webhook
+signature covers the original request bytes. The option defaults to an empty list. Each path
+is absolute and uses literal segments made of ASCII letters, digits, `.`, `_`, `~`, or `-`.
+Matching uses the path that Express routes. It ignores ASCII case, one final slash, and the
+query string. Every other method and path keeps the standard parser.
+
+On a matching POST, `application/json` reaches `@Body()` as a `Buffer`, including whitespace
+and malformed JSON. Check `Buffer.isBuffer(body)` on the unknown body, then authenticate the
+original bytes before decoding or validating JSON. The caller still controls authorization and
+the response to a missing body or mismatched media type. The same `jsonBodyLimitBytes` applies
+to raw requests. Compressed bodies get a 400 `http.bad-request` problem.
 
 ## Internal token
 
@@ -1051,10 +1062,16 @@ What a marked route must respect:
   needs more than `read committed`.
 - `@Idempotent({ maxAttempts: 1 })` disables automatic retries for the keyed route. An attempt
   limit on a nested use case does not change the policy of the interceptor's transaction.
-- A key belongs to the organization of the verified token, and a stored response to the actor
-  that obtained it: the same key sent by another member answers 422. Requests without an organization share
-  one namespace and are served in a system transaction: their keys must be unguessable, as a UUID
-  is.
+- By default a key belongs to the organization of the verified token, and a stored response to the
+  actor that obtained it. The same key sent by another member answers 422. Requests without an
+  organization share one namespace and run in a system transaction. Use an unguessable key such
+  as a UUID for these requests.
+- `@Idempotent({ scope: 'actor' })` gives each verified actor type and ID a separate key namespace
+  within the organization. The same actor still gets a replay for the same request and a 422 for a
+  changed request. A keyed request without an identified actor receives `403 auth.actor-not-allowed`.
+  The default is `scope: 'organization'`. Enable actor scope when introducing a route. When
+  changing the scope of an existing route, its earlier receipts are in the previous namespace and
+  cannot be replayed in the new one.
 - Expired keys are overwritten when used again, never deleted by the interceptor. Schedule
   `purgeExpiredIdempotencyKeys(tx)` in a system transaction.
 
