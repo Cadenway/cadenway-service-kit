@@ -1,5 +1,21 @@
 # @cadenway/nest-messaging
 
+## 0.8.0
+
+### Minor Changes
+
+- 68ef180: Support an opt-in JetStream inbox for terminal advisories. The worker replays advisories after
+  restart, retries copies before acknowledgement, and records a metadata-only marker if the source
+  message has expired or the source stream has been replaced.
+- 68ef180: Add an optional list of exact regular event names whose dead letters retain only broker and event diagnostics. The policy runs when the worker writes the copy.
+
+### Patch Changes
+
+- Updated dependencies [cafd20c]
+- Updated dependencies [bf212c3]
+- Updated dependencies [68ef180]
+  - @cadenway/nest-common@0.14.0
+
 ## 0.7.2
 
 ### Patch Changes
