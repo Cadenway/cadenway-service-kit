@@ -325,6 +325,9 @@ describe('messaging connection on a real NATS server', () => {
     const secondConnection = second.get(MessagingConnection);
     try {
       await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toBe('unknown');
+      await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);
       await manager.streams.add({
@@ -339,6 +342,9 @@ describe('messaging connection on a real NATS server', () => {
         max_msg_size: -1,
         max_msgs_per_subject: -1,
       });
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toBe('clear');
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(true);
@@ -367,6 +373,9 @@ describe('messaging connection on a real NATS server', () => {
       await waitFor(
         async (): Promise<boolean> => (await manager.streams.info(stream)).state.messages === 1,
       );
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toBe('held');
       const beforeRestart = await manager.streams.getMessage(stream, {
         last_by_subj: maxDeliveries,
       });
@@ -414,7 +423,13 @@ describe('messaging connection on a real NATS server', () => {
       await waitFor(() =>
         secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       );
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toBe('clear');
       await manager.streams.update(stream, { max_bytes: 1024 });
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toBe('unknown');
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);

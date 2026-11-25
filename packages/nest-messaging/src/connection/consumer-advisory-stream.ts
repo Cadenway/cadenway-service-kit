@@ -57,7 +57,7 @@ export function consumerAdvisorySubjects(
 }
 
 /**
- * Function isEmptyConsumerAdvisoryStream
+ * Function isConsumerAdvisoryStream
  *
  * @description
  * Requires the exact persistent latch configuration. A retained advisory can be replaced by
@@ -66,10 +66,10 @@ export function consumerAdvisorySubjects(
  * @param {StreamInfo} info - Current stream metadata from JetStream.
  * @param {string} name - Configured stream name.
  * @param {ReadonlySet<string>} subjects - Exact expected native advisory subjects.
- * @returns {boolean} Whether the configured stream currently has no message.
+ * @returns {boolean} Whether the stream has the exact latch configuration and subjects.
  */
-export function isEmptyConsumerAdvisoryStream(
-  { config, state }: StreamInfo,
+export function isConsumerAdvisoryStream(
+  { config }: StreamInfo,
   name: string,
   subjects: ReadonlySet<string>,
 ): boolean {
@@ -95,7 +95,6 @@ export function isEmptyConsumerAdvisoryStream(
     config.republish === undefined &&
     config.subjects.length === subjects.size &&
     new Set(config.subjects).size === subjects.size &&
-    config.subjects.every((subject: string): boolean => subjects.has(subject)) &&
-    state.messages === 0
+    config.subjects.every((subject: string): boolean => subjects.has(subject))
   );
 }

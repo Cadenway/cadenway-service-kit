@@ -415,7 +415,13 @@ the failure, the operator deletes only the inspected advisory's stream sequence.
 that replaced it during reconciliation keeps the guard closed. Provision the stream before the
 protected consumers start.
 
-The probe returns `false` when there is an advisory, the stream is missing or its configuration
+`MessagingConnection.consumerAdvisoryStreamState(advisoryStream, eventStream, durables, signal?)`
+uses the same check and returns `clear` for an empty latch, `held` for a matching latch with
+an advisory, and `unknown` when the state cannot be established. A service that must rebuild
+after a terminal delivery can remember `held` and rebuild once the latch is cleared; `unknown`
+provides no evidence of a terminal delivery or of a clear latch.
+
+The boolean probe returns `false` when there is an advisory, the stream is missing or its configuration
 does not match, or the check is invalid, interrupted or unsuccessful. Cancellation stops waiting.
 Issued requests remain subject to the JetStream timeout. Pair this probe with the availability
 watch and catch-up check, and refresh the probe while serving traffic. This is a snapshot of

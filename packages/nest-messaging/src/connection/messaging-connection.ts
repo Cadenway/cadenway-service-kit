@@ -12,11 +12,18 @@ import { connect, type NatsConnection } from '@nats-io/transport-node';
 import { Logger, type OnApplicationShutdown } from '@nestjs/common';
 
 import type { ResolvedMessagingOptions } from '../configuration/messaging-options.js';
-import {
-  consumerAdvisorySubjects,
-  isEmptyConsumerAdvisoryStream,
-} from './consumer-advisory-stream.js';
+import { consumerAdvisorySubjects, isConsumerAdvisoryStream } from './consumer-advisory-stream.js';
 import { prepareStreams } from './stream-administration.js';
+
+/**
+ * Type ConsumerAdvisoryStreamState
+ *
+ * @description
+ * Result of observing the configured terminal advisory latch in one available interval.
+ *
+ * @type {'clear' | 'held' | 'unknown'}
+ */
+export type ConsumerAdvisoryStreamState = 'clear' | 'held' | 'unknown';
 
 /**
  * Class MessagingConnection
@@ -317,6 +324,31 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
     durables: readonly string[],
     signal?: AbortSignal,
   ): Promise<boolean> {
+    return (
+      (await this.consumerAdvisoryStreamState(advisoryStream, eventStream, durables, signal)) ===
+      'clear'
+    );
+  }
+
+  /**
+   * Method consumerAdvisoryStreamState
+   *
+   * @description
+   * Observes the exact terminal advisory latch within one available interval. A held latch
+   * contains an advisory; an unknown result cannot establish its state.
+   *
+   * @param {string} advisoryStream - The exact operational stream name from trusted configuration.
+   * @param {string} eventStream - The event stream of all monitored durables.
+   * @param {readonly string[]} durables - Between one and 32 distinct full JetStream durable names.
+   * @param {AbortSignal | undefined} signal - Cancels waiting for the result.
+   * @returns {Promise<ConsumerAdvisoryStreamState>} The observed latch state, or unknown when it cannot be established.
+   */
+  public async consumerAdvisoryStreamState(
+    advisoryStream: string,
+    eventStream: string,
+    durables: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ConsumerAdvisoryStreamState> {
     const epoch: number | undefined = this.currentAvailabilityEpoch();
     const subjects: ReadonlySet<string> | undefined = consumerAdvisorySubjects(
       advisoryStream,
@@ -324,26 +356,30 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
       durables,
     );
     if (signal?.aborted === true || epoch === undefined || subjects === undefined) {
-      return false;
+      return 'unknown';
     }
-    return new Promise<boolean>((resolve: (value: boolean) => void) => {
-      const stopWatching: () => void = this.watchAvailability((available: boolean): void => {
-        if (!available) resolve(false);
-      });
-      const abortListener: Disposable | undefined =
-        signal === undefined
-          ? undefined
-          : addAbortListener(signal, () => {
-              resolve(false);
-            });
-      void this.readConsumerAdvisoryStream(advisoryStream, subjects, epoch, signal).then(
-        (clear: boolean): void => {
-          stopWatching();
-          abortListener?.[Symbol.dispose]();
-          resolve(clear && !signal?.aborted && this.currentAvailabilityEpoch() === epoch);
-        },
-      );
-    });
+    return new Promise<ConsumerAdvisoryStreamState>(
+      (resolve: (value: ConsumerAdvisoryStreamState) => void) => {
+        const stopWatching: () => void = this.watchAvailability((available: boolean): void => {
+          if (!available) resolve('unknown');
+        });
+        const abortListener: Disposable | undefined =
+          signal === undefined
+            ? undefined
+            : addAbortListener(signal, () => {
+                resolve('unknown');
+              });
+        void this.readConsumerAdvisoryStream(advisoryStream, subjects, epoch, signal).then(
+          (state: ConsumerAdvisoryStreamState): void => {
+            stopWatching();
+            abortListener?.[Symbol.dispose]();
+            resolve(
+              !signal?.aborted && this.currentAvailabilityEpoch() === epoch ? state : 'unknown',
+            );
+          },
+        );
+      },
+    );
   }
 
   /**
@@ -356,23 +392,25 @@ export class MessagingConnection implements NatsProbe, OnApplicationShutdown {
    * @param {ReadonlySet<string>} subjects - Expected native advisory subjects.
    * @param {number} epoch - Available interval in which the check started.
    * @param {AbortSignal | undefined} signal - Cancellation of the check.
-   * @returns {Promise<boolean>} Whether the broker returned a matching empty stream.
+   * @returns {Promise<ConsumerAdvisoryStreamState>} The matching latch state, or unknown on failure.
    */
   private async readConsumerAdvisoryStream(
     streamName: string,
     subjects: ReadonlySet<string>,
     epoch: number,
     signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<ConsumerAdvisoryStreamState> {
     try {
       const manager: JetStreamManager = await this.manager();
       if (signal?.aborted === true || this.currentAvailabilityEpoch() !== epoch) {
-        return false;
+        return 'unknown';
       }
       const info: StreamInfo = await manager.streams.info(streamName);
-      return isEmptyConsumerAdvisoryStream(info, streamName, subjects);
+      if (!isConsumerAdvisoryStream(info, streamName, subjects)) return 'unknown';
+      if (info.state.messages === 0) return 'clear';
+      return info.state.messages > 0 ? 'held' : 'unknown';
     } catch {
-      return false;
+      return 'unknown';
     }
   }
 
