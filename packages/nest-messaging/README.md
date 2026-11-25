@@ -423,9 +423,13 @@ and `unknown` when the state cannot be established. `lastSequence` and `createdA
 after an advisory is purged and grows while the stream exists, and `createdAt` is the stream's
 creation time, which changes when the latch is recreated.
 
-Persist the observed `createdAt` and `lastSequence` together with each certified state, such as
-an index or usage generation. Before trusting that state, compare them with a fresh observation:
-any difference requires a rebuild and a new certification. A higher sequence means an advisory
+Fence each rebuild with two observations: one before the rebuild begins and one after it ends.
+Certify the rebuilt state only when both are `clear` with the same `createdAt` and
+`lastSequence`, and persist those values with it, such as with an index or usage generation. If
+either observation is `unknown` or `held`, or the two differ, an advisory may have been recorded
+during the rebuild, even if it was purged since: reconcile it, clear the latch and rebuild again.
+Before trusting a certified state, compare its persisted values with a fresh observation: any
+difference requires a rebuild and a new certification. A higher sequence means an advisory
 was recorded, even if it has since been purged; a different creation time means the latch was
 recreated, whatever its sequence. A `held` observation also requires reconciliation and clearing
 before certification. An `unknown` observation proves nothing and cannot certify the state.
