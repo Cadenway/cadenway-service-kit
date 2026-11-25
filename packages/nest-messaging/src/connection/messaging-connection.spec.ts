@@ -4,15 +4,26 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessagingConnection } from './messaging-connection.js';
 
 /**
+ * Constant LATCH_CREATED
+ *
+ * @description
+ * Creation time of the test latch, as JetStream reports it.
+ *
+ * @type {string}
+ */
+const LATCH_CREATED: string = '2026-11-25T10:00:00.123456789Z';
+
+/**
  * Function latchInfo
  *
  * @description
  * Builds matching broker metadata for the advisory latch.
  *
  * @param {number} messages - Number of retained advisories.
+ * @param {number} lastSequence - Last assigned sequence.
  * @returns {StreamInfo} Stream metadata for the test.
  */
-function latchInfo(messages: number): StreamInfo {
+function latchInfo(messages: number, lastSequence: number = messages): StreamInfo {
   return {
     config: {
       name: 'LATCH',
@@ -29,7 +40,8 @@ function latchInfo(messages: number): StreamInfo {
       max_msg_size: -1,
       max_msgs_per_subject: -1,
     },
-    state: { messages },
+    created: LATCH_CREATED,
+    state: { messages, last_seq: lastSequence },
   } as StreamInfo;
 }
 
@@ -61,15 +73,18 @@ function connectionWithInfo(read: () => Promise<StreamInfo>): MessagingConnectio
 
 describe('consumer advisory stream state', () => {
   it.each([
-    [0, 'clear', true],
-    [1, 'held', false],
+    [0, 0, 'clear', true],
+    [0, 7, 'clear', true],
+    [1, 8, 'held', false],
   ] as const)(
-    'reports %s retained messages as %s and preserves the boolean guard',
-    async (messages, state, clear) => {
-      const connection = connectionWithInfo(() => Promise.resolve(latchInfo(messages)));
+    'reports %s retained messages with sequence %s as %s and preserves the boolean guard',
+    async (messages, lastSequence, state, clear) => {
+      const connection = connectionWithInfo(() =>
+        Promise.resolve(latchInfo(messages, lastSequence)),
+      );
       await expect(
         connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', ['service__handler']),
-      ).resolves.toBe(state);
+      ).resolves.toEqual({ state, lastSequence, createdAt: LATCH_CREATED });
       await expect(
         connection.isConsumerAdvisoryStreamClear('LATCH', 'EVENTS', ['service__handler']),
       ).resolves.toBe(clear);
@@ -79,9 +94,11 @@ describe('consumer advisory stream state', () => {
   it('reports unknown for invalid inputs, mismatched configuration, failed reads and cancellation', async () => {
     const read = vi.fn(() => Promise.resolve(latchInfo(1)));
     const connection = connectionWithInfo(read);
-    await expect(connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', [])).resolves.toBe(
-      'unknown',
-    );
+    await expect(connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', [])).resolves.toEqual({
+      state: 'unknown',
+      lastSequence: null,
+      createdAt: null,
+    });
     await expect(
       connection.consumerAdvisoryStreamState(
         'LATCH',
@@ -89,18 +106,18 @@ describe('consumer advisory stream state', () => {
         ['service__handler'],
         AbortSignal.abort(),
       ),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
     expect(read).not.toHaveBeenCalled();
     await expect(
       connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', ['other']),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
     await expect(
       connection.isConsumerAdvisoryStreamClear('LATCH', 'EVENTS', ['other']),
     ).resolves.toBe(false);
     read.mockRejectedValue(new Error('unavailable'));
     await expect(
       connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', ['service__handler']),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
     await expect(
       connection.isConsumerAdvisoryStreamClear('LATCH', 'EVENTS', ['service__handler']),
     ).resolves.toBe(false);
@@ -111,7 +128,7 @@ describe('consumer advisory stream state', () => {
     ).reportConsumer('service__handler', 'unavailable');
     await expect(
       connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', ['service__handler']),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
   });
 
   it.each([0, 1])(
@@ -139,7 +156,11 @@ describe('consumer advisory stream state', () => {
         }
       ).reportConsumer('service__handler', null);
       finish(latchInfo(messages));
-      await expect(result).resolves.toBe('unknown');
+      await expect(result).resolves.toEqual({
+        state: 'unknown',
+        lastSequence: null,
+        createdAt: null,
+      });
     },
   );
   it('reports unknown for a nonempty stream with the wrong latch configuration', async () => {
@@ -148,7 +169,7 @@ describe('consumer advisory stream state', () => {
     const connection = connectionWithInfo(() => Promise.resolve(info));
     await expect(
       connection.consumerAdvisoryStreamState('LATCH', 'EVENTS', ['service__handler']),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
     await expect(
       connection.isConsumerAdvisoryStreamClear('LATCH', 'EVENTS', ['service__handler']),
     ).resolves.toBe(false);
@@ -171,7 +192,11 @@ describe('consumer advisory stream state', () => {
     );
     await Promise.resolve();
     controller.abort();
-    await expect(result).resolves.toBe('unknown');
+    await expect(result).resolves.toEqual({
+      state: 'unknown',
+      lastSequence: null,
+      createdAt: null,
+    });
     finish(latchInfo(1));
   });
 });

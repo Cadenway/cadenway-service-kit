@@ -416,10 +416,19 @@ that replaced it during reconciliation keeps the guard closed. Provision the str
 protected consumers start.
 
 `MessagingConnection.consumerAdvisoryStreamState(advisoryStream, eventStream, durables, signal?)`
-uses the same check and returns `clear` for an empty latch, `held` for a matching latch with
-an advisory, and `unknown` when the state cannot be established. A service that must rebuild
-after a terminal delivery can remember `held` and rebuild once the latch is cleared; `unknown`
-provides no evidence of a terminal delivery or of a clear latch.
+returns an observation with `state`, `lastSequence` and `createdAt` from the same available
+interval. The state is `clear` for an empty latch, `held` for a matching latch with an advisory,
+and `unknown` when the state cannot be established. `lastSequence` and `createdAt` are null for
+`unknown`. Otherwise `lastSequence` is the last sequence assigned by JetStream, which remains
+after an advisory is purged and grows while the stream exists, and `createdAt` is the stream's
+creation time, which changes when the latch is recreated.
+
+Persist the observed `createdAt` and `lastSequence` together with each certified state, such as
+an index or usage generation. Before trusting that state, compare them with a fresh observation:
+any difference requires a rebuild and a new certification. A higher sequence means an advisory
+was recorded, even if it has since been purged; a different creation time means the latch was
+recreated, whatever its sequence. A `held` observation also requires reconciliation and clearing
+before certification. An `unknown` observation proves nothing and cannot certify the state.
 
 The boolean probe returns `false` when there is an advisory, the stream is missing or its configuration
 does not match, or the check is invalid, interrupted or unsuccessful. Cancellation stops waiting.
