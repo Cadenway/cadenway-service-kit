@@ -12,6 +12,8 @@
 export {
   MessagingConnection,
   messagingHealthIndicator,
+  type ConsumerAdvisoryStreamState,
+  type ConsumerAdvisoryStreamObservation,
 } from './connection/messaging-connection.js';
 export type { VersionClaim } from './consumer/delivery/event-deduplicator.js';
 export {

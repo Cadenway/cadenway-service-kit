@@ -415,7 +415,36 @@ the failure, the operator deletes only the inspected advisory's stream sequence.
 that replaced it during reconciliation keeps the guard closed. Provision the stream before the
 protected consumers start.
 
-The probe returns `false` when there is an advisory, the stream is missing or its configuration
+`MessagingConnection.consumerAdvisoryStreamState(advisoryStream, eventStream, durables, signal?)`
+returns an observation with `state`, `lastSequence` and `createdAt` from the same available
+interval. The state is `clear` for an empty latch, `held` for a matching latch with an advisory,
+and `unknown` when the state cannot be established. `lastSequence` and `createdAt` are null for
+`unknown`. Otherwise `lastSequence` is the last sequence assigned by JetStream, which remains
+after an advisory is purged and grows while the stream exists, and `createdAt` is the stream's
+creation time, which changes when the latch is recreated.
+
+Fence each rebuild with two observations: one before the rebuild begins and one after it ends.
+Certify the rebuilt state only when both are `clear` with the same `createdAt` and
+`lastSequence`, and persist those values with it, such as with an index or usage generation. If
+either observation is `unknown` or `held`, or the two differ, an advisory may have been recorded
+during the rebuild, even if it was purged since: reconcile it, clear the latch and rebuild again.
+Before trusting a certified state, compare its persisted values with a fresh observation: any
+difference requires a rebuild and a new certification. A higher sequence means an advisory
+was recorded, even if it has since been purged; a different creation time means the latch was
+recreated, whatever its sequence. A `held` observation also requires reconciliation and clearing
+before certification. An `unknown` observation proves nothing and cannot certify the state.
+
+Matching observations prove that no advisory was recorded since certification only if the latch
+kept capturing every monitored subject in between. An observation checks the configuration at the
+instant it is read and cannot see an earlier change: a monitored subject removed and later
+restored, even briefly, can let a terminal delivery pass unrecorded while `createdAt` and
+`lastSequence` stay the same. Keep the monitored subjects of a live latch fixed for as long as a
+service certifies against it: grant services only stream info on the latch, let only provisioning
+create or edit it, add subjects without removing any, and stop monitoring a subject only by
+recreating the latch, which changes `createdAt`. Any other configuration change, or any period in
+which capture cannot be established, invalidates every certification that depends on the latch.
+
+The boolean probe returns `false` when there is an advisory, the stream is missing or its configuration
 does not match, or the check is invalid, interrupted or unsuccessful. Cancellation stops waiting.
 Issued requests remain subject to the JetStream timeout. Pair this probe with the availability
 watch and catch-up check, and refresh the probe while serving traffic. This is a snapshot of

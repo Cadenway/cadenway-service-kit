@@ -323,22 +323,31 @@ describe('messaging connection on a real NATS server', () => {
     ]);
     const firstConnection = first.get(MessagingConnection);
     const secondConnection = second.get(MessagingConnection);
+    const latch = {
+      name: stream,
+      subjects: [terminated, maxDeliveries],
+      storage: StorageType.File,
+      retention: RetentionPolicy.Limits,
+      discard: DiscardPolicy.Old,
+      max_msgs: 1,
+      max_age: 0,
+      max_bytes: -1,
+      max_msg_size: -1,
+      max_msgs_per_subject: -1,
+    };
     try {
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);
-      await manager.streams.add({
-        name: stream,
-        subjects: [terminated, maxDeliveries],
-        storage: StorageType.File,
-        retention: RetentionPolicy.Limits,
-        discard: DiscardPolicy.Old,
-        max_msgs: 1,
-        max_age: 0,
-        max_bytes: -1,
-        max_msg_size: -1,
-        max_msgs_per_subject: -1,
-      });
+      await manager.streams.add(latch);
+      const initial = await firstConnection.consumerAdvisoryStreamState(stream, eventStream, [
+        durable,
+      ]);
+      expect(initial).toMatchObject({ state: 'clear', lastSequence: 0 });
+      expect(typeof initial.createdAt).toBe('string');
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(true);
@@ -367,6 +376,11 @@ describe('messaging connection on a real NATS server', () => {
       await waitFor(
         async (): Promise<boolean> => (await manager.streams.info(stream)).state.messages === 1,
       );
+      const held = await firstConnection.consumerAdvisoryStreamState(stream, eventStream, [
+        durable,
+      ]);
+      expect(held.state).toBe('held');
+      expect(held.lastSequence).toBeGreaterThan(0);
       const beforeRestart = await manager.streams.getMessage(stream, {
         last_by_subj: maxDeliveries,
       });
@@ -374,6 +388,21 @@ describe('messaging connection on a real NATS server', () => {
       await expect(
         secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);
+
+      await manager.streams.purge(stream);
+      const afterPurge = await firstConnection.consumerAdvisoryStreamState(stream, eventStream, [
+        durable,
+      ]);
+      expect(afterPurge).toEqual({
+        state: 'clear',
+        lastSequence: held.lastSequence,
+        createdAt: initial.createdAt,
+      });
+      expect(afterPurge.lastSequence).toBeGreaterThan(0);
+      await jetstream(client).publish(`evt-${suffix}.task.updated.v1`, '{');
+      await waitFor(
+        async (): Promise<boolean> => (await manager.streams.info(stream)).state.messages === 1,
+      );
 
       await nats.restart();
       await waitFor(async (): Promise<boolean> => {
@@ -414,7 +443,19 @@ describe('messaging connection on a real NATS server', () => {
       await waitFor(() =>
         secondConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       );
+      const afterDelete = await firstConnection.consumerAdvisoryStreamState(stream, eventStream, [
+        durable,
+      ]);
+      expect(afterDelete).toEqual({
+        state: 'clear',
+        lastSequence: retained.state.last_seq,
+        createdAt: initial.createdAt,
+      });
+      expect(afterDelete.lastSequence).toBeGreaterThan(0);
       await manager.streams.update(stream, { max_bytes: 1024 });
+      await expect(
+        firstConnection.consumerAdvisoryStreamState(stream, eventStream, [durable]),
+      ).resolves.toEqual({ state: 'unknown', lastSequence: null, createdAt: null });
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);
@@ -426,6 +467,14 @@ describe('messaging connection on a real NATS server', () => {
       await expect(
         firstConnection.isConsumerAdvisoryStreamClear(stream, eventStream, [durable]),
       ).resolves.toBe(false);
+
+      await manager.streams.delete(stream);
+      await manager.streams.add(latch);
+      const recreated = await firstConnection.consumerAdvisoryStreamState(stream, eventStream, [
+        durable,
+      ]);
+      expect(recreated).toMatchObject({ state: 'clear', lastSequence: 0 });
+      expect(recreated.createdAt).not.toBe(initial.createdAt);
     } finally {
       await second.close();
       await first.close();

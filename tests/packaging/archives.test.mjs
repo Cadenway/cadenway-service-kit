@@ -54,6 +54,7 @@ const addedMembers = {
 // The standalone consumer below checks the reviewed additive class methods directly.
 const addedClassMethods = {
   '@cadenway/nest-messaging#MessagingConnection': [
+    'consumerAdvisoryStreamState',
     'isConsumerAdvisoryStreamClear',
     'watchAvailability',
   ],
@@ -90,6 +91,7 @@ import type { JobEnqueueOptions } from '@cadenway/nest-jobs';
 import type { JobEnqueueOptions as RuntimeJobEnqueueOptions } from '@cadenway/nest-jobs/runtime';
 import type { JobQueueDeclaration } from '@cadenway/nest-jobs/provisioning';
 import type {
+  ConsumerAdvisoryStreamObservation,
   DeadLetterAdvisoriesOptions,
   EventConsumers,
   EventStreamProgress,
@@ -139,13 +141,19 @@ const progress: Promise<EventStreamProgress | undefined> = eventConsumers.readPr
 const progressWithoutSignal: Promise<EventStreamProgress | undefined> = eventConsumers.readProgress([
   'relay-test',
 ]);
+const advisoryState: Promise<ConsumerAdvisoryStreamObservation> = messagingConnection.consumerAdvisoryStreamState(
+  'TEST_ADVISORIES', 'EVENTS', ['test__relay'], AbortSignal.timeout(1000),
+);
+const advisoryStateWithoutSignal: Promise<ConsumerAdvisoryStreamObservation> = messagingConnection.consumerAdvisoryStreamState(
+  'TEST_ADVISORIES', 'EVENTS', ['test__relay'],
+);
 const advisoryClear: Promise<boolean> = messagingConnection.isConsumerAdvisoryStreamClear(
   'TEST_ADVISORIES',
   'EVENTS',
   ['test__relay'],
   AbortSignal.timeout(1000),
 );
-void [config, attempts, webhookOptions, runtimeEnqueue, groupedQueue, durableOptions, privacyOptions, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear];
+void [config, attempts, webhookOptions, runtimeEnqueue, groupedQueue, durableOptions, privacyOptions, stopWatching, caughtUp, caughtUpWithoutSignal, progress, progressWithoutSignal, advisoryClear, advisoryState, advisoryStateWithoutSignal];
 `,
   );
   const released = Object.fromEntries(
