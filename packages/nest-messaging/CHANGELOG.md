@@ -1,5 +1,13 @@
 # @cadenway/nest-messaging
 
+## 0.9.0
+
+### Minor Changes
+
+- ce7b7c3: Expose the terminal consumer advisory stream state as clear, held, or unknown, with the latch's
+  last sequence and creation time, so a service can tell that an advisory was recorded since it
+  certified its state, even once the advisory is purged.
+
 ## 0.8.0
 
 ### Minor Changes
